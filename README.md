@@ -37,7 +37,7 @@ Flutter 多端独立短剧 / 影视应用
 | 站源 | 浏览与播放 | 搜索 |
 | --- | --- | --- |
 | 红果 | 真人剧、漫剧、AI 剧及分集 | 联网搜索与官网搜索联想 |
-| 番茄 | 看剧 / 漫剧两个频道、全集分集与多清晰度档位；内容由本机番茄内容引擎（`127.0.0.1:18921`）承担，Android 版内置引擎，桌面端 / 本地服务版需自备同一地址的引擎 | 站源在线搜索（引擎 `tab_type=11`） |
+| 番茄 | 看剧 / 漫剧两个频道、全集分集与多清晰度档位；内容由本机番茄内容引擎（`127.0.0.1:18921`，上游 GPL-3.0 项目 [ch6vip/fqapp](https://github.com/ch6vip/fqapp) 的 Rust 核心）承担。Android / iOS 把引擎编进应用，Windows / macOS / 本地服务版随包带一个独立引擎程序并自动拉起 | 站源在线搜索（引擎 `tab_type=11`） |
 | 韩小圈 | MacCMS 模板：最新韩剧 / 韩国电影 / 韩国综艺 / 韩国动漫，多线路分集 | 站源在线搜索 |
 | 鬼片 | MacCMS 站点：鬼片 / 电视剧 / 动漫，多线路分集 | RSS 最新条目标题匹配（站点搜索已停用） |
 | 青空 | 番剧、剧场动画、特摄及分集 | 站源在线搜索 |
@@ -164,6 +164,25 @@ Windows 需要 Visual Studio C++ 桌面组件及 MinGW-w64 x64；
 iOS 需要 macOS、完整 Xcode 和 CocoaPods；macOS 同样需要 macOS 12+、完整 Xcode 和 CocoaPods（`dmgbuild` + `Pillow` 可选，用于 dmg 的拖拽安装布局）。
 
 构建脚本对子进程默认设置 `GOPROXY=https://goproxy.cn,direct`、`GOSUMDB=off`，同名环境变量可覆盖。
+
+### 番茄内容引擎
+
+番茄站源的内容不在本站抓取，而是由本机的 Rust 核心（上游 GPL-3.0 的
+[ch6vip/fqapp](https://github.com/ch6vip/fqapp)）提供，监听 `127.0.0.1:18921`。
+Android 用的是仓库里预编译的 `jniLibs/arm64-v8a/libfanqie_shim.so`；
+其余平台的产物由 `scripts/build_fanqie_engine.py` 按固定提交号拉源码现编：
+
+~~~sh
+python scripts/build_fanqie_engine.py --out build/fanqie/windows
+python scripts/build_fanqie_engine.py --out build/fanqie/linux
+python scripts/build_fanqie_engine.py --out build/fanqie/macos --macos-universal
+python scripts/build_fanqie_engine.py --out ios/FanqieEngine --target aarch64-apple-ios
+~~~
+
+产物有两种形态：`fanqie_engine`（可执行，Windows / macOS / Linux 由宿主进程
+拉起）与 `libfanqie_shim`（Android 的 `.so`、iOS 的静态库）。CI 里的 `engines`
+job 会把三个桌面平台的引擎编好上传，Windows / macOS / 本地服务版的打包脚本
+再把它放进安装包；没编出产物的平台番茄源照样显示，只是播放时会提示引擎未就绪。
 
 ~~~sh
 python3 scripts/build_android.py                 # 红果鉴
