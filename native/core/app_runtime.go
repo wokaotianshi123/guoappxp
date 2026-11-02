@@ -36,6 +36,8 @@ type Config struct {
 	SoraniAPIURL     string
 	GuipianURL       string
 	HanxiaoquanURL   string
+	// FanqieURL 是番茄内容引擎（本机 loopback REST）地址，留空用默认 127.0.0.1:18921。
+	FanqieURL        string
 	Token            string
 	AESKeyHex        string
 	InterfaceKey     string
@@ -60,8 +62,8 @@ type Downloader struct {
 	browserTransport      *huangguoBrowserTransport
 	hongguoOnce           sync.Once
 	hongguo               *hongguoAppClient
-	hongguoxinOnce        sync.Once
-	hongguoxin            *hongguoxinClient
+	fanqieMu              sync.Mutex
+	fanqieFeeds           map[int]*fanqieFeedState
 	huangjuOnce           sync.Once
 	huangju               *huangjuAPIClient
 	yeguoOnce             sync.Once
@@ -636,9 +638,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	var items []Drama
 	var err error
 	switch source {
-	case sourceHongguoNew:
-		// 红果新用无状态 offset 翻页，不与红果的游标状态互相推进。
-		items, result.HasMore, err = d.fetchHongguoxinCatalogPage(ctx, page, category)
+	case sourceFanqie:
+		items, result.HasMore, err = d.fetchFanqieCatalogPage(ctx, category, page)
 	case sourceHongguo:
 		if strings.HasPrefix(category, hongguoTagPrefix) {
 			items, result.HasMore, err = d.fetchHongguoTagPage(ctx, category, page)
@@ -719,7 +720,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan {
+	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && source != sourceFanqie {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
@@ -765,6 +766,8 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchGuipianDetail(ctx, sourceID)
 	case sourceHanxiaoquan:
 		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
+	case sourceFanqie:
+		raw, chapters, err = engine.downloader.fetchFanqieDetail(ctx, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
 	}
@@ -783,14 +786,6 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	if source == sourceHongguo {
 		raw := engine.downloader.hongguoCachedDrama(Drama{ID: drama.ID, Title: drama.Title, Source: source})
 		drama = mergeNativeDrama(drama, nativeNormalize(raw))
-	}
-	if source == sourceHongguoNew {
-		// 红果新与红果共用 App 详情缓存（同一个 series_id），直接借它补齐简介、海报与标签。
-		if entry, detailErr := engine.downloader.hongguoAppDetail(ctx, sourceID); detailErr == nil {
-			if fresh := hongguoxinDrama(entry.Drama); fresh.ID == drama.ID {
-				drama = mergeNativeDrama(drama, nativeNormalize(fresh))
-			}
-		}
 	}
 	if source == sourceHuangdou {
 		if row, err := engine.downloader.huangdouDetail(ctx, sourceID); err == nil {
@@ -820,7 +815,7 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 			return plan, err
 		}
 	}
-	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}
+	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index, Quality: input.Quality}
 	media, err := engine.downloader.resolveProviderMedia(ctx, task)
 	if err != nil {
 		return nativePlan{}, err

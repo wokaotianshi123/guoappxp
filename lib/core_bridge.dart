@@ -11,6 +11,7 @@ import 'package:path_provider/path_provider.dart';
 import 'models.dart';
 import 'danmaku_models.dart';
 import 'background_downloads.dart';
+import 'fanqie_backend.dart';
 import 'local_store.dart';
 import 'app_build.dart';
 import 'ranking_models.dart';
@@ -681,6 +682,12 @@ class NativeRepository extends AppRepository {
       throw AppFailure('应用与原生核心的站源版本不一致，请使用完整安装包重新安装');
     }
     if (!background) await BackgroundDownloads.prepare();
+    if (!background) {
+      // 番茄内置源的内容引擎：与本地核心并行启动，不阻塞界面。
+      // 非 Android 平台没有引擎产物，ensureStarted 会直接返回；
+      // 站源此时仍会显示，播放时给出「引擎未就绪」的提示。
+      unawaited(FanqieBackend.ensureStarted());
+    }
     if (!background) {
       SystemProxyMonitor.start((value) async {
         await _call({'action': 'updateSystemProxy', 'systemProxy': value});

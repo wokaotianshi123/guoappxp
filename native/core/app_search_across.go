@@ -50,8 +50,8 @@ type nativeSearchAcrossResult struct {
 // 这里只依据站源自身能力，不再把「已加载的本地资源」当作搜索来源。
 func nativeSourceSupportsSearch(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHongguo, sourceHongguoNew, sourceHuangju, sourceYeguo, sourceDSD, sourceSorani,
-		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot:
+	case sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceSorani,
+		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie:
 		return true
 	}
 	if isDuanjuProviderSource(source) {
@@ -65,6 +65,9 @@ func nativeSearchSourceLabel(source string) string {
 	source = canonicalProviderSource(source)
 	if isDuanjuProviderSource(source) {
 		return duanjuSourceName(source)
+	}
+	if source == sourceFanqie {
+		return "番茄"
 	}
 	return source
 }
@@ -90,24 +93,9 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 	var more bool
 	var err error
 	switch source {
-	case sourceHongguoNew:
-		// 红果新与红果共用同一套搜索接口，只是结果改挂到新源。
-		var entry hongguoSearchEntry
-		if page == 1 {
-			entry, err = d.searchHongguoxinDramas(ctx, query)
-		} else if keyword, keywordErr := hongguoSearchKeyword(query); keywordErr != nil {
-			err = keywordErr
-		} else {
-			entry, err = d.fetchHongguoxinSearchPage(ctx, keyword, page)
-		}
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range entry.Dramas {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.Warning, result.HasMore = entry.Warning, entry.HasMore
-		return result, nil
+	case sourceFanqie:
+		// 番茄搜索走引擎的 /api/v1/search（tab_type=11 短剧）。
+		items, more, err = d.fetchFanqieSearchPage(ctx, page, query)
 	case sourceHongguo:
 		// 红果的搜索接口是「首屏 + 翻页」两段式，首屏还能给出「结果被截断」的提示。
 		var entry hongguoSearchEntry

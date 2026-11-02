@@ -19,6 +19,9 @@ type providerMedia struct {
 	CENCKey     []byte
 	Quality     int
 	Variants    []providerMedia
+	// QualityOptions 是站源直接给出的可选清晰度档位（如 1080/720/540/480/360）。
+	// 番茄这类「按档位分别缓存」的源走这个字段，避免为了列档位而伪造多条线路。
+	QualityOptions []int
 }
 
 func (d *Downloader) providerBaseURL(source string) string {
@@ -32,8 +35,6 @@ func (d *Downloader) providerBaseURL(source string) string {
 	case sourceHuangdou:
 		configured, fallback = d.cfg.HuangdouURL, huangdouBaseURL
 	case sourceHongguo:
-		configured, fallback = d.cfg.HongguoURL, hongguoBaseURL
-	case sourceHongguoNew:
 		configured, fallback = d.cfg.HongguoURL, hongguoBaseURL
 	case sourceHuangju:
 		configured, fallback = d.cfg.HuangjuURL, huangjuBaseURL
@@ -51,6 +52,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		fallback = ikanbotSiteBaseURL
 	case sourceA123:
 		fallback = a123SiteBaseURL
+	case sourceFanqie:
+		configured, fallback = d.cfg.FanqieURL, fanqieDefaultBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -161,16 +164,11 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == sourceA123 {
 		return d.resolveA123Media(ctx, task)
 	}
+	if chapter.Source == sourceFanqie {
+		return d.resolveFanqieMedia(ctx, chapter, task.Quality)
+	}
 	if isDuanjuProviderSource(chapter.Source) {
 		return d.resolveDuanjuMedia(ctx, task)
-	}
-	if chapter.Source == sourceHongguoNew || strings.HasPrefix(chapter.VideoURL, "hongguoxin-cenc://") {
-		// 红果新取流：multi_video_model/v1 + 注册匿名身份，不挂签名头。
-		videoID := strings.TrimPrefix(chapter.VideoURL, "hongguoxin-cenc://")
-		if !hongguoNumericID.MatchString(videoID) {
-			return providerMedia{}, fmt.Errorf("红果新章节缺少分集编号，请刷新剧库后重新加入队列")
-		}
-		return d.resolveHongguoxinMedia(ctx, videoID)
 	}
 	if strings.HasPrefix(chapter.VideoURL, "hongguo-cenc://") {
 		return d.resolveHongguoMedia(ctx, task)

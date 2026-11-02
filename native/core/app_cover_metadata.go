@@ -17,8 +17,6 @@ func (d *Downloader) nativeCoverAddress(ctx context.Context, drama nativeDrama) 
 		return "", errors.New("无效的剧集 ID")
 	}
 	switch source {
-	case sourceHongguoNew:
-		return d.hongguoxinCover(ctx, id)
 	case sourceHongguo:
 		if !hongguoNumericID.MatchString(id) {
 			return "", errors.New("无效的红果剧集 ID")

@@ -49,3 +49,5 @@ flutter:
   uses-material-design: true
   assets:
     - assets/video_enhancement/
+    # 番茄内置源：引擎启动配置与分类过滤规则。
+    - assets/fanqie/

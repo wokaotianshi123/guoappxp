@@ -13,8 +13,8 @@ class SourceSite {
   bool get duanjuOnlineSearch => _duanjuIds.contains(id);
 
   bool get pagedSearch =>
+      id == 'fanqie' ||
       id == 'hongguo' ||
-      id == 'hongguoxin' ||
       id == 'huangju' ||
       id == 'yeguo' ||
       id == 'dsd' ||
@@ -43,12 +43,9 @@ class SourceSite {
 
   static const hongguo = SourceSite('hongguo', '红果', '短剧 · 漫剧 · AI 剧');
 
-  /// 红果新：与红果同一剧库，取流改走 multi_video_model 免签名链路（部分红果取不到的集可用）。
-  static const hongguoNew = SourceSite(
-    'hongguoxin',
-    '红果新',
-    '短剧 · 漫剧 · AI 剧（新版取流）',
-  );
+  /// 番茄：内容来自番茄短剧，由本机内嵌的番茄内容引擎（127.0.0.1:18921）提供。
+  static const fanqie = SourceSite('fanqie', '番茄', '番茄短剧 · 漫剧 · 在线搜索');
+
   static const dsd = SourceSite('dsd', '帝果', '分类视频 · 在线搜索');
   static const sorani = SourceSite('sorani', '青空', '番剧 · 剧场动画 · 特摄');
   static const guipian = SourceSite('guipian', '鬼片', '鬼片 · 电视剧 · 动漫');
@@ -100,8 +97,8 @@ class SourceSite {
   };
 
   static const primaryValues = [
+    fanqie,
     hongguo,
-    hongguoNew,
     a123,
     ikanbot,
     hanxiaoquan,
@@ -121,9 +118,7 @@ class SourceSite {
   ];
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
-  static const values = allSourcesEnabled
-      ? knownValues
-      : [hongguo, hongguoNew];
+  static const values = allSourcesEnabled ? knownValues : [fanqie, hongguo];
 
   /// 当前会话已注册的自定义源 ID，供可用性判断与站源归一化使用。
   static final Set<String> customIds = {};

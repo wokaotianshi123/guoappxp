@@ -60,8 +60,7 @@ var sourceNames = []struct {
 	Name string
 }{
 	{"hongguo", "红果"},
-	// 红果新与红果同库，仅取流链路不同（multi_video_model 免签名）。
-	{"hongguoxin", "红果新"},
+	{"fanqie", "番茄"},
 	{"ikanbot", "爱看机器人"},
 	{"a123", "A123"},
 	{"hanxiaoquan", "韩小圈"},

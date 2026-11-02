@@ -24,8 +24,6 @@ const (
 	sourceHuangguoVideo = "huangguo-video"
 	sourceHuangdou      = "huangdou"
 	sourceHongguo       = "hongguo"
-	// sourceHongguoNew 红果新：目录 / 详情 / 搜索复用红果，取流走 multi_video_model 免签名链路。
-	sourceHongguoNew = "hongguoxin"
 	sourceHuangju       = "huangju"
 	sourceYeguo         = "yeguo"
 	sourceDSD           = "dsd"
@@ -35,6 +33,8 @@ const (
 	sourceHanxiaoquan   = "hanxiaoquan"
 	sourceA123          = "a123"
 	sourceIkanbot       = "ikanbot"
+	// sourceFanqie 番茄：目录/搜索/详情/取流转发给本机番茄内容引擎（127.0.0.1:18921）。
+	sourceFanqie = "fanqie"
 
 	providerMaxBodyBytes = 20 * 1024 * 1024
 	providerTimeout      = 12 * time.Second
@@ -110,7 +110,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHongguoNew, sourceHuangju, sourceYeguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceIkanbot, sourceA123:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceIkanbot, sourceA123, sourceFanqie:
 		return true
 	}
 	return isDuanjuProviderSource(source)
@@ -127,8 +127,6 @@ func canonicalProviderSource(source string) string {
 		return sourceHuangdou
 	case "hongguo", "hongguoduanju.com":
 		return sourceHongguo
-	case "hongguoxin", "hongguo-new", "hongguox":
-		return sourceHongguoNew
 	case "huangju", "huangju.net", "api.huangju.net":
 		return sourceHuangju
 	case "yeguo", "ygdj7.com", "www.ygdj7.com", "ygdj15.com", "www.ygdj15.com", "analyze.buxefaex.cc", "delta.ygrwdsgt.cc", "yeguodj.com", "www.yeguodj.com":
@@ -147,6 +145,8 @@ func canonicalProviderSource(source string) string {
 		return sourceIkanbot
 	case "a123", "a123tv", "a123tv.com", "www.a123tv.com":
 		return sourceA123
+	case "fanqie", "fanqie.tv", "fqnovel.com", "番茄":
+		return sourceFanqie
 	default:
 		if canonical, found := duanjuSourceAliases[key]; found {
 			return canonical
@@ -250,8 +250,6 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return d.fetchHuangdouChapters(ctx, sourceID)
 	case sourceHongguo:
 		return d.fetchHongguoChapters(ctx, sourceID)
-	case sourceHongguoNew:
-		return d.fetchHongguoxinChapters(ctx, sourceID)
 	case sourceHuangju:
 		drama, chapters, err := d.fetchHuangjuDetail(ctx, sourceID)
 		return drama.DisplayTitle(), chapters, err
@@ -274,6 +272,9 @@ func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID s
 		return d.fetchLegacyChapters(ctx, sourceID)
 	case sourceIkanbot:
 		drama, chapters, err := d.fetchIkanbotDetail(ctx, sourceID)
+		return drama.DisplayTitle(), chapters, err
+	case sourceFanqie:
+		drama, chapters, err := d.fetchFanqieDetail(ctx, sourceID)
 		return drama.DisplayTitle(), chapters, err
 	case sourceA123:
 		drama, chapters, err := d.fetchA123Detail(ctx, sourceID)
