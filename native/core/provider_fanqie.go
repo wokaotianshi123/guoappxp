@@ -30,6 +30,11 @@ import (
 
 const fanqieDefaultBaseURL = "http://127.0.0.1:18921"
 
+// fanqieEngineAddress 是不带 scheme 的引擎地址，专供用户可见的提示文案使用：
+// 错误信息出口会做 URL 脱敏（rePublicURL 匹配 `https?://[^\s"'<>]+`），
+// 带 scheme 的地址会把紧跟其后的中文一起吞掉，用户只会看到半截话。
+const fanqieEngineAddress = "127.0.0.1:18921"
+
 // 番茄频道对应的官方 tab_type。
 const (
 	fanqieTabTypeKanju = 8  // 看剧（真人短剧）
@@ -60,19 +65,33 @@ func (d *Downloader) fanqieBase() string {
 }
 
 // fanqieOfflineHint 把「连不上本机引擎」翻译成可操作的提示。
-// 桌面端 / 本地服务器端没有内嵌引擎，直接连 127.0.0.1:18921 会得到
-// connection refused，原始错误对用户没有任何指引意义。
+// 桌面端 / 本地服务器端没有内嵌引擎，直接连 127.0.0.1:18921 会得到连接失败，
+// 原始错误对用户没有任何指引意义。
+//
+// 关键字按「可能的报错文案」覆盖三层，避免换个平台/换个传输实现就漏判：
+//   - Go 标准库：connect: connection refused / dial tcp ... / no such host / EOF
+//   - tls-client（Rust 后端）：upstream connect failed: ... (os error 10061)
+//   - Windows 本地化文案：由于目标计算机积极拒绝，无法连接。
 func fanqieOfflineHint(err error) error {
 	if err == nil {
 		return nil
 	}
-	base := fanqieDefaultBaseURL
-	message := err.Error()
-	if strings.Contains(message, "connection refused") ||
-		strings.Contains(message, "connect:") ||
-		strings.Contains(message, "EOF") ||
-		strings.Contains(message, "no such host") {
-		return fmt.Errorf("番茄内容引擎未就绪（%s）：Android 版已内置引擎，桌面端/本地服务器端需先启动番茄引擎", base)
+	lower := strings.ToLower(err.Error())
+	for _, marker := range []string{
+		"connection refused",
+		"connect:",
+		"connectex",
+		"dial tcp",
+		"upstream connect failed",
+		"os error 10061",
+		"eof",
+		"no such host",
+		"无法连接",
+		"积极拒绝",
+	} {
+		if strings.Contains(lower, marker) {
+			return fmt.Errorf("番茄内容引擎未就绪（本机 %s）：Android 版已内置引擎，桌面端/本地服务器端需先启动番茄引擎", fanqieEngineAddress)
+		}
 	}
 	return err
 }

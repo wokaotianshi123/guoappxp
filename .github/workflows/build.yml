@@ -428,7 +428,7 @@ jobs:
           cat > notes.md <<EOF
           版本 ${VERSION}。两个版本功能相同，区别只在站源范围，按需选择：
 
-          - 红果鉴 hongguojian：仅红果站源
+          - 红果鉴 hongguojian：红果 + 番茄两个站源（番茄为内置源，内容由本机番茄内容引擎提供）
           - 真果鉴 zhenguojian：全部站源
 
           Android：

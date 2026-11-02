@@ -1,6 +1,7 @@
 package core
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -99,12 +100,34 @@ func TestFanqieCategoriesAndSourceIdentity(t *testing.T) {
 }
 
 func TestFanqieOfflineHintGuidesUser(t *testing.T) {
-	err := fanqieOfflineHint(errFanqieStub{})
-	if err == nil || !strings.Contains(err.Error(), "番茄内容引擎未就绪") {
-		t.Fatalf("connection failure should carry an actionable hint, got %v", err)
+	// 三种可能出现的错误形态都要被翻译：Go 标准库、tls-client(Rust)、
+	// Windows 本地化文案。少一种就会有平台看到一串机器味儿的原始报错。
+	for name, cause := range map[string]error{
+		"go":     errFanqieStub{},
+		"rust":   errFanqieRustStub{},
+		"zh_win": errFanqieChineseStub{},
+	} {
+		err := fanqieOfflineHint(cause)
+		if err == nil || !strings.Contains(err.Error(), "番茄内容引擎未就绪") {
+			t.Fatalf("%s: connection failure should carry an actionable hint, got %v", name, err)
+		}
+		if !strings.Contains(err.Error(), "18921") {
+			t.Fatalf("%s: hint should mention the engine port, got %v", name, err)
+		}
 	}
-	if !strings.Contains(err.Error(), "18921") {
-		t.Fatalf("hint should mention the engine port, got %v", err)
+	// 引擎活着但返回业务错误时，不能被误译成「未就绪」。
+	real := errors.New("番茄引擎错误 500: upstream busy")
+	if got := fanqieOfflineHint(real); got != real {
+		t.Fatalf("business errors must pass through, got %v", got)
+	}
+	// 错误出口会做 URL 脱敏（https?://[^\s"'<>]+ 会连后面中文一起吞掉），
+	// 所以提示里不能带 scheme，否则用户只能看到半截话。
+	surfaced := publicError(fanqieOfflineHint(errFanqieRustStub{})).Error()
+	if !strings.Contains(surfaced, "Android") || !strings.Contains(surfaced, "18921") {
+		t.Fatalf("hint must survive URL redaction intact, got %q", surfaced)
+	}
+	if strings.Contains(surfaced, "http://") {
+		t.Fatalf("hint should not embed a scheme-prefixed URL: %q", surfaced)
 	}
 }
 
@@ -127,4 +150,18 @@ type errFanqieStub struct{}
 
 func (errFanqieStub) Error() string {
 	return "Get \"http://127.0.0.1:18921/x\": dial tcp 127.0.0.1:18921: connect: connection refused"
+}
+
+// errFanqieRustStub 是 tls-client（Rust 后端）拒绝连接时的文案。
+type errFanqieRustStub struct{}
+
+func (errFanqieRustStub) Error() string {
+	return "upstream connect failed: No connection could be made because the target machine actively refused it. (os error 10061)"
+}
+
+// errFanqieChineseStub 是中文 Windows 上的本地化文案。
+type errFanqieChineseStub struct{}
+
+func (errFanqieChineseStub) Error() string {
+	return "upstream connect failed: 由于目标计算机积极拒绝，无法连接。 (os error 10061)"
 }
