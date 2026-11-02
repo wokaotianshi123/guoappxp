@@ -231,12 +231,68 @@ def run_case(binary, slug_hint):
 def discover():
     binaries = []
     for candidate in sorted((root / 'build' / 'web').glob('*/*-linux')):
+        if is_engine_binary(candidate):
+            continue
         binaries.append(candidate)
     return binaries
 
 
-binaries = [Path(item) for item in options.binary] or discover()
-if not binaries:
+def discover_engines():
+    """暂存目录里平铺着的各平台番茄引擎，这里只看本机能跑的那份。"""
+    return sorted((root / 'build' / 'web').glob('*/fanqie_engine-linux'))
+
+
+def is_engine_binary(path):
+    """番茄引擎和版本主程序长得一样，但命令行完全不同。
+
+    打包时引擎和主程序平铺在同一个目录，文件名叫 fanqie_engine-linux / -windows.exe
+    之类，`*-linux` 这个通配会把它一起捞出来；再拿主程序的 -host/-port/-data
+    去跑，引擎只会回一句「未知参数：-host」然后退出。所以这里必须分开认，
+    引擎另走 run_engine_case 单独验。
+    """
+    return path.name.startswith('fanqie_engine')
+
+
+def run_engine_case(binary):
+    """引擎的轻量自检：确认这个二进制在本机真能执行、参数解析正常。
+
+    真拉起来跑一次会去连上游、写设备池，慢且依赖外网，不适合当发布门禁；
+    而「架构不对（Exec format error）」「缺动态库」「打包时丢了可执行位」
+    这三类事故，一条 --help 就能抓住。
+    """
+    lines = ['番茄引擎 %s' % binary.name]
+    if not os.access(str(binary), os.X_OK):
+        lines.append('失败：文件没有可执行权限（解压后 start.sh 也拉不起来）')
+        return False, lines
+    try:
+        proc = subprocess.run([str(binary), '--help'], stdout=subprocess.PIPE,
+                              stderr=subprocess.STDOUT, timeout=30, text=True,
+                              encoding='utf-8', errors='replace')
+    except OSError as error:
+        lines.append('失败：引擎无法执行：%s' % error)
+        return False, lines
+    except subprocess.TimeoutExpired:
+        lines.append('失败：--help 30 秒内没有返回')
+        return False, lines
+    output = (proc.stdout or '').strip()
+    if proc.returncode != 0:
+        lines.append('失败：--help 退出码 %d' % proc.returncode)
+        if output:
+            lines.append('输出末尾：\n' + output[-600:])
+        return False, lines
+    if 'fanqie_engine' not in output:
+        lines.append('失败：--help 输出里没有 fanqie_engine，可能打进了别的文件：%r' % output[:200])
+        return False, lines
+    lines.append('引擎可执行（--help 正常）')
+    return True, lines
+
+
+requested = [Path(item) for item in options.binary]
+binaries = ([item for item in requested if not is_engine_binary(item)]
+            if requested else discover())
+engines = ([item for item in requested if is_engine_binary(item)]
+           if requested else discover_engines())
+if not binaries and not engines:
     print('没有找到可检查的二进制：先跑 python scripts/build_web.py，'
           '或用 --binary 指定一个', file=sys.stderr)
     raise SystemExit(1)
@@ -256,8 +312,17 @@ for binary in binaries:
     if not ok:
         failed += 1
 
+for engine in engines:
+    print('检查 %s …' % engine, flush=True)
+    ok, lines = run_engine_case(engine)
+    for line in lines:
+        print('    ' + str(line), flush=True)
+    print('    ' + ('通过' if ok else '未通过'), flush=True)
+    if not ok:
+        failed += 1
+
 print()
 if failed:
-    print('%d 个版本未通过自检。' % failed, file=sys.stderr)
+    print('%d 项未通过自检。' % failed, file=sys.stderr)
     raise SystemExit(1)
-print('全部通过：%d 个版本。' % len(binaries))
+print('全部通过：%d 个版本 + %d 个番茄引擎。' % (len(binaries), len(engines)))
