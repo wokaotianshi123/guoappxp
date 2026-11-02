@@ -184,6 +184,13 @@ python scripts/build_fanqie_engine.py --out ios/FanqieEngine --target aarch64-ap
 job 会把三个桌面平台的引擎编好上传，Windows / macOS / 本地服务版的打包脚本
 再把它放进安装包；没编出产物的平台番茄源照样显示，只是播放时会提示引擎未就绪。
 
+Go 侧跟引擎只走 loopback：`fanqieGetJSON` 先用应用统一传输（带限速、诊断、系统
+代理与浏览器指纹），失败后用 `fanqieLocalClient` 重试一次——那是一个不查代理、
+不复用连接的干净直连客户端，一旦救回来就记住「优先直连」。Android 真机上出现过
+「Dart 直连 `/health` 拿到 200、Go 走统一传输却报连接层错误」的组合，靠这条兜底
+自愈；两边都失败时，提示里会同时带两条原始错误和 `fanqie_engine.log` 的最后一行
+（Rust 的 panic 只写这里，安卓没有 logcat），排障直接看那句提示。
+
 ~~~sh
 python3 scripts/build_android.py                 # 红果鉴
 python3 scripts/build_android.py --all-sources   # 真果鉴
