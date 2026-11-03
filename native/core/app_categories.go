@@ -82,6 +82,11 @@ func validNativeCategory(source, category string) bool {
 		return validIkanbotCategory(category)
 	case sourceA123:
 		return validA123Category(category)
+	case sourceXChina:
+		return validXChinaCategory(category)
+	case sourceTheporny:
+		_, ok := validThepornyCategory(category)
+		return ok
 	case sourceFanqie:
 		_, ok := fanqieCategoryTabTypes[category]
 		return ok
@@ -174,6 +179,10 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		all = append(all, d.fetchIkanbotCategories()...)
 	case sourceA123:
 		all = append(all, d.fetchA123Categories()...)
+	case sourceXChina:
+		all = append(all, d.fetchXChinaCategories()...)
+	case sourceTheporny:
+		all = append(all, d.fetchThepornyCategories()...)
 	default:
 		if isDuanjuProviderSource(source) {
 			var categories []nativeCategory

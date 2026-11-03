@@ -168,8 +168,9 @@ void main() {
         expect(restarted.source, restarted.sources.first.id);
         expect(restarted.source, isNot('hongguo'));
       } else {
-        expect(restarted.sources, isEmpty);
-        expect(restarted.source, '');
+        // 红果鉴仍内置番茄源：关掉红果后应回落到番茄。
+        expect(restarted.sources.map((site) => site.id), ['fanqie']);
+        expect(restarted.source, 'fanqie');
       }
     });
 

@@ -51,7 +51,8 @@ type nativeSearchAcrossResult struct {
 func nativeSourceSupportsSearch(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceSorani,
-		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie:
+		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie,
+		sourceXChina, sourceTheporny:
 		return true
 	}
 	if isDuanjuProviderSource(source) {
@@ -68,6 +69,12 @@ func nativeSearchSourceLabel(source string) string {
 	}
 	if source == sourceFanqie {
 		return "番茄"
+	}
+	if source == sourceXChina {
+		return "XChina"
+	}
+	if source == sourceTheporny {
+		return "Theporny"
 	}
 	return source
 }
@@ -130,6 +137,10 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 		items, more, err = d.fetchA123CatalogPage(ctx, page, "", query)
 	case sourceIkanbot:
 		items, more, err = d.fetchIkanbotCatalogPage(ctx, page, "", query)
+	case sourceXChina:
+		items, more, err = d.fetchXChinaCatalogPage(ctx, page, "", query)
+	case sourceTheporny:
+		items, more, err = d.fetchThepornyCatalogPage(ctx, page, "", query)
 	default:
 		// 短剧家族与自定义 MacCMS 源共用同一套搜索接口（isDuanjuProviderSource 已含自定义源）。
 		items, err = d.searchDuanju(ctx, source, query)

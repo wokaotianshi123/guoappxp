@@ -37,14 +37,16 @@ type Config struct {
 	GuipianURL       string
 	HanxiaoquanURL   string
 	// FanqieURL 是番茄内容引擎（本机 loopback REST）地址，留空用默认 127.0.0.1:18921。
-	FanqieURL        string
-	Token            string
-	AESKeyHex        string
-	InterfaceKey     string
-	ParamKey         string
-	ParamIV          string
-	APIBase          string
-	CDNURL           string
+	FanqieURL    string
+	XChinaURL    string
+	ThepornyURL  string
+	Token        string
+	AESKeyHex    string
+	InterfaceKey string
+	ParamKey     string
+	ParamIV      string
+	APIBase      string
+	CDNURL       string
 }
 
 type Downloader struct {
@@ -64,6 +66,10 @@ type Downloader struct {
 	hongguo               *hongguoAppClient
 	fanqieMu              sync.Mutex
 	fanqieFeeds           map[int]*fanqieFeedState
+	xchinaOnce            sync.Once
+	xchinaCore            *xchinaClient
+	thepornyOnce          sync.Once
+	thepornyCore          *thepornyClient
 	huangjuOnce           sync.Once
 	huangju               *huangjuAPIClient
 	yeguoOnce             sync.Once
@@ -151,22 +157,22 @@ type nativeCatalogResult struct {
 }
 
 type nativePlan struct {
-	ExpiresAt       int64             `json:"expiresAt,omitempty"`
-	PrefetchedBytes int64             `json:"prefetchedBytes,omitempty"`
-	DanmakuID       string            `json:"danmakuId,omitempty"`
-	Local           bool              `json:"local"`
-	URL             string            `json:"url"`
+	ExpiresAt       int64  `json:"expiresAt,omitempty"`
+	PrefetchedBytes int64  `json:"prefetchedBytes,omitempty"`
+	DanmakuID       string `json:"danmakuId,omitempty"`
+	Local           bool   `json:"local"`
+	URL             string `json:"url"`
 	// DirectURL 是站源返回的原始播放地址（未经本机中转）。投屏时优先用它，
 	// 让电视自己去拉流，手机退出 App 也不影响播放。只有不需要本机重写播放
 	// 列表、也不需要本机解密分片时才非空；本地文件与加密线路为空。
-	DirectURL       string            `json:"directUrl,omitempty"`
-	Headers         map[string]string `json:"headers"`
-	Key             string            `json:"decryptionKey,omitempty"`
-	Quality         int               `json:"quality"`
-	Qualities       []int             `json:"qualities"`
-	Session         string            `json:"session,omitempty"`
-	RouteIndex      int               `json:"routeIndex"`
-	RouteCount      int               `json:"routeCount"`
+	DirectURL  string            `json:"directUrl,omitempty"`
+	Headers    map[string]string `json:"headers"`
+	Key        string            `json:"decryptionKey,omitempty"`
+	Quality    int               `json:"quality"`
+	Qualities  []int             `json:"qualities"`
+	Session    string            `json:"session,omitempty"`
+	RouteIndex int               `json:"routeIndex"`
+	RouteCount int               `json:"routeCount"`
 }
 
 type nativeEngine struct {
@@ -711,6 +717,10 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		items, result.HasMore, err = d.fetchIkanbotCatalogPage(ctx, page, category, "")
 	case sourceA123:
 		items, result.HasMore, err = d.fetchA123CatalogPage(ctx, page, category, "")
+	case sourceXChina:
+		items, result.HasMore, err = d.fetchXChinaCatalogPage(ctx, page, category, "")
+	case sourceTheporny:
+		items, result.HasMore, err = d.fetchThepornyCatalogPage(ctx, page, category, "")
 	default:
 		// 短剧家族与自定义 MacCMS 源共用同一套目录抓取（isDuanjuProviderSource 已含自定义源）。
 		if isDuanjuProviderSource(source) {
@@ -768,6 +778,10 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
 	case sourceFanqie:
 		raw, chapters, err = engine.downloader.fetchFanqieDetail(ctx, sourceID)
+	case sourceXChina:
+		raw, chapters, err = engine.downloader.fetchXChinaDetail(ctx, sourceID)
+	case sourceTheporny:
+		raw, chapters, err = engine.downloader.fetchThepornyDetail(ctx, sourceID)
 	default:
 		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
 	}
