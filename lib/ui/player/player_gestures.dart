@@ -30,7 +30,13 @@ enum _Axis { none, horizontal, vertical }
 /// 单独抽出来是因为 [PlaybackSurface] 已经同时管着控制条、弹幕和弹窗焦点，
 /// 手势状态（起点、方向锁、抑制 tap）自成一套，混进去会很难读。
 class PlayerGestures extends ChangeNotifier {
-  PlayerGestures({required this.session, this.seekStep = 15}) {
+  PlayerGestures({
+    required this.session,
+    this.seekStep = 15,
+    this.brightnessZone = .5,
+    this.volumeSwipe = true,
+    this.requireHold = false,
+  }) {
     unawaited(
       AppDevice.getBrightness().then((value) {
         if (!_disposed) {
@@ -45,6 +51,25 @@ class PlayerGestures extends ChangeNotifier {
 
   /// 一次左右滑动快进/快退的秒数。
   final int seekStep;
+
+  /// 亮度手势生效的左侧区域占播放区宽度的比例。
+  ///
+  /// 竖屏播放器外层是纵向翻页（上下滑动切集），播放页据此判断长按点
+  /// 是否落在亮度区。
+  final double brightnessZone;
+
+  /// 右半屏上下滑动是否调音量。
+  ///
+  /// 竖屏播放器要保留「上下滑动切集」，所以传 false 关掉音量竖滑，
+  /// 免得一次翻页顺带把音量改掉。
+  final bool volumeSwipe;
+
+  /// 是否必须「长按之后」才允许上下滑动调亮度。
+  ///
+  /// 竖屏播放器的短促上下滑是切集，直接吃掉竖滑会把切集手势废掉；
+  /// 因此竖屏里先长按进入调节，再上下滑才改亮度。左右滑快进快退不受影响，
+  /// 因为纵向翻页本来就不认横向手势。
+  final bool requireHold;
 
   GestureHudState _hud = const GestureHudState();
   GestureHudState get hud => _hud;
@@ -62,6 +87,7 @@ class PlayerGestures extends ChangeNotifier {
   bool _moved = false;
   bool _leftZone = false;
   bool _brightnessMode = false;
+  bool _held = false;
   bool _disposed = false;
   _Axis _axis = _Axis.none;
   DateTime _ignoreTapUntil = DateTime(2000);
@@ -69,6 +95,19 @@ class PlayerGestures extends ChangeNotifier {
 
   /// 手势刚结束时为 true：此时抬手不应被当成「点按」去切换控制条。
   bool get suppressTap => DateTime.now().isBefore(_ignoreTapUntil);
+
+  /// [requireHold] 模式下，长按已开启本次手势的上下调节。
+  bool get _canAdjust => _held || !requireHold;
+
+  /// 长按开始：竖屏里先长按、再上下滑才调亮度，短促上下滑继续交给翻页切集。
+  void hold() {
+    if (_disposed || _held) return;
+    _held = true;
+    // 先亮一下当前亮度，让人知道现在上下滑有用。
+    if (AppDevice.brightnessSupported) {
+      _show(SwipeAction.brightness, _brightness);
+    }
+  }
 
   void pointerDown(
     PointerDownEvent event, {
@@ -95,7 +134,7 @@ class PlayerGestures extends ChangeNotifier {
     _leftZone =
         event.kind == PointerDeviceKind.touch &&
         width > 0 &&
-        event.localPosition.dx < width * .5;
+        event.localPosition.dx < width * brightnessZone;
     _brightnessStart = _brightness;
     _volumeStart = session.player.state.volume;
   }
@@ -124,6 +163,7 @@ class PlayerGestures extends ChangeNotifier {
       _axis = dx.abs() > dy.abs() ? _Axis.horizontal : _Axis.vertical;
       // 左侧竖滑进入亮度档后，本次手势不再改判。
       if (_axis == _Axis.vertical &&
+          _canAdjust &&
           _leftZone &&
           AppDevice.brightnessSupported) {
         _brightnessMode = true;
@@ -141,6 +181,8 @@ class PlayerGestures extends ChangeNotifier {
     }
 
     if (_axis == _Axis.vertical) {
+      // 竖屏播放器的右半屏竖滑属于「上下滑动切集」，这里不接管音量。
+      if (!volumeSwipe || !_canAdjust) return;
       // 竖向留一点死区，避免手指轻微抖动就把音量/亮度改掉。
       if (dy.abs() < _swipeThreshold) return;
       final ratio = dy / (_viewHeight * .6);
@@ -163,6 +205,9 @@ class PlayerGestures extends ChangeNotifier {
 
     if (_brightnessMode) {
       _dismissLater();
+    } else if (_hud.type == SwipeAction.brightness) {
+      // 长按后没怎么滑动就松手：只收起提示，亮度保持原样。
+      _dismiss();
     } else if (_moved && horizontal && _axis == _Axis.horizontal) {
       _seek(delta.dx > 0 ? seekStep : -seekStep);
       _dismiss();
@@ -228,6 +273,7 @@ class PlayerGestures extends ChangeNotifier {
     _last = null;
     _axis = _Axis.none;
     _brightnessMode = false;
+    _held = false;
   }
 
   /// 离开播放页时恢复窗口默认亮度。
