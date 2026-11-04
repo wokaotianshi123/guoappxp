@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
 import 'package:media_kit_video/media_kit_video.dart';
 
+import '../../app_device.dart';
 import '../../local_store.dart';
 import '../../models.dart';
 import '../../playback_session.dart';
@@ -18,9 +19,15 @@ import 'danmaku_overlay.dart';
 import 'episode_grid.dart';
 import 'playback_sheets.dart';
 import 'playback_handle.dart';
+import 'player_gestures.dart';
 import 'player_surface.dart';
 
 const _maskHeight = 68.0;
+
+/// 左侧亮度区的右边界（占播放区宽度），和横屏播放器的左半屏一致。
+///
+/// 最左侧五分之一仍然是「长按 2 倍速」，亮度从五分之一到一半之间生效。
+const _brightnessZone = .5;
 
 String _status(Drama drama) =>
     drama.releaseLabel == '状态未知' ? '' : '${drama.releaseLabel} · ';
@@ -55,6 +62,16 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   double? _seekTarget;
   Timer? _seekTimer;
 
+  /// 竖屏的滑动调亮度/快进快退，行为与横屏播放器一致；
+  /// 但竖屏短促的上下滑是切集，所以亮度要「长按后」才接管，
+  /// 右半屏竖滑也留给翻页，不再调音量。
+  late final PlayerGestures _gestures = PlayerGestures(
+    session: _session,
+    brightnessZone: _brightnessZone,
+    volumeSwipe: false,
+    requireHold: true,
+  );
+
   PlaybackSession get _session => widget.handle.session;
 
   @override
@@ -74,6 +91,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
     }
     _hintTimer?.cancel();
     _seekTimer?.cancel();
+    _gestures.dispose();
     _pages.dispose();
     super.dispose();
   }
@@ -186,7 +204,9 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   }
 
   void _pressStart(LongPressStartDetails details, double width) {
-    if (details.localPosition.dx < width / 5) {
+    final x = details.localPosition.dx;
+    if (x < width / 5) {
+      // 最左侧：沿用「长按临时 2 倍速、下滑松手锁定」。
       if (!_session.boostLocked) _session.holdBoost();
       unawaited(HapticFeedback.selectionClick());
       setState(() {
@@ -194,6 +214,12 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
         _heldIndex = _session.index;
         _overMask = false;
       });
+    } else if (x < width * _brightnessZone && AppDevice.brightnessSupported) {
+      // 左侧亮度区：长按后上下滑调亮度、左右滑快进快退；
+      // 短促的上下滑仍然是翻页切集，因为这里不抢手势、只等长按成立。
+      // 非 Android 没有窗口亮度能力，这里退回原来的「打开播放设置」。
+      _gestures.hold();
+      unawaited(HapticFeedback.selectionClick());
     } else {
       unawaited(HapticFeedback.selectionClick());
       unawaited(_openSettings());
@@ -330,15 +356,36 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
             ),
             LayoutBuilder(
               key: const ValueKey('gestures'),
-              builder: (context, constraints) => GestureDetector(
-                behavior: HitTestBehavior.opaque,
-                onTap: session.togglePlayback,
-                onLongPressStart: (details) =>
-                    _pressStart(details, constraints.maxWidth),
-                onLongPressMoveUpdate: _pressMove,
-                onLongPressEnd: (_) => _pressEnd(),
-                onLongPressCancel: _pressEnd,
-              ),
+              builder: (context, constraints) {
+                final width = constraints.maxWidth;
+                return Listener(
+                  onPointerDown: (event) => _gestures.pointerDown(
+                    event,
+                    width: width,
+                    height: constraints.maxHeight,
+                  ),
+                  onPointerMove: _gestures.pointerMove,
+                  onPointerUp: _gestures.pointerUp,
+                  onPointerCancel: _gestures.pointerCancel,
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTapUp: (_) {
+                      // 刚做完滑动/亮度手势时抬手的事件不应再被当成「点按」。
+                      if (_gestures.suppressTap) return;
+                      session.togglePlayback();
+                    },
+                    onLongPressStart: (details) =>
+                        _pressStart(details, width),
+                    onLongPressMoveUpdate: _pressMove,
+                    onLongPressEnd: (_) => _pressEnd(),
+                    onLongPressCancel: _pressEnd,
+                  ),
+                );
+              },
+            ),
+            AnimatedBuilder(
+              animation: _gestures,
+              builder: (context, _) => GestureHud(state: _gestures.hud),
             ),
           ],
         ],
