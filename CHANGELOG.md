@@ -2,6 +2,16 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.2.4+109
+
+本次修复网页源 / XBPQ 自定义源 / 爱看机器人 / A123 在播放页与详情页看不到剧集详情，并给竖屏播放器补上「简介」入口，Android / Windows / macOS / iOS / 本地服务版同步生效。
+
+### 改进
+- **竖屏播放器也能看剧集简介，且不打断全屏观看**：不新增任何常驻控件，底部原有的「选集」条文案改为「选集 · 简介」，点开后仍是同一个 60% 高度的底部面板，只把两个页签（选集 / 简介）放进原有标题行——面板高度、播放层、上下滑切集、长按亮度 / 2 倍速手势一律没动，面板只在主动点开时出现。`_EpisodeSheet` 抽成公共 `PlaybackDetailsSheet`（支持 `initialTab`、切页签时清掉下载多选态），横屏 `_intro` 抽成公共 `PlayerIntro`，横竖屏共用同一份简介渲染（片名、站源、集数、分类、追剧按钮、剧情简介，无简介显示「暂无简介」）。新增 `test/playback_details_sheet_test.dart` 4 个 widget 用例覆盖默认页签、简介内容 / 空简介、直接打开简介、下载入口只属于选集页。
+
+### 修复
+- `nativeDetail` 的 default 分支（网页源 / XBPQ 自定义源 / 爱看机器人 / A123 / 短剧家族 / 红果 / 黄豆）原先只从 `GetHuangguoChapters` 取标题，详情层已解析好的简介、封面、类型、标签全部丢弃，导致详情页简介区整块不渲染、横屏播放器「简介」Tab 显示「暂无简介」。`provider_huangguo.go` 新增 `GetHuangguoDetail` 统一返回完整 `Drama`（`GetHuangguoChapters` 变成它的薄封装，取流侧行为不变），`nativeDetail` 把它合并进返回结果；XBPQ 规则的「简介 / 影片名称 / 封面 / 类型 / 导演 / 主演」由此能一路传到播放器显示。`fetchA123Detail` 另补详情正文 / `meta description` 的简介兜底（解析不到就留空，不拿站点口号冒充剧情）。新增 4 个 Go 回归用例覆盖网页源详情透传、爱看机器人简介透传、XBPQ「简介」字段落到 `Drama.Desc`、A123 简介提取；`ikanbotSiteBaseURL` 由常量改为变量，便于用本地样本站点做回归。
+
 ## 1.2.3+108
 
 本次把首页默认站源恢复为红果，并带上安卓番茄播放与电视端顶栏焦点两处修复，Android / Windows / macOS / iOS / 本地服务版同步生效。

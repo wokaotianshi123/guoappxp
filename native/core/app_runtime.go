@@ -783,7 +783,11 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	case sourceTheporny:
 		raw, chapters, err = engine.downloader.fetchThepornyDetail(ctx, sourceID)
 	default:
-		title, chapters, err = engine.downloader.GetHuangguoChapters(ctx, source, sourceID)
+		// 必须拿完整 Drama：这些源（网页源 / XBPQ 自定义源 / 爱看机器人 /
+		// A123 / 短剧家族 / 红果 / 黄豆）的详情层解析出了简介、封面、类型等，
+		// 只取标题会让播放页简介与详情页资料区一直空白。
+		raw, chapters, err = engine.downloader.GetHuangguoDetail(ctx, source, sourceID)
+		title = raw.DisplayTitle()
 	}
 	if err != nil {
 		return nil, err

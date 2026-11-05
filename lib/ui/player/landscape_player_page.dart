@@ -10,7 +10,6 @@ import 'package:window_manager/window_manager.dart';
 
 import '../../app_device.dart';
 import '../../local_store.dart';
-import '../../models.dart';
 import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../app_scope.dart';
@@ -22,6 +21,7 @@ import 'episode_grid.dart';
 import 'playback_handle.dart';
 import 'player_gestures.dart';
 import 'playback_sheets.dart';
+import 'player_intro.dart';
 import 'player_surface.dart';
 
 enum _Panel { episodes, settings, speed, quality }
@@ -1204,7 +1204,11 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
               ),
             ),
           ),
-          Expanded(child: _tab == 0 ? _intro(context) : _episodes(context)),
+          Expanded(
+            child: _tab == 0
+                ? PlayerIntro(session: _session, store: widget.store)
+                : _episodes(context),
+          ),
         ],
       ),
     );
@@ -1249,66 +1253,6 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
           ],
         ),
       ),
-    );
-  }
-
-  Widget _intro(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final session = _session;
-    final drama = session.detail.drama;
-    final meta = [
-      SourceSite.byId(drama.source).name,
-      '共 ${session.detail.episodes.length} 集',
-      if (drama.releaseLabel != '状态未知') drama.releaseLabel,
-      if (drama.category.isNotEmpty) drama.category,
-    ];
-    final description = drama.description.trim();
-    return ListView(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Expanded(
-              child: Padding(
-                padding: const EdgeInsets.only(top: 8),
-                child: Text(
-                  drama.title,
-                  style: const TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.w800,
-                  ),
-                ),
-              ),
-            ),
-            Transform.translate(
-              offset: const Offset(8, 0),
-              child: FollowIcon(
-                store: widget.store,
-                drama: drama,
-                color: colors.onSurfaceVariant,
-                activeColor: colors.primary,
-                extent: 44,
-              ),
-            ),
-          ],
-        ),
-        Text(
-          meta.join(' · '),
-          style: TextStyle(fontSize: 13, color: colors.onSurfaceVariant),
-        ),
-        const SizedBox(height: 10),
-        Text(
-          description.isEmpty ? '暂无简介' : description,
-          style: TextStyle(
-            fontSize: 14,
-            height: 1.6,
-            color: description.isEmpty
-                ? colors.onSurfaceVariant
-                : colors.onSurface,
-          ),
-        ),
-      ],
     );
   }
 

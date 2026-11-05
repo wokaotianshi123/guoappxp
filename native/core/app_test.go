@@ -290,3 +290,171 @@ func TestHongguoDetailAndPlayableQuality(t *testing.T) {
 		t.Fatalf("wrong playable quality: %v", err)
 	}
 }
+
+// 网页源（含 XBPQ 自定义源）/ 爱看机器人 / A123 都走 nativeDetail 的
+// default 分支。以前这条分支只从 GetHuangguoChapters 拿标题，详情层已经
+// 解析出的简介被丢掉，播放页「简介」与详情页资料区一直是「暂无简介」。
+func TestNativeDetailKeepsWebSourceDescription(t *testing.T) {
+	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(writer, `<html><head><title>五五样本 - 在线观看</title>`+
+			`<meta name="description" content="网页源剧情简介"></head><body>`+
+			`<ul class="content__playlist playlink clearfix">`+
+			`<li><a href="/play/100-1-1.html">第1集</a></li>`+
+			`<li><a href="/play/100-1-2.html">第2集</a></li>`+
+			`</ul></body></html>`)
+	})
+	d.providerHosts[sourceWuguo] = server.URL
+	engine := &nativeEngine{
+		downloader: d,
+		directory:  t.TempDir(),
+		catalogs:   map[string][]nativeDrama{},
+	}
+	reply, err := engine.nativeDetail(context.Background(), nativeDrama{
+		ID: "wuguo:100", Source: sourceWuguo, SourceID: "100", Title: "五五样本",
+	})
+	if err != nil {
+		t.Fatalf("网页源详情失败: %v", err)
+	}
+	result, ok := reply.(map[string]any)
+	if !ok {
+		t.Fatalf("详情返回类型 = %T", reply)
+	}
+	drama, ok := result["drama"].(nativeDrama)
+	if !ok {
+		t.Fatalf("drama 字段类型 = %T", result["drama"])
+	}
+	if drama.Description != "网页源剧情简介" {
+		t.Fatalf("详情简介没传出来: %q", drama.Description)
+	}
+	if drama.Title != "五五样本" || drama.ID != "wuguo:100" {
+		t.Fatalf("详情身份被破坏: %+v", drama)
+	}
+	chapters, ok := result["chapters"].([]Chapter)
+	if !ok || len(chapters) != 2 {
+		t.Fatalf("分集丢失: %T %d", result["chapters"], len(chapters))
+	}
+	// 取流侧的旧接口仍然只要标题，不能被这次改造弄坏。
+	title, _, err := d.GetHuangguoChapters(context.Background(), sourceWuguo, "100")
+	if err != nil || title != "五五样本" {
+		t.Fatalf("GetHuangguoChapters 回归: %q %v", title, err)
+	}
+}
+
+// XBPQ 规则里的「简介」等详情字段必须落到 Drama.Desc / Intro，
+// 否则 nativeNormalize 拿不到内容，播放器显示层再怎么改也没用。
+func TestXBPQDetailIntroFeedsDrama(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(writer, `<html><body><h1>规则样本</h1>`+
+			`<div class="intro">这是规则里的剧情简介</div>`+
+			`<ul class="playlist">`+
+			`<li><a href="/play/1.html">第1集</a></li>`+
+			`<li><a href="/play/2.html">第2集</a></li>`+
+			`</ul></body></html>`)
+	}))
+	t.Cleanup(server.Close)
+	d := xbpqHeadersTestDownloader(t, server.Client())
+	rule, ok := parseXBPQRule(`{"主页url":"` + server.URL + `",` +
+		`"详情url":"` + server.URL + `/detail/{id}.html",` +
+		`"影片名称":"<h1>&&</h1>","简介":"<div class=\"intro\">&&</div>",` +
+		`"播放数组":"<ul class=\"playlist\">&&</ul>","播放列表":"</li>",` +
+		`"播放标题":">&&</a>","播放链接":"href=\"&&\""}`)
+	if !ok {
+		t.Fatal("测试规则解析失败")
+	}
+	drama, chapters, err := d.xbpqDetail(context.Background(), "custom:test", server.URL, "100", rule)
+	if err != nil {
+		t.Fatalf("XBPQ 详情失败: %v", err)
+	}
+	if len(chapters) != 2 {
+		t.Fatalf("XBPQ 分集数 = %d, 期望 2", len(chapters))
+	}
+	if drama.Desc != "这是规则里的剧情简介" || drama.Intro != drama.Desc {
+		t.Fatalf("规则「简介」没落到 Drama: Desc=%q Intro=%q", drama.Desc, drama.Intro)
+	}
+	if got := nativeNormalize(drama).Description; got != "这是规则里的剧情简介" {
+		t.Fatalf("nativeNormalize 丢掉简介: %q", got)
+	}
+}
+
+// A123 的 w4 模板没有专门的简介字段，兜底用详情正文 / meta description。
+func TestA123DetailExtractsIntro(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(writer, `<html><head>`+
+			`<meta name="description" content="A123 剧情简介内容"></head><body>`+
+			`<h1>样本影片</h1>`+
+			`<div class="w4-player" data-poster="https://img.test/p.jpg" `+
+			`data-title="样本影片 - HD国语 - 线路1" data-src="https://cdn.test/1.m3u8"></div>`+
+			`<div class="w4-episode-list">`+
+			`<a href="/v/sample-slug/1.html" title="第1集">第1集</a>`+
+			`<a href="/v/sample-slug/2.html" title="第2集">第2集</a>`+
+			`</div></body></html>`)
+	}))
+	t.Cleanup(server.Close)
+	previous := a123SiteBaseURL
+	a123SiteBaseURL = server.URL
+	t.Cleanup(func() { a123SiteBaseURL = previous })
+	d := xbpqHeadersTestDownloader(t, server.Client())
+	drama, chapters, err := d.fetchA123Detail(context.Background(), "sample-slug")
+	if err != nil {
+		t.Fatalf("A123 详情失败: %v", err)
+	}
+	if len(chapters) != 2 {
+		t.Fatalf("A123 分集数 = %d, 期望 2", len(chapters))
+	}
+	if got := nativeNormalize(drama).Description; got != "A123 剧情简介内容" {
+		t.Fatalf("A123 简介没取到: %q", got)
+	}
+}
+
+// 爱看机器人同样走 default 分支：它的详情层本来就解析出了简介，
+// 修复前被 GetHuangguoChapters 丢掉，播放器只显示「暂无简介」。
+func TestNativeDetailKeepsIkanbotDescription(t *testing.T) {
+	token := strings.Repeat("abcdef0123", 7)
+	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/api/getResN") {
+			writer.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(writer, `{"state":1,"data":{"list":[{"siteId":1,"id":1,`+
+				`"resData":"[{\"flag\":\"q1\",\"url\":\"第1集$https://cdn.test/1.m3u8`+
+				`#第2集$https://cdn.test/2.m3u8\"}]"}]}}`)
+			return
+		}
+		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
+		_, _ = io.WriteString(writer, `<html><body>`+
+			`<h1 id="video_title">爱看样本</h1>`+
+			`<input type="hidden" id="current_id" value="12345"/>`+
+			`<input type="hidden" id="e_token" value="`+token+`"/>`+
+			`<h3 class="meta">爱看机器人剧情简介</h3>`+
+			`</body></html>`)
+	}))
+	t.Cleanup(server.Close)
+	previous := ikanbotSiteBaseURL
+	ikanbotSiteBaseURL = server.URL
+	t.Cleanup(func() { ikanbotSiteBaseURL = previous })
+	d := xbpqHeadersTestDownloader(t, server.Client())
+	engine := &nativeEngine{
+		downloader: d, directory: t.TempDir(), catalogs: map[string][]nativeDrama{},
+	}
+	reply, err := engine.nativeDetail(context.Background(), nativeDrama{
+		ID: "ikanbot:12345", Source: sourceIkanbot, SourceID: "12345",
+	})
+	if err != nil {
+		t.Fatalf("爱看机器人详情失败: %v", err)
+	}
+	result, ok := reply.(map[string]any)
+	if !ok {
+		t.Fatalf("详情返回类型 = %T", reply)
+	}
+	drama, ok := result["drama"].(nativeDrama)
+	if !ok {
+		t.Fatalf("drama 字段类型 = %T", result["drama"])
+	}
+	if !strings.Contains(drama.Description, "爱看机器人剧情简介") {
+		t.Fatalf("爱看机器人简介没传出来: %q", drama.Description)
+	}
+	if len(result["chapters"].([]Chapter)) != 2 {
+		t.Fatalf("爱看机器人分集丢失: %v", result["chapters"])
+	}
+}

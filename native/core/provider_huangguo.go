@@ -246,62 +246,69 @@ func valueEmpty(v any) bool {
 	return s == "" || s == "0" || s == "<nil>"
 }
 
-func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID string) (string, []Chapter, error) {
-	switch canonicalProviderSource(source) {
+// GetHuangguoDetail 取站源详情页的完整剧集信息与分集。
+//
+// 以前这里只把标题透给 GetHuangguoChapters，nativeDetail 的 default 分支
+// 因此拿不到网页源 / XBPQ 自定义源 / 爱看机器人 / A123 解析出的简介、封面、
+// 类型和标签，播放页「简介」与详情页的资料区一直是空的。现在统一从这一层
+// 返回完整 Drama，其它调用方仍可只用标题。
+func (d *Downloader) GetHuangguoDetail(ctx context.Context, source, sourceID string) (Drama, []Chapter, error) {
+	source = canonicalProviderSource(source)
+	switch source {
 	case sourceHuangguoAI:
-		return d.fetchHuangguoAIChapters(ctx, sourceID)
+		return d.fetchHuangguoAIDetail(ctx, sourceID)
 	case sourceHuangguoVideo:
-		return d.fetchHuangguoVideoChapters(ctx, sourceID)
-	case sourceHuangdou:
-		return d.fetchHuangdouChapters(ctx, sourceID)
-	case sourceHongguo:
-		return d.fetchHongguoChapters(ctx, sourceID)
-	case sourceHuangju:
-		drama, chapters, err := d.fetchHuangjuDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
-	case sourceYeguo:
-		drama, chapters, err := d.fetchYeguoDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
-	case sourceDSD:
-		drama, chapters, err := d.fetchDSDDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
-	case sourceSorani:
-		drama, chapters, err := d.fetchSoraniDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
-	case sourceGuipian:
-		drama, chapters, err := d.fetchGuipianDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
-	case sourceHanxiaoquan:
-		drama, chapters, err := d.fetchHanxiaoquanDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
+		return d.fetchHuangguoVideoDetail(ctx, sourceID)
 	case sourceCloudFront:
-		return d.fetchLegacyChapters(ctx, sourceID)
+		return d.fetchLegacyDetail(ctx, sourceID)
+	case sourceHuangju:
+		return d.fetchHuangjuDetail(ctx, sourceID)
+	case sourceYeguo:
+		return d.fetchYeguoDetail(ctx, sourceID)
+	case sourceDSD:
+		return d.fetchDSDDetail(ctx, sourceID)
+	case sourceSorani:
+		return d.fetchSoraniDetail(ctx, sourceID)
+	case sourceGuipian:
+		return d.fetchGuipianDetail(ctx, sourceID)
+	case sourceHanxiaoquan:
+		return d.fetchHanxiaoquanDetail(ctx, sourceID)
 	case sourceIkanbot:
-		drama, chapters, err := d.fetchIkanbotDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
+		return d.fetchIkanbotDetail(ctx, sourceID)
 	case sourceFanqie:
-		drama, chapters, err := d.fetchFanqieDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
+		return d.fetchFanqieDetail(ctx, sourceID)
 	case sourceA123:
-		drama, chapters, err := d.fetchA123Detail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
+		return d.fetchA123Detail(ctx, sourceID)
 	case sourceXChina:
-		drama, chapters, err := d.fetchXChinaDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
+		return d.fetchXChinaDetail(ctx, sourceID)
 	case sourceTheporny:
-		drama, chapters, err := d.fetchThepornyDetail(ctx, sourceID)
-		return drama.DisplayTitle(), chapters, err
+		return d.fetchThepornyDetail(ctx, sourceID)
+	case sourceHuangdou:
+		title, chapters, err := d.fetchHuangdouChapters(ctx, sourceID)
+		return plainProviderDrama(source, sourceID, title), chapters, err
+	case sourceHongguo:
+		title, chapters, err := d.fetchHongguoChapters(ctx, sourceID)
+		return plainProviderDrama(source, sourceID, title), chapters, err
 	default:
 		if isDuanjuProviderSource(source) {
-			drama, chapters, err := d.fetchDuanjuDetail(ctx, source, sourceID)
-			return drama.DisplayTitle(), chapters, err
+			return d.fetchDuanjuDetail(ctx, source, sourceID)
 		}
-		return "", nil, fmt.Errorf("unsupported provider source: %s", source)
+	}
+	return Drama{}, nil, fmt.Errorf("unsupported provider source: %s", source)
+}
+
+// plainProviderDrama 只填身份与标题：红果 / 黄豆的分集接口不返回详情元数据，
+// 合并时 mergeNativeDrama 会保留目录里已有的简介、封面等资料。
+func plainProviderDrama(source, sourceID, title string) Drama {
+	return Drama{
+		ID: providerDramaID(source, sourceID), Source: source, SourceID: sourceID,
+		Title: title, Name: title,
 	}
 }
 
-func (d *Downloader) fetchHuangguoAIChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
-	drama, chapters, err := d.fetchHuangguoAIDetail(ctx, sourceID)
+// GetHuangguoChapters 保留原接口：取流侧只需要标题与分集。
+func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID string) (string, []Chapter, error) {
+	drama, chapters, err := d.GetHuangguoDetail(ctx, source, sourceID)
 	return drama.DisplayTitle(), chapters, err
 }
 
@@ -346,11 +353,6 @@ func (d *Downloader) fetchHuangguoAIDetail(ctx context.Context, sourceID string)
 	}
 	sortProviderChapters(chapters)
 	return drama, uniqueChapters(chapters), nil
-}
-
-func (d *Downloader) fetchHuangguoVideoChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
-	drama, chapters, err := d.fetchHuangguoVideoDetail(ctx, sourceID)
-	return drama.DisplayTitle(), chapters, err
 }
 
 func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {

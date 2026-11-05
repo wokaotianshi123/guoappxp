@@ -16,7 +16,7 @@ import '../downloads/download_actions.dart';
 import '../theme/app_theme.dart';
 import '../widgets/follow_button.dart';
 import 'danmaku_overlay.dart';
-import 'episode_grid.dart';
+import 'playback_details_sheet.dart';
 import 'playback_sheets.dart';
 import 'playback_handle.dart';
 import 'player_gestures.dart';
@@ -258,8 +258,9 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
 
   Future<void> _openEpisodes() => showPlayerSheet(
     context,
-    (_) => _EpisodeSheet(
+    (_) => PlaybackDetailsSheet(
       session: _session,
+      store: widget.store,
       canDownload:
           AppScope.of(context).repository.supportsDownloads &&
           widget.store.canDownload,
@@ -734,7 +735,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                 color: Colors.white,
               ),
               const Text(
-                '选集',
+                '选集 · 简介',
                 style: TextStyle(
                   color: Colors.white,
                   fontSize: 14,
@@ -823,128 +824,4 @@ class _Shade extends StatelessWidget {
       ),
     ),
   );
-}
-
-class _EpisodeSheet extends StatefulWidget {
-  const _EpisodeSheet({
-    required this.session,
-    required this.canDownload,
-    required this.onDownload,
-  });
-  final PlaybackSession session;
-  final bool canDownload;
-  final ValueChanged<List<int>> onDownload;
-
-  @override
-  State<_EpisodeSheet> createState() => _EpisodeSheetState();
-}
-
-class _EpisodeSheetState extends State<_EpisodeSheet> {
-  final _selected = <int>{};
-  bool _selecting = false;
-
-  PlaybackSession get _session => widget.session;
-
-  void _select(bool selecting) => setState(() {
-    _selecting = selecting;
-    _selected.clear();
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final episodes = _session.detail.episodes;
-    final drama = _session.detail.drama;
-    final colors = Theme.of(context).colorScheme;
-    final all = _selected.length == episodes.length;
-    return PopScope(
-      canPop: !_selecting,
-      onPopInvokedWithResult: (didPop, _) {
-        if (!didPop) _select(false);
-      },
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SheetHeader(
-            children: _selecting
-                ? [
-                    Expanded(
-                      child: Text(
-                        '已选 ${_selected.length} 集',
-                        style: sheetTitle,
-                      ),
-                    ),
-                    TextButton(
-                      onPressed: () => _select(false),
-                      child: const Text('取消'),
-                    ),
-                    TextButton(
-                      onPressed: () => setState(() {
-                        all
-                            ? _selected.clear()
-                            : _selected.addAll(
-                                List.generate(episodes.length, (i) => i),
-                              );
-                      }),
-                      child: Text(all ? '取消全选' : '全选'),
-                    ),
-                    FilledButton(
-                      onPressed: _selected.isEmpty
-                          ? null
-                          : () {
-                              final indexes = _selected.toList()..sort();
-                              Navigator.pop(context);
-                              widget.onDownload(indexes);
-                            },
-                      child: const Text('下载'),
-                    ),
-                  ]
-                : [
-                    const Text('选集', style: sheetTitle),
-                    Expanded(
-                      child: Text(
-                        '${_status(drama)}共 ${episodes.length} 集',
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ),
-                    if (widget.canDownload)
-                      IconButton(
-                        onPressed: () => _select(true),
-                        icon: const Icon(Icons.download_rounded),
-                        tooltip: '下载选集',
-                      ),
-                    IconButton(
-                      onPressed: () => Navigator.pop(context),
-                      icon: const Icon(Icons.close_rounded),
-                      tooltip: '关闭',
-                    ),
-                  ],
-          ),
-          Expanded(
-            child: ListenableBuilder(
-              listenable: _session,
-              builder: (context, _) => EpisodeGrid(
-                episodes: episodes,
-                current: _session.index,
-                selecting: _selecting,
-                selected: _selected,
-                touch: true,
-                onSelectionChanged: () => setState(() {}),
-                onPick: (index) {
-                  Navigator.pop(context);
-                  if (index != _session.index) {
-                    unawaited(_session.play(index));
-                  }
-                },
-              ),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
 }

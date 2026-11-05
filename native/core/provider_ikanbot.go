@@ -38,12 +38,14 @@ import (
 // 播放时把每条线路同名的那一集一起作为 providerMedia.Variants 交给播放层，
 // 这样播放器里的「播放线路」可以逐条切换，某条线路失效时不用重新解析。
 
+// 与 A123 等网页源一样留成变量：出包/测试时可指向本地样本站点。
+var ikanbotSiteBaseURL = "https://www1.ikanbot.com"
+
 const (
-	ikanbotSiteBaseURL = "https://www1.ikanbot.com"
-	ikanbotUserAgent   = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
-	ikanbotPageSize    = 36
-	ikanbotMaxLines    = 40
-	ikanbotLineTTL     = 10 * time.Minute
+	ikanbotUserAgent = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36"
+	ikanbotPageSize  = 36
+	ikanbotMaxLines  = 40
+	ikanbotLineTTL   = 10 * time.Minute
 )
 
 // 分类 ID 形如 "{kind}-{名称}"，与 /hot/index-{id}.html 一一对应。
