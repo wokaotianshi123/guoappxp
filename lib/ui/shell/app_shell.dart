@@ -53,6 +53,10 @@ class _AppShellState extends State<AppShell> {
   final _followEntry = FocusNode();
   final _mineEntry = FocusNode();
   final _header = FocusNode();
+  // 电视端顶栏最右两个按钮的焦点由宿主持有：它们要和三个标签按固定顺序
+  // 串成一行，不能完全依赖 Flutter 的几何方向遍历（中间隔着 Spacer 和源名）。
+  final _sourceFocus = FocusNode();
+  final _searchFocus = FocusNode();
   final _televisionTabs = GlobalKey();
   final _explore = GlobalKey<ExplorePageState>();
   var _tab = AppTab.explore;
@@ -99,6 +103,8 @@ class _AppShellState extends State<AppShell> {
     _followEntry.dispose();
     _mineEntry.dispose();
     _header.dispose();
+    _sourceFocus.dispose();
+    _searchFocus.dispose();
     _exitWindow?.cancel();
     _converter?.dispose();
     _downloads?.dispose();
@@ -118,6 +124,95 @@ class _AppShellState extends State<AppShell> {
     } else if (index != _tab.index) {
       _tabFocus[_tab.index].requestFocus();
     }
+  }
+
+  /// 顶栏这一行的遥控器顺序：发现 → 追剧 → 我的 → 切换站源 → 搜索。
+  /// 站源为空时 SourceBar 不渲染，两个按钮的 context 也就为空，自动出列。
+  List<FocusNode> get _televisionHeaderNodes => [
+    ..._tabFocus,
+    if (_sourceFocus.context != null) _sourceFocus,
+    if (_searchFocus.context != null) _searchFocus,
+  ];
+
+  /// 顶栏自己接管左右方向键。Flutter 的几何遍历跨过中间的 Spacer 时会挑到
+  /// 下面内容区的卡片，遥控器就再也走不到右上角两个按钮了。
+  KeyEventResult _televisionHeaderKey(FocusNode _, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final focus = FocusManager.instance.primaryFocus;
+    final nodes = _televisionHeaderNodes;
+    final index = focus == null ? -1 : nodes.indexOf(focus);
+    // 焦点在内容区时方向键归内容自己处理，顶栏只管自己这一行。
+    if (index < 0) return KeyEventResult.ignored;
+    if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
+      final entry = switch (_tab) {
+        AppTab.follow => _followEntry,
+        AppTab.mine => _mineEntry,
+        AppTab.explore => null,
+      };
+      if (entry?.context == null) return KeyEventResult.ignored;
+      revealFocus(entry!);
+      return KeyEventResult.handled;
+    }
+    final step = switch (event.logicalKey) {
+      LogicalKeyboardKey.arrowRight => 1,
+      LogicalKeyboardKey.arrowLeft => -1,
+      _ => 0,
+    };
+    if (step == 0) return KeyEventResult.ignored;
+    final next = (index + step).clamp(0, nodes.length - 1);
+    if (next != index) revealFocus(nodes[next]);
+    // 两端也吃掉按键，免得焦点掉进下面的内容区。
+    return KeyEventResult.handled;
+  }
+
+  /// 内容区最上一行继续按「上」时回到顶栏：按水平位置挑最近的一项，
+  /// 右侧内容可以直接落到源 / 搜索按钮；左侧仍回到当前选中的标签。
+  /// 只从「当前标签 + 两个按钮」里挑，避免被 _followFocus 拽回当前页。
+  void _exitUpToHeader() {
+    final focus = FocusManager.instance.primaryFocus;
+    final x = _focusCenterX(focus);
+    final candidates = [
+      _tabFocus[_tab.index],
+      if (_sourceFocus.context != null) _sourceFocus,
+      if (_searchFocus.context != null) _searchFocus,
+    ];
+    var best = candidates.first;
+    if (x != null) {
+      var distance = double.infinity;
+      for (final node in candidates) {
+        final center = _focusCenterX(node);
+        if (center == null) continue;
+        final delta = (center - x).abs();
+        if (delta < distance) {
+          distance = delta;
+          best = node;
+        }
+      }
+    }
+    revealFocus(best);
+  }
+
+  static double? _focusCenterX(FocusNode? node) {
+    final box = node?.context?.findRenderObject();
+    if (box is! RenderBox || !box.hasSize || !box.attached) return null;
+    return box.localToGlobal(Offset(box.size.width / 2, 0)).dx;
+  }
+
+  /// 发现页没有自己的「上」处理：这里兜底把焦点从内容送回顶栏。
+  KeyEventResult _televisionPageKey(FocusNode _, KeyEvent event) {
+    if (event is KeyUpEvent ||
+        event.logicalKey != LogicalKeyboardKey.arrowUp) {
+      return KeyEventResult.ignored;
+    }
+    final focus = FocusManager.instance.primaryFocus;
+    if (focus == null || _televisionHeaderNodes.contains(focus)) {
+      return KeyEventResult.ignored;
+    }
+    if (focus.focusInDirection(TraversalDirection.up)) {
+      return KeyEventResult.handled;
+    }
+    _exitUpToHeader();
+    return KeyEventResult.handled;
   }
 
   Future<void> _back() async {
@@ -155,14 +250,14 @@ class _AppShellState extends State<AppShell> {
     AppTab.follow => FollowPage(
       store: widget.store,
       entryFocus: _followEntry,
-      onExitUp: _tabFocus[AppTab.follow.index].requestFocus,
+      onExitUp: _exitUpToHeader,
     ),
     AppTab.mine => MinePage(
       store: widget.store,
       downloads: _downloads!,
       converter: _converter!,
       entryFocus: _mineEntry,
-      onExitUp: _tabFocus[AppTab.mine.index].requestFocus,
+      onExitUp: _exitUpToHeader,
     ),
   };
 
@@ -239,24 +334,18 @@ class _AppShellState extends State<AppShell> {
                       skipTraversal: true,
                       onFocusChange: (focused) =>
                           setState(() => _headerFocused = focused),
-                      onKeyEvent: (_, event) {
-                        final entry = switch (_tab) {
-                          AppTab.follow => _followEntry,
-                          AppTab.mine => _mineEntry,
-                          AppTab.explore => null,
-                        };
-                        if (event is KeyUpEvent ||
-                            event.logicalKey != LogicalKeyboardKey.arrowDown ||
-                            entry?.context == null) {
-                          return KeyEventResult.ignored;
-                        }
-                        revealFocus(entry!);
-                        return KeyEventResult.handled;
-                      },
+                      onKeyEvent: _televisionHeaderKey,
                       child: _televisionHeader(),
                     ),
                   ),
-                Expanded(child: pages),
+                Expanded(
+                  child: Focus(
+                    canRequestFocus: false,
+                    skipTraversal: true,
+                    onKeyEvent: _televisionPageKey,
+                    child: pages,
+                  ),
+                ),
               ],
             ),
           ),
@@ -284,13 +373,18 @@ class _AppShellState extends State<AppShell> {
       ],
     );
     final store = widget.store;
-    if (_tab != AppTab.explore || store.source.isEmpty) {
+    // 电视端只有这一条顶栏：切到「追剧 / 我的」后源与搜索按钮也必须常驻。
+    // 以前它们只在「发现」页渲染，焦点一离开发现标签，按钮就随 _tab 从树里
+    // 消失，遥控器往右再也走不过去，从内容区往上也没有可落脚的目标。
+    if (store.source.isEmpty) {
       return SizedBox(height: 48, child: tabs);
     }
     final source = SourceSite.byId(store.source);
     return SourceBar(
       source: source.name,
       televisionLeading: tabs,
+      sourceFocusNode: _sourceFocus,
+      searchFocusNode: _searchFocus,
       onSwitchSource: (anchor) => pickSource(anchor, store),
       onOpenSearch: () => openSearch(context, store, source),
       onSearchSubmitted: (query) =>

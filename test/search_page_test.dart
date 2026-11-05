@@ -62,8 +62,8 @@ void main() {
     final store = await openStore();
     await openSearchPage(tester, store);
 
-    // 红果鉴只带一个内置站源，跨源没有意义，不显示开关；
-    // 真果鉴本来就是为了跨源，即使只开了一个源也要留着入口。
+    // 红果鉴内置红果 + 番茄两个源，站源数大于 1 就该给「全部源」入口；
+    // 真果鉴本来就是为了跨源，即使只开了一个源也要留着它。
     final expected = allSourcesEnabled || store.sources.length > 1;
     expect(find.text('全部源'), expected ? findsOneWidget : findsNothing);
   });

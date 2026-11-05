@@ -174,6 +174,25 @@ void main() {
       }
     });
 
+    test('红果是首页默认站源，番茄仅作为可切换的内置源', () async {
+      final store = await openStore();
+      expect(SourceSite.defaultSource.id, 'hongguo');
+      expect(store.source, 'hongguo');
+      if (!allSourcesEnabled) {
+        // 红果鉴只保留这两个源，红果排在前才不会被番茄抢走默认位。
+        expect(store.sources.map((site) => site.id), ['hongguo', 'fanqie']);
+      }
+
+      // 番茄没有被删：切过去能用，重新读档后仍记得这次手动选择。
+      await store.setCatalogSource('fanqie', allSources: false);
+      expect(store.source, 'fanqie');
+      expect(restartStore(store).source, 'fanqie');
+
+      // 存档里的源失效时回落到默认主站源，而不是列表里随便一个。
+      await store.setSourceEnabled('fanqie', false);
+      expect(restartStore(store).source, 'hongguo');
+    });
+
     for (final source in ['huangdou', 'dsd']) {
       test('a restored $source user keeps identity across editions', () async {
         final store = await openStore({
@@ -198,8 +217,8 @@ void main() {
       SourceSite.values.map((site) => site.id),
       allSourcesEnabled
           ? SourceSite.allValues.map((site) => site.id)
-          // 红果鉴只有番茄与红果（红果新已移除）。
-          : ['fanqie', 'hongguo'],
+          // 红果鉴只留红果与番茄两个源，红果在前（默认主站源）。
+          : ['hongguo', 'fanqie'],
     );
     expect(SourceSite.isKnown('dsd'), isTrue);
     expect(SourceSite.isAvailable('dsd'), allSourcesEnabled);

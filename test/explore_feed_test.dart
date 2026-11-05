@@ -1,4 +1,3 @@
-import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/explore_feed.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/ranking_models.dart';
@@ -104,13 +103,14 @@ void main() {
     final explore = await _open(FakeRepository(), (value) async {
       store = value;
     });
+    expect(explore.source?.id, 'hongguo');
     await store.setSourceEnabled('hongguo', false);
     await pumpEventQueue();
-    // 关掉当前源后落到下一个可用源；具体落到哪个随站源清单变化
-    // （新增 A123、爱看机器人后就不再是韩小圈），因此按 store 自己的顺序取下一个。
+    // 关掉当前源后落到下一个可用源：红果鉴里就是内置的番茄（不再是「无源」）。
+    // 具体落到哪个随站源清单变化，因此按 store 自己的顺序取下一个。
     final fallback = store.sources.isEmpty ? null : store.sources.first.id;
-    expect(explore.source?.id, allSourcesEnabled ? fallback : null);
-    expect(explore.feed == null, !allSourcesEnabled);
+    expect(explore.source?.id, fallback);
+    expect(explore.feed == null, fallback == null);
 
     await store.setSourceEnabled('hongguo', true);
     await pumpEventQueue();

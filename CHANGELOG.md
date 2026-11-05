@@ -2,6 +2,20 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.2.3+108
+
+本次把首页默认站源恢复为红果，并带上安卓番茄播放与电视端顶栏焦点两处修复，Android / Windows / macOS / iOS / 本地服务版同步生效。
+
+### 改进
+- **红果鉴只保留红果 + 番茄两个内置源：红果是首页默认（主）站源，番茄仅作为内置源**。此前加入番茄时把它放在 `SourceSite.primaryValues` / `values` 的第一位，而 `LocalStore.source` 在没有存档时回落到「源列表第一个」，于是首页开场静默变成了番茄（也连累 6 个以红果为前提的首页测试失败）。现在两处清单都改成红果在前，并新增显式常量 `SourceSite.defaultSource`：`LocalStore.source` 优先取它，只有该源被用户在站源管理里关掉、或用户已保存过其它选择时才用别的源。用户手动切到番茄的选择照旧保留；番茄仍可在「全部站源」里切换、在站源管理里开关、参与「全部源」搜索。真果鉴（`--dart-define=ALL_SOURCES=true`）仍带全部站源，同样以红果开场。站源裁剪与本地服务版冒烟自检（`红果鉴 == {hongguo, fanqie}`）不变。
+
+### 修复
+- 安卓端番茄源「暂时无法播放 / 番茄内容引擎未就绪」：真机上引擎 `/health` 返回 200、Dart 直连也通，只有 Go 侧的统一传输（浏览器指纹 + CDN 择优 + 系统代理 + 连接池 + 限速重试）在进程内环境失败。`provider_fanqie.go` 新增 `fanqieLocalClient`（不查代理、`DisableKeepAlives`、5s 拨号 / 30s 总超时）与 `fanqieDirectText`；`fanqieFetchText` 先走统一传输，失败后直连重试一次，成功则用 `fanqieDirectPreferred` 记住「优先直连」，两条都失败时把两侧原始错误一起抛出。Dart 侧 `describeNow()` 现查端口与 `/health`，无论是否 200 都附 `fanqie_engine.log` 最后一行（Rust panic 只写这里，安卓无 logcat）；提示文案保留 Go 原始错误并带上失败的 `action`。
+- 电视端顶栏遥控器走不到右上角「切换站源」「搜索」：原 `_televisionHeader()` 只在发现页渲染 `SourceBar`，焦点右移触发 `_followFocus` 切页后按钮就从树里消失。现在 TV 顶栏常驻，宿主持有 `_sourceFocus` / `_searchFocus`，顶栏接管左右键按「发现 → 追剧 → 我的 → 源 → 搜索」确定性移动，两端吃掉按键；新增 `_exitUpToHeader()`，从内容区按上键按水平中心就近回到当前标签 / 源 / 搜索。`bar_button.dart` / `source_bar.dart` 增加可选 `focusNode` 透传。Android TV 与 Windows TV 共用 `AppShell`，两端同时生效。
+
+### 测试
+- 新增 `test/app_shell_tv_focus_test.dart`（3 个 widget 用例：切页后按钮常驻、右键顺序、从内容连按上键回顶栏）与 `test/local_store_access_test.dart` 的「红果是首页默认站源，番茄仅作为可切换的内置源」；新增 4 个 Go 用例覆盖直连兜底、非 2xx、绕过代理。更新 `explore_feed_test.dart` 中「关掉红果后落到番茄」的旧断言（原先假设红果鉴关掉红果就无源），并修正 `local_store_access_test.dart` 的源清单顺序、`search_page_test.dart` 的注释。
+
 ## 1.2.2+107
 
 本次只改出包流程，运行时代码零改动；Android / Windows / macOS / iOS / 本地服务版的行为与 1.2.1 完全一致。

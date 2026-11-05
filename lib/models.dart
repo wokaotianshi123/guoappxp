@@ -45,6 +45,13 @@ class SourceSite {
 
   static const hongguo = SourceSite('hongguo', '红果', '短剧 · 漫剧 · AI 剧');
 
+  /// 首页默认（主）站源。
+  ///
+  /// 番茄只是随包内置的第二个源，用户要在「全部站源」里手动切换才会用到它；
+  /// 不能靠「列表第一个」来定默认，否则以后往 `primaryValues` 前面加源时，
+  /// 首页开场会莫名其妙变成新源。
+  static const defaultSource = hongguo;
+
   /// 番茄：内容来自番茄短剧，由本机内嵌的番茄内容引擎（127.0.0.1:18921）提供。
   static const fanqie = SourceSite('fanqie', '番茄', '番茄短剧 · 漫剧 · 在线搜索');
 
@@ -99,8 +106,8 @@ class SourceSite {
   };
 
   static const primaryValues = [
-    fanqie,
     hongguo,
+    fanqie,
     a123,
     ikanbot,
     hanxiaoquan,
@@ -122,7 +129,10 @@ class SourceSite {
   ];
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
-  static const values = allSourcesEnabled ? knownValues : [fanqie, hongguo];
+  /// 红果鉴（非全站源版）只带红果与番茄两个内置源：红果是默认主站源，
+  /// 番茄仅作为内置源保留（可在站源切换 / 站源管理 / 全部源搜索里使用）。
+  /// 真果鉴（`--dart-define=ALL_SOURCES=true`）才展开全部站源。
+  static const values = allSourcesEnabled ? knownValues : [hongguo, fanqie];
 
   /// 当前会话已注册的自定义源 ID，供可用性判断与站源归一化使用。
   static final Set<String> customIds = {};

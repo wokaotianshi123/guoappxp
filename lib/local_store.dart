@@ -421,9 +421,14 @@ class LocalStore extends ChangeNotifier {
   String get source {
     if (locked) return '';
     final value = _string(_key('source')) ?? '';
-    return sources.any((site) => site.id == value)
-        ? value
-        : sources.firstOrNull?.id ?? '';
+    final available = sources;
+    if (available.any((site) => site.id == value)) return value;
+    // 没有存档（或存档里的源已不可用）时用显式的默认主站源，不要再依赖
+    // 「列表第一个」：以后往源清单前面插新源，首页默认会跟着悄悄变。
+    if (available.any((site) => site.id == SourceSite.defaultSource.id)) {
+      return SourceSite.defaultSource.id;
+    }
+    return available.firstOrNull?.id ?? '';
   }
 
   DownloadPreferences get downloadPreferences {

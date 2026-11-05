@@ -14,6 +14,8 @@ class SourceBar extends StatelessWidget {
     required this.onSearchSubmitted,
     this.searchController,
     this.televisionLeading,
+    this.sourceFocusNode,
+    this.searchFocusNode,
     this.actions = const [],
   });
   final String source;
@@ -22,6 +24,9 @@ class SourceBar extends StatelessWidget {
   final ValueChanged<String> onSearchSubmitted;
   final TextEditingController? searchController;
   final Widget? televisionLeading;
+  /// 电视端顶栏两个按钮的焦点节点；宿主按顺序串起整行遥控器导航。
+  final FocusNode? sourceFocusNode;
+  final FocusNode? searchFocusNode;
   final List<Widget> actions;
 
   @override
@@ -32,12 +37,14 @@ class SourceBar extends StatelessWidget {
       builder: (anchor) => BarButton(
         icon: Icons.public_rounded,
         tooltip: '切换站源',
+        focusNode: sourceFocusNode,
         onPressed: () => onSwitchSource(anchor),
       ),
     );
     final search = BarButton(
       icon: Icons.search_rounded,
       tooltip: hint,
+      focusNode: searchFocusNode,
       onPressed: onOpenSearch,
     );
     return switch (form) {

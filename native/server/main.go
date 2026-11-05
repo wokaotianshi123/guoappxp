@@ -54,7 +54,9 @@ var mediaPort atomic.Value
 
 var localMediaAddress = regexp.MustCompile(`http://(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)/`)
 
-// 与 lib/models.dart 的 allValues 保持同一顺序，名称与 Flutter 端一致。
+// 站源 ID → 显示名，同时决定 /api/sources 下拉框的顺序：红果在前，
+// 与 Flutter 端 SourceSite.defaultSource 及网页端 state.source 的默认站源一致。
+// 名称与 Flutter 端保持一致；后续顺序不必与 SourceSite.allValues 逐一对应。
 var sourceNames = []struct {
 	ID   string
 	Name string
