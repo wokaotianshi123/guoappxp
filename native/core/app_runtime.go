@@ -143,6 +143,7 @@ type nativeInput struct {
 	Sequence        int64                   `json:"sequence"`
 	Force           bool                    `json:"force"`
 	AdBlock         *bool                   `json:"adBlock"`
+	Account         soraniAccountInput      `json:"account"`
 }
 
 type nativeCatalogResult struct {
@@ -353,6 +354,9 @@ func NativeRequest(raw string) (result string) {
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
+		if errors.Is(err, errSoraniLoginRequired) || errors.Is(err, errSoraniLoginExpired) {
+			envelope["code"] = "source_login"
+		}
 		var backoff *requestBackoff
 		if errors.As(err, &backoff) {
 			envelope["code"] = "source_blocked"
@@ -540,6 +544,12 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。
 	case "sourceStatus":
 		return map[string]any{"source": canonicalProviderSource(input.Source), "available": true}, nil
+	// 启动时先注册红果主设备与辅助设备；command == "register" 是用户显式重试，
+	// 会忽略上一次失败留下的暂停窗口。
+	case "hongguoDevices":
+		return engine.hongguoDevices(ctx, input.Command == "register")
+	case "soraniAccount":
+		return engine.downloader.soraniAccount(ctx, input.Command, input.Account)
 	case "addCustomSource":
 		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
 		if err != nil {

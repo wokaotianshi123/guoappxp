@@ -51,7 +51,7 @@ func isHongguoProviderURL(rawURL string) bool {
 		return false
 	}
 	switch strings.ToLower(parsed.Hostname()) {
-	case "hongguoduanju.com", "www.hongguoduanju.com", "djapi.999888456.xyz":
+	case "hongguoduanju.com", "www.hongguoduanju.com":
 		return true
 	}
 	return false

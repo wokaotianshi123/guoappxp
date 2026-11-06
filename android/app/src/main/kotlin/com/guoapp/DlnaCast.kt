@@ -1,4 +1,4 @@
-package com.duanju.duanju_app
+package com.guoapp
 
 import android.content.Context
 import android.net.wifi.WifiManager

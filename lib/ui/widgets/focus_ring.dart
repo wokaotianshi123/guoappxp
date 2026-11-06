@@ -566,8 +566,12 @@ class FocusPill extends StatelessWidget {
 }
 
 class TileFocus extends StatefulWidget {
-  const TileFocus({super.key, required this.builder});
+  const TileFocus({super.key, required this.builder, this.autofocus = false});
   final Widget Function(FocusNode focusNode) builder;
+
+  /// 仅在电视模式下生效：进入页面时把焦点直接交给这一行。
+  /// 只请求一次，之后本行状态更新（例如退出登录）不会重新抢焦点。
+  final bool autofocus;
 
   @override
   State<TileFocus> createState() => _TileFocusState();
@@ -575,6 +579,7 @@ class TileFocus extends StatefulWidget {
 
 class _TileFocusState extends State<TileFocus> {
   final _focusNode = FocusNode();
+  var _autofocusRequested = false;
 
   @override
   void initState() {
@@ -592,6 +597,16 @@ class _TileFocusState extends State<TileFocus> {
 
   @override
   Widget build(BuildContext context) {
+    if (widget.autofocus &&
+        !_autofocusRequested &&
+        AppScope.of(context).television) {
+      _autofocusRequested = true;
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (mounted && !_focusNode.hasPrimaryFocus) {
+          _focusNode.requestFocus();
+        }
+      });
+    }
     final tile = widget.builder(_focusNode);
     if (!AppScope.of(context).television) return tile;
     return Theme(

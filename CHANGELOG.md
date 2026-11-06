@@ -2,6 +2,32 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.2.6+111
+
+把另一条分叉分支上的 10 项改动整体移植过来（青空登录、大屏缩放、野果 / 黄果 AI 接口改版、红果设备注册门禁、包名统一、Windows 辅助功能、Flutter 3.47.9、音量记忆）。合并时保留了本分支独有的番茄源、直播、XBPQ / 自定义源、TV 播放器线路 / 选集、投屏与本地服务版等能力，没有整仓覆盖。Android / Windows / macOS / iOS / 本地服务版同步生效。
+
+> ⚠️ **包名已更换**：红果鉴 `com.guoapp.phoenix`、真果鉴 `com.guoapp.all`（Android / iPhone / iPad / macOS 统一）。旧版 `com.duanju.*` 不会被识别为同一个应用，需要手动卸载旧版再装；原有设置、追剧、观看与下载记录不会自动迁移。两个变体现在可以同时安装。
+
+### 改进
+- **青空次元登录后才能播放**：设置 › 站源新增「站源账号」，可用用户名或邮箱 + 密码登录，先拖动滑块完成安全验证，没有账号可点链接到浏览器注册。登录状态写在本机 `sorani-session.json`，访问令牌过期前用 refresh token 自动续期。登录状态对这台设备上的所有用户生效，登录 / 退出不限制管理员身份。`nativeInput.account` 新增 `soraniAccount` RPC（status / captcha / login / logout），Go 侧取流时带 `Authorization: Bearer`，接口明确要求登录时返回 `source_login` 错误码，播放页原来的「重试」变成「去登录」，登录成功自动重新取流播放。电视上可用遥控器左右键移动拼图块、确定键验证；输入用户名按「完成」或回车直接跳到密码框，进入账号页焦点落在青空账号上，退出登录后焦点不丢。Android 输入法桥补上 `password` / `url` / `maxLength` / `IME_ACTION_DONE` 参数，密码框不再显示明文、回车键显示「完成」。
+- **4K~6K 大屏整体缩放（#73）**：Android 逻辑短边超过 `1000dp` 时，`attachBaseContext()` 用 `createConfigurationContext` 把 `densityDpi` 等比放大到接近平板尺寸（`TARGET_CANVAS_DP = 720`），布局仍按平板 / 电视排列；手机、平板不受影响。Manifest 的 `configChanges` 补 `density|uiMode`，保证运行中切换深色模式、字体大小、语言时不会重建 Activity 丢掉缩放。已在模拟大屏验证，未上真实车机 / 电视。
+- **黄果 AI 改用站点接口**：分类列表、详情与分集、播放地址、热播 / 推荐 / 潜力榜都改读站点 `/api/edge/request` 包装的接口数据，不再解析 HTML；搜索改为在线全站搜索并支持翻页。已有追剧 / 下载记录照常可用。新增 `provider_huangguo_api.go` 统一封装 envelope（`method` / `path` / `body` / `content_type`），`fetchProviderRequest` 支持 POST JSON；`app_categories.go` / `app_cover_metadata.go` / `provider_rankings.go` / `provider_media.go` / `app_search_across.go` 分别接入，同时保留本分支独有的跨源聚合搜索分发。
+- **黄果 AI 新线路（#7）**：主线路之外新增 `lbvrhyir.cc`、`xxbgwypx.cc`，与 `ediayikma.cc`、`agdkczeyx.cc` 一起组成镜像域名池；`providerURLCandidates()` 主站连不上时依次换线，随机备用线路在这几个域名间轮换，不再只用一个域名。这是开发快照里的改动，未在 App 内对真实站点验证。
+- **Windows 辅助功能闪退（#67）**：`flutter_window.cpp` 用 `SetWindowSubclass` 拦下 `WM_GETOBJECT` 并交给 `DefWindowProc`，不再向输入法 / 划词翻译 / 读屏软件提供应用内控件信息，只能读到窗口本身；链接 `comctl32.lib`。各平台播放器的进度条 / 音量条统一改用 `ContainedSlider`（单一规范 `Semantics(slider: true)` + 内层 `ExcludeSemantics`），不再打乱系统辅助功能信息。
+- **升级 Flutter 3.47.9**：CI 的 `flutter-version` 与本地 SDK 保持一致；HTTPS 不再信任已被攻破的 eMudhra 中间证书，Android 14+ 改用系统可更新根证书库，并带上官方修复的 Windows 正式版卡死问题。`ffmpeg_kit_flutter_new_min_gpl` 同步 `2.6.2` → `2.6.7`（`pubspec.lock` 的 sha256 一并更新）。
+- **包名统一**：`BuildVariant.bundle_identifier` 成为单一来源，Android `applicationId` / `namespace`、iOS `AppVariant.xcconfig` + `Info.plist` 的 `$(APP_DISPLAY_NAME)`、macOS `AppInfo.xcconfig`、Windows `Runner.rc` 与打包脚本全部对齐到 `com.guoapp.phoenix` / `com.guoapp.all`；iPhone / iPad 上真果鉴桌面名称不再显示「红果鉴」。Kotlin 源码迁到 `com/guoapp/`，方法通道名（`duanju/cast`、`duanju/text_input`）保持不变，B 独有的 `FanqieEngine` / `libfanqie_shim.so` / `GeneratedPluginRegistrant` 引用保留。
+
+### 修复
+- **野果站点改版（#3）**：站点把接口地址写进脚本（「当前线路下的接口地址取数据」），新增 `yeguoScriptAPIBase()` 从脚本里按当前页面 origin 解析，不再只认固定 API 域名。线路改为 `attract.vgbyziuz.cc` → `as.vgbyziuz.cc` → `anyway.vgbyziuz.cc`，原 `analyze.buxefaex.cc` 留作最后备用，主线路连不上依次切换。
+- **红果取流与设备注册**：去掉已失效的第三方备用取流接口，App 与网页两条取流都失败时直接报错，不再多等一次请求，报错里也不会再出现备用接口的连接错误。设备注册遇到网络波动 / 超时不再锁 10 分钟，下次请求直接重试；只有服务端明确拒绝注册时才暂停，并把被拒绝的原因带进提示。
+- **首次启动设备门禁**：关掉检查更新提示后先弹「正在注册设备...」，红果主设备与辅助设备都注册成功才自动关闭，之后才加载推荐；失败时显示原因，可「重试」或「网络设置」改代理，不能跳过。已注册过的设备直接进；旧版升级后弹一次，只补注册辅助设备。`hongguoDevices` RPC（`command: register` 表示用户显式重试、忽略暂停窗口）与 `HelperRegistered` 状态一并落地。
+- **播放器记住上次的音量（#61）**：电脑和手机全屏播放时调过的音量存到本机 `playerVolume`，换剧 / 重启后不再跳回 100%；写入做 500ms 防抖、`dispose()` 时补写。静音（0）不记档，下次恢复到 1% 而不是无声。电视与手机滑动调的是本次观看的临时音量（对应系统媒体音量），走 `setVolume(..., persist: false)`，不写存档。
+- **青空播放报错**：未登录 / 登录失效不再笼统提示「暂无可用播放地址」，直接给出「需要登录 / 登录已失效」并引导去登录。
+
+### 测试
+- Go：`provider_sorani_account_test.go`（登录、滑块校验、自动续期、过期与退出）、`provider_huangguo_api_test.go`（线路覆盖、详情 / 取流走 edge envelope、搜索翻页）、`app_hongguo_devices_test.go`（双设备注册持久化、升级只补辅助设备、显式重试忽略暂停）、`provider_yeguo_client_test.go`（当前线路脚本识别、备用线路切换）。同时把 `app_cache_test.go` / `app_catalog_persistence_test.go` / `app_sources_test.go` 的 HTTP 桩改成解析 edge envelope 与 `{"status":1,"data":...}` 响应，避免新接口打到旧桩上。
+- Dart：`test/playback_session_test.dart` 补音量记忆 4 例与 `source_login` 失败态 1 例（合计 34 例全通过），`test/local_store_test.dart` 补 `playerVolume` 存取（25 例全通过），`test/sorani_account_access_test.dart` 锁定「站源账号页不限制管理员、登录入口对所有用户可用」与「电视进入账号页焦点落在青空账号、退出登录后焦点不丢」；`TileFocus` / `SettingsTile` 新增仅电视模式生效的 `autofocus`，只有青空账号行使用，其它设置行不受影响。`dart analyze lib test` 无问题，全量 `flutter test --no-pub` 168 例全过，`go test ./...` / `go vet ./...` 通过。
+
 ## 1.2.5+110
 
 本次补齐 Android TV / Windows TV 播放器的「线路」与「选集」入口，并修掉电视端明明已经加载成功却反复重新解析地址、最后判定播放失败的问题，Android / Windows / macOS / iOS / 本地服务版同步生效。

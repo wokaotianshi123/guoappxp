@@ -494,4 +494,15 @@ void main() {
       },
     );
   });
+
+  group('player volume', () {
+    test('defaults to 100 and survives a restart', () async {
+      final store = await openStore();
+      expect(store.playerVolume, 100);
+
+      await store.setPlayerVolume(37.5);
+      expect(store.playerVolume, 37.5);
+      expect(restartStore(store).playerVolume, 37.5);
+    });
+  });
 }

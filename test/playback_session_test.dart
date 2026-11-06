@@ -20,6 +20,7 @@ class _PlaybackRepository extends FakeRepository {
   final preloadedRoutes = <int>[];
   var fallbacks = 0;
   var resolveFailure = '';
+  var resolveFailureCode = '';
   var routeLimit = 2;
   var _sessions = 0;
 
@@ -45,7 +46,9 @@ class _PlaybackRepository extends FakeRepository {
   }) async {
     resolved.add((episode: episode.number, quality: quality));
     resolvedRoutes.add(route);
-    if (resolveFailure.isNotEmpty) throw AppFailure(resolveFailure);
+    if (resolveFailure.isNotEmpty) {
+      throw AppFailure(resolveFailure, code: resolveFailureCode);
+    }
     return _plan(route: route);
   }
 
@@ -341,6 +344,27 @@ void main() {
 
     repository.resolveFailure = '';
     await session.retry();
+    expect(session.error, isNull);
+    expect(session.ready, isTrue);
+    expect(player.opened, hasLength(1));
+  });
+
+  test('a source_login failure shows 去登录 and clears after retry', () async {
+    final repository = _PlaybackRepository()
+      ..resolveFailure = '青空次元需要登录后才能播放'
+      ..resolveFailureCode = 'source_login';
+    final store = await openStore();
+    final (session, player) = await _open(repository, store);
+
+    expect(session.ready, isFalse);
+    expect(session.loginRequired, isTrue);
+    expect(session.localFailure, isFalse);
+    expect(session.error, '青空次元需要登录后才能播放');
+
+    repository.resolveFailure = '';
+    repository.resolveFailureCode = '';
+    await session.retry();
+    expect(session.loginRequired, isFalse);
     expect(session.error, isNull);
     expect(session.ready, isTrue);
     expect(player.opened, hasLength(1));
@@ -677,5 +701,60 @@ void main() {
       );
     }
     expect(silent.sawProgress, isFalse);
+  });
+
+  group('player volume memory', () {
+    test('a new session restores the volume saved by the previous one', () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore({'playerVolume': 42.0});
+      final (session, player) = await _open(repository, store);
+      expect(player.state.volume, 42.0);
+      expect(store.playerVolume, 42.0);
+    });
+
+    test('clamps a saved mute to a quiet but audible volume', () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore({'playerVolume': 0.0});
+      final (_, player) = await _open(repository, store);
+      expect(player.state.volume, 1.0);
+    });
+
+    test('volume changes are debounced and persisted, mute never is', () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore();
+      final (session, player) = await _open(repository, store);
+      expect(store.playerVolume, 100);
+
+      session.setVolume(65);
+      expect(player.state.volume, 65);
+      expect(store.playerVolume, 100, reason: '防抖窗口内还没落盘');
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await pumpEventQueue();
+      expect(store.playerVolume, 65);
+
+      // 静音（0）不进入存档；解除静音也不该写 0。
+      session.setVolume(0);
+      session.toggleMute();
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await pumpEventQueue();
+      expect(store.playerVolume, 65);
+
+      // 滑动调节（系统媒体音量语义）不写存档。
+      session.setVolume(88, persist: false);
+      await Future<void>.delayed(const Duration(milliseconds: 600));
+      await pumpEventQueue();
+      expect(store.playerVolume, 65);
+      expect(player.state.volume, 88);
+    });
+
+    test('disposing flushes a pending volume write', () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore();
+      final (session, _) = await _open(repository, store);
+      session.setVolume(23);
+      _close(session);
+      await pumpEventQueue();
+      expect(store.playerVolume, 23);
+    });
   });
 }

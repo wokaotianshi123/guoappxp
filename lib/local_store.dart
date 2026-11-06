@@ -411,6 +411,10 @@ class LocalStore extends ChangeNotifier {
   bool get sideBarExpanded => preferences.getBool('sideBarExpanded') ?? true;
   bool get playerWide => preferences.getBool('playerWide') ?? false;
 
+  /// 上次在电脑 / 手机全屏播放时调过的播放器音量（0~100，默认 100）。
+  /// 静音不写入，所以这里永远不会是 0；电视端不提供音量控件。
+  double get playerVolume => preferences.getDouble('playerVolume') ?? 100;
+
   /// 电视端搜索框是否用内置字母键盘（按拼音首字母搜）而不是系统输入法。
   ///
   /// 默认关闭：大多数电视有可用的系统输入法，字母键盘只是小米这类按确认键
@@ -591,6 +595,9 @@ class LocalStore extends ChangeNotifier {
   Future<void> setPlayerWide(bool value) => _queue(() async {
     await preferences.setBool('playerWide', value);
     _notify();
+  });
+  Future<void> setPlayerVolume(double value) => _queue(() async {
+    await preferences.setDouble('playerVolume', value);
   });
   Future<void> setTelevisionKeyboard(bool value) => _queue(() async {
     await preferences.setBool('televisionKeyboard', value);

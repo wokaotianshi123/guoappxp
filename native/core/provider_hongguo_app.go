@@ -30,13 +30,14 @@ type hongguoCatalogCursor struct {
 }
 
 type hongguoCatalogState struct {
-	Version         int                             `json:"version"`
-	DeviceID        string                          `json:"deviceId"`
-	InstallID       string                          `json:"installId"`
-	Registered      bool                            `json:"registered,omitempty"`
-	HelperDeviceID  string                          `json:"helperDeviceId,omitempty"`
-	HelperInstallID string                          `json:"helperInstallId,omitempty"`
-	Feeds           map[string]hongguoCatalogCursor `json:"feeds"`
+	Version          int                             `json:"version"`
+	DeviceID         string                          `json:"deviceId"`
+	InstallID        string                          `json:"installId"`
+	Registered       bool                            `json:"registered,omitempty"`
+	HelperDeviceID   string                          `json:"helperDeviceId,omitempty"`
+	HelperInstallID  string                          `json:"helperInstallId,omitempty"`
+	HelperRegistered bool                            `json:"helperRegistered,omitempty"`
+	Feeds            map[string]hongguoCatalogCursor `json:"feeds"`
 }
 
 type hongguoAppClient struct {
@@ -44,6 +45,7 @@ type hongguoAppClient struct {
 	catalogMu           sync.Mutex
 	deviceMu            sync.Mutex
 	registerPausedUntil time.Time
+	registerPauseErr    error
 	baseURL             string
 	state               hongguoCatalogState
 	details             map[string]hongguoDetailEntry
@@ -91,7 +93,7 @@ func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) 
 	}
 	cloned := cloneHongguoCatalogState(state)
 	if !hongguoNumericID.MatchString(cloned.HelperDeviceID) || !hongguoNumericID.MatchString(cloned.HelperInstallID) {
-		cloned.HelperDeviceID, cloned.HelperInstallID = newHongguoDeviceID(), newHongguoDeviceID()
+		cloned.HelperDeviceID, cloned.HelperInstallID, cloned.HelperRegistered = newHongguoDeviceID(), newHongguoDeviceID(), false
 	}
 	for name, cursor := range cloned.Feeds {
 		known := false
@@ -154,8 +156,9 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 	comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 	helper, _ := ctx.Value(hongguoHelperDeviceKey{}).(bool)
 	signed := !comment && path != hongguoBookmallTabPath
+	var registerErr error
 	if signed {
-		_ = downloader.ensureHongguoDevice(ctx, helper, "")
+		registerErr = downloader.ensureHongguoDevice(ctx, helper, "")
 	}
 	client.mu.Lock()
 	base := client.baseURL
@@ -249,12 +252,17 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		}
 		if len(content) == 0 {
 			lastErr = errors.New("红果 App 接口未返回有效数据")
-			if signed && rotations < hongguoDeviceRotations && downloader.ensureHongguoDevice(ctx, helper, deviceID) == nil {
-				rotations++
-				deviceID, installID, _ = client.device(helper)
-				query.Set("device_id", deviceID)
-				query.Set("iid", installID)
-				attempt--
+			if signed && rotations < hongguoDeviceRotations {
+				if registerErr = downloader.ensureHongguoDevice(ctx, helper, deviceID); registerErr == nil {
+					rotations++
+					deviceID, installID, _ = client.device(helper)
+					query.Set("device_id", deviceID)
+					query.Set("iid", installID)
+					attempt--
+				}
+			}
+			if registerErr != nil {
+				lastErr = fmt.Errorf("红果 App 接口未返回有效数据（设备注册失败：%v）", registerErr)
 			}
 			continue
 		}

@@ -20,6 +20,7 @@ import 'catalog_updates.dart';
 import 'download_collections.dart';
 import 'resource_settings.dart';
 import 'diary_service.dart';
+import 'sorani_account.dart';
 
 typedef _NativeRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -112,6 +113,22 @@ abstract class AppRepository {
   ) async => throw AppFailure('当前环境不支持资源设置');
   final catalogUpdates = CatalogUpdates();
   Future<void> cancelPreload() async {}
+
+  /// 首启设备注册门禁：查询红果主设备 + 辅助设备是否都注册好；
+  /// [register] 为 true 时是用户显式重试，会清掉上一次失败的暂停窗口。
+  Future<bool> hongguoDevices({bool register = false}) async => true;
+
+  // ---- 青空次元站源账号（所有用户均可登录 / 退出）----
+  Future<SoraniAccount> soraniAccount() async => const SoraniAccount();
+  Future<SoraniCaptcha> soraniCaptcha() async =>
+      throw AppFailure('当前版本不支持登录青空次元');
+  Future<SoraniAccount> soraniLogin({
+    required String identifier,
+    required String password,
+    required String captchaId,
+    required SoraniCaptchaTrack track,
+  }) async => throw AppFailure('当前版本不支持登录青空次元');
+  Future<SoraniAccount> soraniLogout() async => const SoraniAccount();
   Future<PlaybackPlan?> preload(
     Drama drama,
     Episode episode, {
@@ -303,6 +320,55 @@ class NativeRepository extends AppRepository {
         'action': 'saveResourceSettings',
         'settings': settings.toJson(),
       }),
+    );
+  }
+
+  @override
+  Future<bool> hongguoDevices({bool register = false}) async =>
+      (await _call({
+        'action': 'hongguoDevices',
+        if (register) 'command': 'register',
+      }))['ready'] ==
+      true;
+
+  // 青空账号与自定义源一样属于「谁用谁登」的本机状态，不校验管理员身份；
+  // 仅保留 _call 里对所有动作统一生效的「当前用户已锁定」保护。
+  @override
+  Future<SoraniAccount> soraniAccount() async =>
+      SoraniAccount.fromJson(await _call({'action': 'soraniAccount'}));
+
+  @override
+  Future<SoraniCaptcha> soraniCaptcha() async {
+    return SoraniCaptcha.fromJson(
+      await _call({'action': 'soraniAccount', 'command': 'captcha'}),
+    );
+  }
+
+  @override
+  Future<SoraniAccount> soraniLogin({
+    required String identifier,
+    required String password,
+    required String captchaId,
+    required SoraniCaptchaTrack track,
+  }) async {
+    return SoraniAccount.fromJson(
+      await _call({
+        'action': 'soraniAccount',
+        'command': 'login',
+        'account': {
+          'identifier': identifier,
+          'password': password,
+          'captchaId': captchaId,
+          'track': track.toJson(),
+        },
+      }),
+    );
+  }
+
+  @override
+  Future<SoraniAccount> soraniLogout() async {
+    return SoraniAccount.fromJson(
+      await _call({'action': 'soraniAccount', 'command': 'logout'}),
     );
   }
 

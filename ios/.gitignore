@@ -26,6 +26,8 @@ Flutter/flutter_assets/
 Flutter/flutter_export_environment.sh
 ServiceDefinitions.json
 Runner/GeneratedPluginRegistrant.*
+# 构建脚本按红果鉴 / 真果鉴生成的变体 Bundle ID 与桌面名。
+Flutter/AppVariant.xcconfig
 
 # Exceptions to above rules.
 !default.mode1v3

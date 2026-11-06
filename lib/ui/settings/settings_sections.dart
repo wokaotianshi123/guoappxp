@@ -247,6 +247,13 @@ class SettingsSection extends StatelessWidget {
             subtitle: allSourcesEnabled ? '开关内置源、管理自定义源' : '开关站源、管理自定义源',
             onTap: () => open('站源管理', (_) => SourcesView(store: store)),
           ),
+          if (allSourcesEnabled)
+            SettingsTile(
+              icon: Icons.manage_accounts_outlined,
+              title: '站源账号',
+              subtitle: '登录需要账号的站源',
+              onTap: () => open('站源账号', (_) => const SourceAccountsView()),
+            ),
         ],
       ),
       SettingsCard(

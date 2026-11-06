@@ -10,6 +10,7 @@ import '../widgets/focus_ring.dart';
 import '../widgets/group_card.dart';
 import 'custom_sources_view.dart';
 import 'settings_rows.dart';
+import 'sorani_account_view.dart';
 
 /// 站源管理：内置源的显示开关 + 自定义源（MacCMS 站点 / XBPQ 规则）管理入口。
 ///
@@ -126,6 +127,22 @@ class _SourcesViewState extends State<SourcesView> {
         ],
       );
     },
+  );
+}
+
+/// 站源账号：部分站源（目前是青空次元）要求登录后才能取流。
+/// 登录状态保存在本机、对这台设备上的所有用户生效，因此所有用户都能登录或退出。
+class SourceAccountsView extends StatelessWidget {
+  const SourceAccountsView({super.key});
+
+  @override
+  Widget build(BuildContext context) => ListView(
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+    children: const [
+      SettingsCard(children: [SoraniAccountTile()]),
+      SizedBox(height: 12),
+      _Note('登录状态保存在本机，这台设备上的所有用户共用同一个青空账号。'),
+    ],
   );
 }
 

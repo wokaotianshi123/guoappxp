@@ -1,4 +1,4 @@
-package com.duanju.duanju_app
+package com.guoapp
 
 import io.flutter.embedding.android.FlutterActivity
 import io.flutter.embedding.android.FlutterSurfaceView
@@ -32,9 +32,16 @@ import androidx.annotation.ChecksSdkIntAtLeast
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterShellArgs
 import io.flutter.plugin.common.MethodChannel
+import kotlin.math.roundToInt
 
 private const val SURFACE_RESIZE_REDRAW_WAIT_MS = 100L
 private const val ORIENTATION_SETTLE_MS = 800L
+
+// 车机 / 电视 / 投影等 4K~6K 大屏的逻辑短边远超平板，Flutter 按原始 density
+// 排版会让字号和按钮小到无法阅读、点击。这里只覆盖 densityDpi，把逻辑短边
+// 压到接近平板（720dp），布局仍按平板 / 电视排列；手机和平板不受影响。
+private const val LARGE_CANVAS_DP = 1000f
+private const val TARGET_CANVAS_DP = 720f
 
 class MainActivity : FlutterActivity() {
     private var headroomReadAt = 0L
@@ -47,6 +54,23 @@ class MainActivity : FlutterActivity() {
     private var textInput: TextInputBridge? = null
     private var televisionMode = false
     private var orientationListener: OrientationEventListener? = null
+
+    override fun attachBaseContext(newBase: Context) {
+        super.attachBaseContext(scaleLargeCanvas(newBase))
+    }
+
+    private fun scaleLargeCanvas(base: Context): Context {
+        val metrics = base.resources.displayMetrics
+        if (metrics.density <= 0f) return base
+        val shortestDp = minOf(metrics.widthPixels, metrics.heightPixels) / metrics.density
+        if (shortestDp <= LARGE_CANVAS_DP) return base
+        // 只覆盖 density 一项，locale / uiMode / fontScale 仍从 base 继承；
+        // 配合 Manifest 的 configChanges，运行中切换深色、字号、语言照常生效。
+        val densityOnly = Configuration().apply {
+            densityDpi = (base.resources.configuration.densityDpi * shortestDp / TARGET_CANVAS_DP).roundToInt()
+        }
+        return runCatching { base.createConfigurationContext(densityOnly) }.getOrDefault(base)
+    }
 
     @Suppress("DEPRECATION")
     private fun isTelevisionDevice(): Boolean {

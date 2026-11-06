@@ -51,6 +51,10 @@ class PlaybackSession extends ChangeNotifier {
     _quality = preferences.quality;
     _danmakuEnabled = preferences.danmaku;
     _adBlock = preferences.adBlock;
+    // 换剧 / 重开播放器时沿用上次调过的音量；下限 1 防止旧存档里存了 0
+    // 导致一进来就是静音。静音状态本身不落盘。
+    _unmutedVolume = store.playerVolume.clamp(1.0, 100.0);
+    unawaited(_player.setVolume(_unmutedVolume));
     _loader = PlaybackLoader(repository);
     _preloader = PlaybackPreloader(repository)..addListener(_prime);
     danmaku = DanmakuController(repository)..setEnabled(_danmakuEnabled);
@@ -134,6 +138,7 @@ class PlaybackSession extends ChangeNotifier {
   Timer? _errorTimer;
   Timer? _boostTimer;
   Timer? _stallTimer;
+  Timer? _volumeTimer;
   Future<void> _operations = Future<void>.value();
   Future<void> _rates = Future<void>.value();
   int _index;
@@ -143,6 +148,7 @@ class PlaybackSession extends ChangeNotifier {
   bool _loading = true;
   bool _online = false;
   bool _localFailure = false;
+  bool _loginRequired = false;
   bool _closed = false;
   bool _acceptErrors = false;
   bool _foreground = true;
@@ -184,6 +190,7 @@ class PlaybackSession extends ChangeNotifier {
   String get loadingMessage => _loadingMessage;
   String? get error => _error;
   bool get localFailure => _localFailure;
+  bool get loginRequired => _loginRequired;
   String? get saveWarning => _saveWarning;
   bool get ready => !_loading && _error == null;
 
@@ -445,6 +452,7 @@ class PlaybackSession extends ChangeNotifier {
     if (!_current(ticket)) return;
     _loading = false;
     _localFailure = current.local;
+    _loginRequired = false;
     _error = current.local
         ? '本地视频读取失败，请重试或重新下载；也可以改为在线播放。'
         : '自动恢复未成功，请检查网络后重试，也可换一集或选择其他清晰度。';
@@ -550,6 +558,7 @@ class PlaybackSession extends ChangeNotifier {
     _loading = true;
     _error = null;
     _localFailure = false;
+    _loginRequired = false;
     _loadingMessage = switch (recovery) {
       PlaybackRecoveryAction.alternative => '正在切换备用线路',
       PlaybackRecoveryAction.refresh => '正在重新获取播放地址',
@@ -649,6 +658,8 @@ class PlaybackSession extends ChangeNotifier {
             DiaryService.add('[Play] 无法播放：${_diagnostic(error)}');
             _loading = false;
             _localFailure = error is AppFailure && error.code == 'local_media';
+            _loginRequired =
+                error is AppFailure && error.code == 'source_login';
             _error = error is AppFailure ? error.message : '无法播放这一集，请重试或换一集。';
             _notify();
           }
@@ -683,6 +694,7 @@ class PlaybackSession extends ChangeNotifier {
     _index = index;
     _error = null;
     _localFailure = false;
+    _loginRequired = false;
     _loading = false;
     _standbyPlan = null;
     _standbyIndex = -1;
@@ -913,10 +925,23 @@ class PlaybackSession extends ChangeNotifier {
     return boosted;
   }
 
-  void setVolume(double value) {
+  /// [persist] 为 false 时只改本次播放的音量、不写入存档：电视 / 手机滑动
+  /// 调的是系统媒体音量语义的临时音量，不该影响下次打开的音量。
+  void setVolume(double value, {bool persist = true}) {
     final volume = value.clamp(0.0, 100.0);
-    if (volume > 0) _unmutedVolume = volume;
+    if (volume > 0) {
+      _unmutedVolume = volume;
+      if (persist) {
+        _volumeTimer?.cancel();
+        _volumeTimer = Timer(const Duration(milliseconds: 500), _saveVolume);
+      }
+    }
     _applyVolume(volume);
+  }
+
+  void _saveVolume() {
+    _volumeTimer = null;
+    unawaited(store.setPlayerVolume(_unmutedVolume).catchError((Object _) {}));
   }
 
   void _applyVolume(double volume) {
@@ -1075,6 +1100,8 @@ class PlaybackSession extends ChangeNotifier {
     _errorTimer?.cancel();
     _boostTimer?.cancel();
     _stallTimer?.cancel();
+    _volumeTimer?.cancel();
+    if (_volumeTimer != null) _saveVolume();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }

@@ -8,6 +8,8 @@ import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../playback_preferences.dart';
 import '../../playback_session.dart';
+import '../settings/sorani_account_view.dart';
+import '../widgets/contained_slider.dart';
 import 'danmaku_overlay.dart';
 import 'option_grid.dart';
 import 'option_layout.dart';
@@ -540,40 +542,41 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
               thumbShape: const RoundSliderThumbShape(enabledThumbRadius: 8),
               overlayShape: const RoundSliderOverlayShape(overlayRadius: 14),
             ),
-            child: Slider(
-              value: position,
-              max: max,
-              secondaryTrackValue: state.buffer.inMilliseconds.toDouble().clamp(
-                0.0,
-                max,
+            child: ContainedSlider(
+              slider: Slider(
+                value: position,
+                max: max,
+                secondaryTrackValue: state.buffer.inMilliseconds
+                    .toDouble()
+                    .clamp(0.0, max),
+                semanticFormatterCallback: (value) =>
+                    formatClock(Duration(milliseconds: value.round())),
+                onChangeStart: _session.ready && duration > Duration.zero
+                    ? (_) {
+                        _hideTimer?.cancel();
+                        _seekTimer?.cancel();
+                        _seekTarget = null;
+                      }
+                    : null,
+                onChanged: _session.ready && duration > Duration.zero
+                    ? (value) => setState(() => _seekValue = value)
+                    : null,
+                onChangeEnd: (value) {
+                  if (_session.ready && duration > Duration.zero) {
+                    _seekTarget = value;
+                    _seekTimer?.cancel();
+                    _seekTimer = Timer(const Duration(seconds: 2), () {
+                      if (mounted) setState(_endSeek);
+                    });
+                    unawaited(
+                      _session.seekTo(Duration(milliseconds: value.round())),
+                    );
+                  } else {
+                    setState(_endSeek);
+                  }
+                  _scheduleHide();
+                },
               ),
-              semanticFormatterCallback: (value) =>
-                  formatClock(Duration(milliseconds: value.round())),
-              onChangeStart: _session.ready && duration > Duration.zero
-                  ? (_) {
-                      _hideTimer?.cancel();
-                      _seekTimer?.cancel();
-                      _seekTarget = null;
-                    }
-                  : null,
-              onChanged: _session.ready && duration > Duration.zero
-                  ? (value) => setState(() => _seekValue = value)
-                  : null,
-              onChangeEnd: (value) {
-                if (_session.ready && duration > Duration.zero) {
-                  _seekTarget = value;
-                  _seekTimer?.cancel();
-                  _seekTimer = Timer(const Duration(seconds: 2), () {
-                    if (mounted) setState(_endSeek);
-                  });
-                  unawaited(
-                    _session.seekTo(Duration(milliseconds: value.round())),
-                  );
-                } else {
-                  setState(_endSeek);
-                }
-                _scheduleHide();
-              },
             ),
           ),
         ),
@@ -912,11 +915,14 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
                     overlayRadius: 12,
                   ),
                 ),
-                child: Slider(
-                  value: volume,
-                  max: 100,
-                  semanticFormatterCallback: (value) => '音量 ${value.round()}%',
-                  onChanged: _session.setVolume,
+                child: ContainedSlider(
+                  slider: Slider(
+                    value: volume,
+                    max: 100,
+                    semanticFormatterCallback: (value) =>
+                        '音量 ${value.round()}%',
+                    onChanged: _session.setVolume,
+                  ),
                 ),
               ),
             ),
@@ -1125,11 +1131,22 @@ class PlaybackFailure extends StatelessWidget {
                 runSpacing: 8,
                 alignment: WrapAlignment.center,
                 children: [
-                  FilledButton(
-                    focusNode: retryFocus,
-                    onPressed: session.retry,
-                    child: Text(session.localFailure ? '重试本地播放' : '重试'),
-                  ),
+                  if (session.loginRequired)
+                    FilledButton(
+                      focusNode: retryFocus,
+                      onPressed: () async {
+                        if (await showSoraniLogin(context) != null) {
+                          await session.retry();
+                        }
+                      },
+                      child: const Text('去登录'),
+                    )
+                  else
+                    FilledButton(
+                      focusNode: retryFocus,
+                      onPressed: session.retry,
+                      child: Text(session.localFailure ? '重试本地播放' : '重试'),
+                    ),
                   if (session.localFailure)
                     TextButton(
                       onPressed: session.switchOnline,

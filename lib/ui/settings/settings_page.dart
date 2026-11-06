@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import '../../app_build.dart';
 import '../../local_store.dart';
 import '../../resource_settings_editor.dart';
 import '../app_scope.dart';
@@ -104,7 +105,9 @@ class _SettingsPageState extends State<SettingsPage> {
       ].join(' · '),
       SettingsGroup.playback => '倍速、清晰度、连播与弹幕',
       SettingsGroup.download => '默认画质、目录与空间、同时下载数量',
-      SettingsGroup.sources => '站源开关、自定义源、目录请求间隔',
+      SettingsGroup.sources => allSourcesEnabled
+          ? '站源开关、站源账号、自定义源、目录请求间隔'
+          : '站源开关、自定义源、目录请求间隔',
       SettingsGroup.proxy => '连接方式、代理地址',
       SettingsGroup.users => '当前：${store.profile.name}',
       SettingsGroup.about =>

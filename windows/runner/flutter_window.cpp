@@ -1,9 +1,30 @@
 #include "flutter_window.h"
 
+#include <commctrl.h>
+
 #include <optional>
 #include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
+
+namespace {
+
+// 输入法、划词翻译、读屏等软件会通过 WM_GETOBJECT 查询应用内的辅助功能
+// 控件树。Flutter 的 Windows 视图在最大化 / 全屏后回复该消息会触发闪退，
+// 这里让 Flutter 视图直接走默认窗口过程，只对外暴露窗口本身。
+LRESULT CALLBACK DeclineAccessibilityQueries(HWND window, UINT message,
+                                             WPARAM wparam, LPARAM lparam,
+                                             UINT_PTR, DWORD_PTR) {
+  if (message == WM_GETOBJECT) {
+    return DefWindowProc(window, message, wparam, lparam);
+  }
+  if (message == WM_NCDESTROY) {
+    RemoveWindowSubclass(window, DeclineAccessibilityQueries, 0);
+  }
+  return DefSubclassProc(window, message, wparam, lparam);
+}
+
+}  // namespace
 
 FlutterWindow::FlutterWindow(const flutter::DartProject& project)
     : project_(project) {}
@@ -52,6 +73,8 @@ bool FlutterWindow::OnCreate() {
         result->Success(flutter::EncodableValue(values));
       });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
+  SetWindowSubclass(flutter_controller_->view()->GetNativeWindow(),
+                    DeclineAccessibilityQueries, 0, 0);
 
   flutter_controller_->engine()->SetNextFrameCallback([&]() {
     this->Show();

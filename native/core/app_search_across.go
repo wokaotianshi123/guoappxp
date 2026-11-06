@@ -52,7 +52,7 @@ func nativeSourceSupportsSearch(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceSorani,
 		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie,
-		sourceXChina, sourceTheporny:
+		sourceXChina, sourceTheporny, sourceHuangguoAI:
 		return true
 	}
 	if isDuanjuProviderSource(source) {
@@ -141,6 +141,9 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 		items, more, err = d.fetchXChinaCatalogPage(ctx, page, "", query)
 	case sourceTheporny:
 		items, more, err = d.fetchThepornyCatalogPage(ctx, page, "", query)
+	case sourceHuangguoAI:
+		// 站点自己的搜索接口，支持翻页；不再只搜本机已缓存的目录。
+		items, more, err = d.searchHuangguoAI(ctx, page, query)
 	default:
 		// 短剧家族与自定义 MacCMS 源共用同一套搜索接口（isDuanjuProviderSource 已含自定义源）。
 		items, err = d.searchDuanju(ctx, source, query)

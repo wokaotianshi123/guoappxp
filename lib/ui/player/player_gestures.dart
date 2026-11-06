@@ -187,7 +187,8 @@ class PlayerGestures extends ChangeNotifier {
       if (dy.abs() < _swipeThreshold) return;
       final ratio = dy / (_viewHeight * .6);
       final volume = (_volumeStart + ratio * 100).clamp(0.0, 100.0);
-      session.setVolume(volume);
+      // 滑动只是本次观看的临时调节（对应其它端的系统媒体音量），不写存档。
+      session.setVolume(volume, persist: false);
       _show(SwipeAction.volume, volume / 100);
     }
   }

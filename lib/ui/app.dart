@@ -10,6 +10,7 @@ import '../core_bridge.dart';
 import '../local_store.dart';
 import '../theme_color.dart';
 import 'app_scope.dart';
+import 'device_registration.dart';
 import 'shell/app_shell.dart';
 import 'theme/app_theme.dart';
 import 'theme/system_color.dart';
@@ -256,7 +257,10 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
           onRetry: widget.onRetry,
         ),
         LocalStore(locked: true) => UnlockPage(store: store),
-        _ => AppShell(key: ValueKey(store.profileEpoch), store: store),
+        _ => DeviceRegistrationGate(
+          store: store,
+          child: AppShell(key: ValueKey(store.profileEpoch), store: store),
+        ),
       },
     );
   }
