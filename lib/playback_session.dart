@@ -62,9 +62,11 @@ class PlaybackSession extends ChangeNotifier {
     );
     _healthTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_closed || !_acceptErrors || _loading || _error != null) return;
+      final state = player.state;
       if (_health.stalled(
-        position: player.state.position,
-        playing: player.state.playing && _playIntent,
+        position: state.position,
+        playing: state.playing && _playIntent,
+        buffering: state.buffering,
         foreground: _foreground,
         now: DateTime.now(),
       )) {
@@ -144,6 +146,7 @@ class PlaybackSession extends ChangeNotifier {
   bool _closed = false;
   bool _acceptErrors = false;
   bool _foreground = true;
+  bool _pausedByBackground = false;
   bool _playIntent = true;
   bool _pendingError = false;
   bool _boosting = false;
@@ -388,9 +391,12 @@ class PlaybackSession extends ChangeNotifier {
       if (!_current(ticket) || !_foreground || !_acceptErrors) return;
       _pendingError = false;
       final state = player.state;
+      // 只要还在播、没卡在缓冲、进度确实前进，就说明播放器已经自愈。
+      // 旧逻辑还要求 state.width > 0，但 TV / 硬件解码常常不上报视频尺寸，
+      // 于是一次可忽略的错误也会重新解析地址，反复加载几次后直接判失败。
       if (state.playing &&
           !state.buffering &&
-          (state.width ?? 0) > 0 &&
+          !state.completed &&
           state.position > position + const Duration(milliseconds: 300)) {
         return;
       }
@@ -502,6 +508,7 @@ class PlaybackSession extends ChangeNotifier {
     if (!_usable || index < 0 || index >= detail.episodes.length) return;
     endBoost();
     _staleAudio = false;
+    _pausedByBackground = false;
     if (index != _index) _online = false;
     if (switchRoute == null &&
         recovery == null &&
@@ -666,6 +673,7 @@ class PlaybackSession extends ChangeNotifier {
     final ticket = ++_generation;
     _seekSequence++;
     _pendingError = false;
+    _pausedByBackground = false;
     _errorTimer?.cancel();
     _health.reset();
     _recovery.reset();
@@ -1006,10 +1014,22 @@ class PlaybackSession extends ChangeNotifier {
     _health.reset();
     _sync();
     if (!visible) {
+      // 记住「是系统让我们停的」，回到前台才自动续播；用户自己暂停时
+      // 不记录，免得切一次窗口就擅自开始播放。
+      _pausedByBackground = _playIntent && player.state.playing && ready;
       endBoost();
       _playIntent = false;
       unawaited(player.pause());
       unawaited(saveProgress());
+      return;
+    }
+    final resume = _pausedByBackground;
+    _pausedByBackground = false;
+    if (resume && _error == null && ready) {
+      // 短暂失焦（TV 全屏切换、系统弹层）不该让看门狗把「被我们暂停的
+      // 正常播放」当成卡死，重新解析一遍地址。
+      _playIntent = true;
+      unawaited(player.play());
     } else if (_pendingError) {
       _queueRecovery('foreground_pending_error');
     }

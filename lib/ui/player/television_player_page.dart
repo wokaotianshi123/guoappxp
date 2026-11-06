@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
@@ -9,11 +10,18 @@ import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../app_scope.dart';
 import '../theme/app_theme.dart';
+import '../widgets/cover_image.dart';
 import 'danmaku_overlay.dart';
 import 'playback_handle.dart';
 import 'player_surface.dart';
 
-enum _Menu { speed, quality }
+enum _Menu { speed, quality, route }
+
+/// 弹出菜单里每行的高度（选项 44 + 间距 2），用来把选中项滚进可视区。
+const _menuRowExtent = 46.0;
+const _episodeCellHeight = 52.0;
+const _episodeGap = 8.0;
+const _episodeRowExtent = _episodeCellHeight + _episodeGap;
 
 final _arrows = {
   LogicalKeyboardKey.arrowUp,
@@ -30,8 +38,15 @@ final _confirms = {
 };
 
 class TelevisionPlayerPage extends StatefulWidget {
-  const TelevisionPlayerPage({super.key, required this.handle});
+  const TelevisionPlayerPage({
+    super.key,
+    required this.handle,
+    this.videoSurface,
+  });
   final PlaybackHandle handle;
+
+  /// 仅供 widget test：替换底层 Video 画面，测试环境没有 media_kit 纹理。
+  final Widget Function(Player player)? videoSurface;
 
   @override
   State<TelevisionPlayerPage> createState() => _TelevisionPlayerPageState();
@@ -46,18 +61,26 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
   final _next = FocusNode();
   final _danmaku = FocusNode();
   final _adBlock = FocusNode();
+  final _episodes = FocusNode(debugLabel: 'tv-player-episodes');
+  final _route = FocusNode(debugLabel: 'tv-player-route');
   final _speed = FocusNode();
   final _quality = FocusNode();
   final _retry = FocusNode();
   final _options = <FocusNode>[];
+  final _episodeNodes = <FocusNode>[];
+  final _menuScroll = ScrollController();
+  final _episodeScroll = ScrollController();
   final _links = {for (final menu in _Menu.values) menu: LayerLink()};
   StreamSubscription<bool>? _playing;
   Player? _bound;
   Timer? _hideTimer;
   Timer? _seekCommit;
   Timer? _seekDisplay;
+  Timer? _foregroundTimer;
   bool _visible = true;
   bool _failed = false;
+  bool _episodePanel = false;
+  int _episodeColumns = 6;
   _Menu? _menu;
   Duration? _seekTarget;
   Duration _seekFrom = Duration.zero;
@@ -86,6 +109,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     _hideTimer?.cancel();
     _seekCommit?.cancel();
     _seekDisplay?.cancel();
+    _foregroundTimer?.cancel();
     for (final node in [
       _surface,
       _bar,
@@ -94,19 +118,38 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       _next,
       _danmaku,
       _adBlock,
+      _episodes,
+      _route,
       _speed,
       _quality,
       _retry,
       ..._options,
+      ..._episodeNodes,
     ]) {
       node.dispose();
     }
+    _menuScroll.dispose();
+    _episodeScroll.dispose();
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _session.setForeground(state == AppLifecycleState.resumed);
+    // Windows 窗口失焦只发 inactive；TV 全屏切换、系统弹层、遥控器焦点变化
+    // 也会让 App 瞬间 inactive。立刻按「进入后台」暂停，会把刚加载成功的
+    // 播放打断，回到前台后又触发自动恢复，表现成反复重新加载直至失败。
+    final foreground =
+        state == AppLifecycleState.resumed ||
+        defaultTargetPlatform == TargetPlatform.windows &&
+            state == AppLifecycleState.inactive;
+    _foregroundTimer?.cancel();
+    if (foreground) {
+      _session.setForeground(true);
+      return;
+    }
+    _foregroundTimer = Timer(const Duration(milliseconds: 600), () {
+      if (mounted) _session.setForeground(false);
+    });
   }
 
   void _changed() {
@@ -124,6 +167,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     if (failed == _failed) return;
     _failed = failed;
     _closeMenu(refocus: false);
+    _closeEpisodes(refocus: false);
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (failed) {
@@ -140,6 +184,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       if (!mounted ||
           !_visible ||
           _menu != null ||
+          _episodePanel ||
           !_session.player.state.playing ||
           _session.error != null) {
         return;
@@ -149,6 +194,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
   }
 
   void _hide() {
+    if (_menu != null || _episodePanel) return;
     _hideTimer?.cancel();
     _surface.requestFocus();
     setState(() => _visible = false);
@@ -158,13 +204,17 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     if (_visible && !force) return _scheduleHide();
     setState(() => _visible = true);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _visible && _menu == null) _play.requestFocus();
+      if (mounted && _visible && _menu == null && !_episodePanel) {
+        _play.requestFocus();
+      }
     });
     _scheduleHide();
   }
 
   void _back() {
-    if (_menu != null) {
+    if (_episodePanel) {
+      _closeEpisodes();
+    } else if (_menu != null) {
       _closeMenu();
     } else if (_visible) {
       _hide();
@@ -226,11 +276,16 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     }
   }
 
+  /// 控制条上从左到右的焦点顺序。所有渲染出来的按钮都必须在这里登记，
+  /// 否则遥控器左右键会直接跳过它（去广告按钮之前就漏了）。
   List<FocusNode> get _row => [
     _previous,
     _play,
     _next,
     if (_session.danmakuSupported) _danmaku,
+    _adBlock,
+    _episodes,
+    if (!_session.local) _route,
     _speed,
     _quality,
   ];
@@ -240,6 +295,9 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       node == _next && _session.hasNext ||
       node == _speed && _session.ready ||
       node == _quality && _session.ready && !_session.local ||
+      node == _route && _session.ready && !_session.local ||
+      node == _adBlock && !_session.local ||
+      node == _episodes ||
       node == _play ||
       node == _danmaku;
 
@@ -257,16 +315,23 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
   List<Object> _values(_Menu menu) => switch (menu) {
     _Menu.speed => playbackSpeeds.reversed.toList(),
     _Menu.quality => [..._session.qualities, 0],
+    // 单线路也给出一条，用户至少能确认「本集只有一条线路」。
+    _Menu.route => List<int>.generate(
+      _session.routeCount < 1 ? 1 : _session.routeCount,
+      (index) => index,
+    ),
   };
 
   Object _selected(_Menu menu) => switch (menu) {
     _Menu.speed => _session.speed,
     _Menu.quality => _session.quality,
+    _Menu.route => _session.routeIndex,
   };
 
   FocusNode _button(_Menu menu) => switch (menu) {
     _Menu.speed => _speed,
     _Menu.quality => _quality,
+    _Menu.route => _route,
   };
 
   void _openMenu(_Menu menu) {
@@ -277,10 +342,11 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     _hideTimer?.cancel();
     setState(() => _menu = menu);
     final index = values.indexOf(_selected(menu));
+    final selected = index < 0 ? 0 : index;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && _menu == menu) {
-        _options[index < 0 ? 0 : index].requestFocus();
-      }
+      if (!mounted || _menu != menu) return;
+      _options[selected].requestFocus();
+      _scrollMenuTo(selected);
     });
   }
 
@@ -299,9 +365,74 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
         () => switch (menu) {
           _Menu.speed => _session.setSpeed(value as double),
           _Menu.quality => _session.setQuality(value as int),
+          _Menu.route => _session.setRoute(value as int),
         },
       ),
     );
+  }
+
+  void _scrollMenuTo(int index) {
+    if (!_menuScroll.hasClients) return;
+    _scrollRowIntoView(
+      _menuScroll,
+      index * _menuRowExtent,
+      44,
+    );
+  }
+
+  void _scrollEpisodeTo(int index) {
+    if (!_episodeScroll.hasClients) return;
+    _scrollRowIntoView(
+      _episodeScroll,
+      index ~/ _episodeColumns * _episodeRowExtent,
+      _episodeCellHeight,
+    );
+  }
+
+  /// 焦点是被按键直接搬运的，几何遍历不会替我们滚动，得自己把目标行挪进来。
+  void _scrollRowIntoView(
+    ScrollController controller,
+    double top,
+    double height,
+  ) {
+    final position = controller.position;
+    final view = position.viewportDimension;
+    if (top >= position.pixels && top + height <= position.pixels + view) {
+      return;
+    }
+    final target = (top - (view - height) / 2).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (target != position.pixels) controller.jumpTo(target);
+  }
+
+  void _openEpisodes() {
+    final count = _session.detail.episodes.length;
+    while (_episodeNodes.length < count) {
+      _episodeNodes.add(FocusNode());
+    }
+    _hideTimer?.cancel();
+    setState(() => _episodePanel = true);
+    final index = _session.index.clamp(0, count == 0 ? 0 : count - 1);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_episodePanel || count == 0) return;
+      _episodeNodes[index].requestFocus();
+      _scrollEpisodeTo(index);
+    });
+  }
+
+  void _closeEpisodes({bool refocus = true}) {
+    if (!_episodePanel) return;
+    setState(() => _episodePanel = false);
+    if (refocus) _episodes.requestFocus();
+    _scheduleHide();
+  }
+
+  void _pickEpisode(int index) {
+    _closeEpisodes();
+    if (index != _session.index) unawaited(_session.play(index));
+    _reveal();
   }
 
   KeyEventResult _key(FocusNode _, KeyEvent event) {
@@ -334,6 +465,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
         _step(-10);
         return KeyEventResult.handled;
     }
+    if (_episodePanel) return _episodePanelKey(key);
     if (_menu case final menu?) return _menuKey(menu, key);
     final horizontal = key == LogicalKeyboardKey.arrowLeft
         ? -1
@@ -378,17 +510,46 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     return KeyEventResult.handled;
   }
 
+  /// 选集面板按固定列数搬焦点：左右一集、上下一行，不依赖几何遍历。
+  /// 确认键留给格子自己的 InkWell（onTap）处理。
+  KeyEventResult _episodePanelKey(LogicalKeyboardKey key) {
+    if (!_arrows.contains(key)) return KeyEventResult.ignored;
+    final count = _session.detail.episodes.length;
+    if (count == 0) return KeyEventResult.handled;
+    final index = _episodeNodes.indexWhere((node) => node.hasPrimaryFocus);
+    final current = index < 0 ? _session.index : index;
+    final step = switch (key) {
+      LogicalKeyboardKey.arrowLeft => -1,
+      LogicalKeyboardKey.arrowRight => 1,
+      LogicalKeyboardKey.arrowUp => -_episodeColumns,
+      LogicalKeyboardKey.arrowDown => _episodeColumns,
+      _ => 0,
+    };
+    final target = (current + step).clamp(0, count - 1);
+    if (target != current) {
+      _episodeNodes[target].requestFocus();
+      _scrollEpisodeTo(target);
+    }
+    return KeyEventResult.handled;
+  }
+
   KeyEventResult _menuKey(_Menu menu, LogicalKeyboardKey key) {
     if (!_arrows.contains(key)) return KeyEventResult.ignored;
     final count = _values(menu).length;
     final index = _options.indexWhere((node) => node.hasPrimaryFocus);
-    final step = key == LogicalKeyboardKey.arrowUp
-        ? -1
-        : key == LogicalKeyboardKey.arrowDown
-        ? 1
-        : 0;
-    final target = index < 0 ? 0 : (index + step).clamp(0, count - 1);
+    final current = index < 0 ? 0 : index;
+    final step = switch (key) {
+      LogicalKeyboardKey.arrowUp => -1,
+      LogicalKeyboardKey.arrowDown => 1,
+      // 线路动辄几十条：左右键按页翻，不用一路按下去。
+      LogicalKeyboardKey.arrowLeft when menu == _Menu.route => -8,
+      LogicalKeyboardKey.arrowRight when menu == _Menu.route => 8,
+      _ => 0,
+    };
+    if (step == 0) return KeyEventResult.handled;
+    final target = (current + step).clamp(0, count - 1);
     _options[target].requestFocus();
+    _scrollMenuTo(target);
     return KeyEventResult.handled;
   }
 
@@ -409,7 +570,8 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
         builder: (context, _) {
           final failed = _session.error != null;
           return PopScope(
-            canPop: failed || !_visible && _menu == null,
+            canPop:
+                failed || !_visible && _menu == null && !_episodePanel,
             onPopInvokedWithResult: (didPop, _) {
               if (!didPop) _back();
             },
@@ -422,13 +584,16 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                 body: Stack(
                   fit: StackFit.expand,
                   children: [
-                    Video(
-                      key: ValueKey(_session.player),
-                      controller: widget.handle.video(_session.player),
-                      controls: NoVideoControls,
-                      fill: Colors.black,
-                      pauseUponEnteringBackgroundMode: false,
-                    ),
+                    if (widget.videoSurface case final surface?)
+                      surface(_session.player)
+                    else
+                      Video(
+                        key: ValueKey(_session.player),
+                        controller: widget.handle.video(_session.player),
+                        controls: NoVideoControls,
+                        fill: Colors.black,
+                        pauseUponEnteringBackgroundMode: false,
+                      ),
                     DanmakuOverlay(
                       controller: _session.danmaku,
                       aspectRatio: _session.aspectRatio,
@@ -534,6 +699,17 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                 ),
                 color: _session.adBlock ? colors.primary : null,
               ),
+              _pill(_episodes, '选集', '选集', _openEpisodes),
+              if (!_session.local)
+                CompositedTransformTarget(
+                  link: _links[_Menu.route]!,
+                  child: _pill(
+                    _route,
+                    '线路 ${_session.routeIndex + 1}/${_session.routeCount}',
+                    '播放线路',
+                    () => _openMenu(_Menu.route),
+                  ),
+                ),
               CompositedTransformTarget(
                 link: _links[_Menu.speed]!,
                 child: _pill(
@@ -568,7 +744,152 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
               child: _menuBody(menu),
             ),
           ),
+        if (_episodePanel) _episodeBody(),
       ],
+    );
+  }
+
+  /// 右侧抽屉：只在按「选集」后出现，不占播放画面的常驻空间。
+  Widget _episodeBody() {
+    final episodes = _session.detail.episodes;
+    final width = (MediaQuery.sizeOf(context).width * .42).clamp(320.0, 560.0);
+    return Positioned(
+      right: televisionInset,
+      top: 84,
+      bottom: 103,
+      child: Container(
+        width: width,
+        decoration: BoxDecoration(
+          color: const Color(0xF018181A),
+          borderRadius: BorderRadius.circular(16),
+          boxShadow: const [
+            BoxShadow(
+              color: Color(0x80000000),
+              blurRadius: 32,
+              offset: Offset(0, 12),
+            ),
+          ],
+        ),
+        clipBehavior: Clip.antiAlias,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(20, 14, 20, 10),
+              child: Row(
+                spacing: 12,
+                children: [
+                  const Text(
+                    '选集',
+                    style: TextStyle(
+                      color: Colors.white,
+                      fontSize: 20,
+                      fontWeight: FontWeight.w700,
+                    ),
+                  ),
+                  Expanded(
+                    child: Text(
+                      '共 ${episodes.length} 集 · 当前第 ${_session.episode.number} 集',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        color: Colors.white.withValues(alpha: .62),
+                        fontSize: 14,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            Expanded(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final inner = constraints.maxWidth - 32;
+                  _episodeColumns = (inner / 76).floor().clamp(2, 10);
+                  return GridView.builder(
+                    controller: _episodeScroll,
+                    padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
+                    gridDelegate:
+                        SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: _episodeColumns,
+                          mainAxisExtent: _episodeCellHeight,
+                          crossAxisSpacing: _episodeGap,
+                          mainAxisSpacing: _episodeGap,
+                        ),
+                    itemCount: episodes.length,
+                    itemBuilder: (context, index) => _episodeCell(index),
+                  );
+                },
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _episodeCell(int index) {
+    final episode = _session.detail.episodes[index];
+    final current = index == _session.index;
+    final node = _episodeNodes[index];
+    return ListenableBuilder(
+      listenable: node,
+      builder: (context, _) {
+        final focused = node.hasPrimaryFocus;
+        final colors = Theme.of(context).colorScheme;
+        return Semantics(
+          label: '第 ${episode.number} 集${episode.vip ? '，VIP' : ''}',
+          button: true,
+          selected: current,
+          excludeSemantics: true,
+          child: InkWell(
+            focusNode: node,
+            onTap: () => _pickEpisode(index),
+            borderRadius: BorderRadius.circular(10),
+            focusColor: Colors.transparent,
+            hoverColor: Colors.transparent,
+            highlightColor: Colors.transparent,
+            splashColor: Colors.transparent,
+            child: Container(
+              decoration: BoxDecoration(
+                color: focused
+                    ? colors.primary
+                    : current
+                    ? colors.primary.withValues(alpha: .32)
+                    : Colors.white.withValues(alpha: .10),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              child: Stack(
+                children: [
+                  Center(
+                    child: Text(
+                      '${episode.number}',
+                      style: TextStyle(
+                        color: focused ? colors.onPrimary : Colors.white,
+                        fontSize: 17,
+                        fontWeight: current || focused
+                            ? FontWeight.w700
+                            : FontWeight.w500,
+                        fontFeatures: const [FontFeature.tabularFigures()],
+                      ),
+                    ),
+                  ),
+                  if (episode.vip)
+                    const Positioned(
+                      right: 5,
+                      top: 5,
+                      child: Icon(
+                        Icons.lock_rounded,
+                        size: 12,
+                        color: vipGold,
+                      ),
+                    ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
     );
   }
 
@@ -896,8 +1217,15 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     String label(Object value) => switch (menu) {
       _Menu.speed => '${value}x',
       _Menu.quality => value == 0 ? '自动' : '${value}P',
+      _Menu.route => '线路 ${(value as int) + 1}',
     };
+    // 线路可能几十条：菜单高度封顶后交给滚动，选中项由 _scrollMenuTo 带进来。
+    final maxHeight = (MediaQuery.sizeOf(context).height - 230)
+        .clamp(120.0, 560.0)
+        .toDouble();
     return Container(
+      width: 190,
+      constraints: BoxConstraints(maxHeight: maxHeight),
       padding: const EdgeInsets.all(8),
       decoration: BoxDecoration(
         color: const Color(0xF018181A),
@@ -910,7 +1238,8 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
           ),
         ],
       ),
-      child: IntrinsicWidth(
+      child: SingleChildScrollView(
+        controller: _menuScroll,
         child: Column(
           mainAxisSize: MainAxisSize.min,
           crossAxisAlignment: CrossAxisAlignment.stretch,

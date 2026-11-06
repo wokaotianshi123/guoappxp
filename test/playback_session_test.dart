@@ -4,6 +4,7 @@ import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/playback_session.dart';
+import 'package:duanju_app/playback_recovery.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -579,5 +580,102 @@ void main() {
     expect(session.stalled, isTrue);
     player.buffer(false);
     expect(session.stalled, isFalse);
+  });
+
+  test('a recoverable error does not reload while the picture advances'
+      ' without video params', () async {
+    final repository = _PlaybackRepository();
+    final store = await openStore();
+    final (session, player) = await _open(repository, store);
+
+    // TV / 硬件解码常不上报视频尺寸，旧逻辑会因此把可自愈的错误当成
+    // 需要重新解析地址，反复加载几次后直接判失败。
+    expect(player.state.width, isNull);
+    player.progress(_seconds(20), duration: _seconds(100));
+    player.fail('connection reset');
+    player.progress(_seconds(21));
+    await Future<void>.delayed(const Duration(milliseconds: 1000));
+    await pumpEventQueue();
+
+    expect(repository.fallbacks, 0);
+    expect(repository.resolved, hasLength(1));
+    expect(player.opened, hasLength(1));
+    expect(session.ready, isTrue);
+  });
+
+  test('a brief background switch resumes without reloading', () async {
+    final repository = _PlaybackRepository();
+    final store = await openStore();
+    final (session, player) = await _open(repository, store);
+    expect(player.state.playing, isTrue);
+
+    session.setForeground(false);
+    await pumpEventQueue();
+    expect(player.state.playing, isFalse);
+
+    session.setForeground(true);
+    await pumpEventQueue();
+    expect(player.state.playing, isTrue);
+    expect(repository.resolved, hasLength(1));
+    expect(player.opened, hasLength(1));
+  });
+
+  test('a manual pause stays paused across a background switch', () async {
+    final repository = _PlaybackRepository();
+    final store = await openStore();
+    final (session, player) = await _open(repository, store);
+
+    session.togglePlayback();
+    await pumpEventQueue();
+    expect(player.state.playing, isFalse);
+
+    session.setForeground(false);
+    session.setForeground(true);
+    await pumpEventQueue();
+    expect(player.state.playing, isFalse);
+  });
+
+  test('buffering resets the stall clock, and a silent player never trips'
+      ' the watchdog', () {
+    final start = DateTime(2026, 1, 1);
+    bool stalled(
+      PlaybackHealth health,
+      Duration elapsed,
+      Duration position, {
+      bool buffering = false,
+    }) => health.stalled(
+      position: position,
+      playing: true,
+      foreground: true,
+      buffering: buffering,
+      now: start.add(elapsed),
+    );
+
+    final health = PlaybackHealth();
+    expect(stalled(health, Duration.zero, _seconds(5)), isFalse);
+    expect(stalled(health, const Duration(seconds: 1), _seconds(6)), isFalse);
+    expect(health.sawProgress, isTrue);
+    // 缓冲里进度不动，时钟要重置，不能累计成卡死。
+    expect(
+      stalled(
+        health,
+        const Duration(seconds: 21),
+        _seconds(6),
+        buffering: true,
+      ),
+      isFalse,
+    );
+    expect(stalled(health, const Duration(seconds: 22), _seconds(6)), isFalse);
+    expect(stalled(health, const Duration(seconds: 43), _seconds(6)), isTrue);
+
+    // 有的电视设备压根不发 position 事件：没有可信进度就不该反复重载。
+    final silent = PlaybackHealth();
+    for (var seconds = 0; seconds < 60; seconds += 1) {
+      expect(
+        stalled(silent, Duration(seconds: seconds), Duration.zero),
+        isFalse,
+      );
+    }
+    expect(silent.sawProgress, isFalse);
   });
 }
