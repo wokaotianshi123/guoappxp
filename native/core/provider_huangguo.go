@@ -27,11 +27,14 @@ const (
 	sourceHongguo       = "hongguo"
 	sourceHuangju       = "huangju"
 	sourceYeguo         = "yeguo"
+	sourceJinguoDuanju  = "jinguoduanju"
+	sourceJinguo        = "jinguo"
 	sourceDSD           = "dsd"
 	sourceCloudFront    = "cloudfront"
 	sourceSorani        = "sorani"
 	sourceGuipian       = "guipian"
 	sourceHanxiaoquan   = "hanxiaoquan"
+	sourceHeitao        = "heitao"
 	sourceA123          = "a123"
 	sourceIkanbot       = "ikanbot"
 	// sourceFanqie 番茄：目录/搜索/详情/取流转发给本机番茄内容引擎（127.0.0.1:18921）。
@@ -115,7 +118,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceIkanbot, sourceA123, sourceFanqie, sourceXChina, sourceTheporny:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceHeitao, sourceIkanbot, sourceA123, sourceFanqie, sourceXChina, sourceTheporny:
 		return true
 	}
 	return isDuanjuProviderSource(source)
@@ -123,6 +126,9 @@ func isHuangguoProviderSource(source string) bool {
 
 func canonicalProviderSource(source string) string {
 	key := strings.ToLower(strings.TrimSpace(source))
+	if isHuangdouHost(key) {
+		return sourceHuangdou
+	}
 	switch key {
 	case "huangguo", "huangguoai", "huangguoai.com":
 		return sourceHuangguoAI
@@ -136,6 +142,12 @@ func canonicalProviderSource(source string) string {
 		return sourceHuangju
 	case "yeguo", "ygdj7.com", "www.ygdj7.com", "ygdj15.com", "www.ygdj15.com", "analyze.buxefaex.cc", "attract.vgbyziuz.cc", "as.vgbyziuz.cc", "anyway.vgbyziuz.cc", "delta.ygrwdsgt.cc", "yeguodj.com", "www.yeguodj.com":
 		return sourceYeguo
+	case "jinguoduanju", "jinguoduanju.app", "www.jinguoduanju.app", "play.jinguoduanju.app", "jgdj.app", "www.jgdj.app":
+		return sourceJinguoDuanju
+	case "jinguo":
+		return sourceJinguo
+	case "heitao", "heitaodj.com", "www.heitaodj.com":
+		return sourceHeitao
 	case "dsd", "dsd.com.se", "www.dsd.com.se":
 		return sourceDSD
 	case "cloudfront":
@@ -268,6 +280,12 @@ func (d *Downloader) GetHuangguoDetail(ctx context.Context, source, sourceID str
 		return d.fetchHuangjuDetail(ctx, sourceID)
 	case sourceYeguo:
 		return d.fetchYeguoDetail(ctx, sourceID)
+	case sourceJinguoDuanju:
+		return d.fetchJinguoDuanjuDetail(ctx, sourceID)
+	case sourceJinguo:
+		return d.fetchJinguoDetail(ctx, sourceID)
+	case sourceHeitao:
+		return d.fetchHeitaoDetail(ctx, sourceID)
 	case sourceDSD:
 		return d.fetchDSDDetail(ctx, sourceID)
 	case sourceSorani:
@@ -423,6 +441,9 @@ func (d *Downloader) fetchProviderRequest(ctx context.Context, rawURL, referer s
 				req.Header.Set("Referer", referer)
 			}
 			req.Header.Set("Accept-Language", "zh-CN,zh;q=0.9")
+			if cookie, ok := ctx.Value(providerTextCookieKey{}).(string); ok && cookie != "" {
+				req.Header.Set("Cookie", cookie)
+			}
 			// 自定义源（XBPQ 头部集合 / 播放请求头）附加头：放在内置头之后 Set，
 			// 同名键以规则为准（Authorization / Cookie / 自定义 Referer 都走这里）。
 			if extra, ok := ctx.Value(providerTextHeadersKey{}).(map[string]string); ok {

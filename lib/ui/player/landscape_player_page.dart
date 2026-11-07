@@ -430,6 +430,7 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
         DanmakuOverlay(
           controller: session.danmaku,
           aspectRatio: session.aspectRatio,
+          style: session.danmakuStyle,
         ),
         LayoutBuilder(
           builder: (context, constraints) => Listener(

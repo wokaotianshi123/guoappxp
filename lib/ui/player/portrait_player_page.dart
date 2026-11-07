@@ -355,6 +355,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
               key: const ValueKey('danmaku'),
               controller: session.danmaku,
               aspectRatio: session.aspectRatio,
+              style: session.danmakuStyle,
             ),
             LayoutBuilder(
               key: const ValueKey('gestures'),

@@ -40,6 +40,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.HuangjuURL, huangjuBaseURL
 	case sourceYeguo:
 		configured, fallback = d.cfg.YeguoURL, yeguoBaseURL
+	case sourceJinguoDuanju:
+		configured, fallback = jinguoDuanjuContentSite(d.cfg.JinguoDuanjuURL), jinguoDuanjuBaseURL
 	case sourceDSD:
 		configured, fallback = d.cfg.DSDURL, dsdBaseURL
 	case sourceSorani:
@@ -58,6 +60,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.XChinaURL, xchinaBaseURL
 	case sourceTheporny:
 		configured, fallback = d.cfg.ThepornyURL, thepornyHosts[0]
+	case sourceHeitao:
+		configured, fallback = d.cfg.HeitaoURL, heitaoBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -75,7 +79,7 @@ func providerSourceForURL(raw string) string {
 		return sourceHuangguoAI
 	case host == "huangguo.video":
 		return sourceHuangguoVideo
-	case host == "tideember.cc" || host == "xqjurgek.top":
+	case isHuangdouHost(host):
 		return sourceHuangdou
 	case host == "hongguoduanju.com" || host == "www.hongguoduanju.com":
 		return sourceHongguo
@@ -87,6 +91,9 @@ func providerSourceForURL(raw string) string {
 		strings.HasSuffix(host, ".vgbyziuz.cc") ||
 		host == "delta.ygrwdsgt.cc" || host == "yeguodj.com" || host == "www.yeguodj.com":
 		return sourceYeguo
+	case host == "jinguoduanju.app" || host == "www.jinguoduanju.app" || host == "play.jinguoduanju.app" ||
+		host == "jgdj.app" || host == "www.jgdj.app":
+		return sourceJinguoDuanju
 	case host == "dsd.com.se" || host == "www.dsd.com.se":
 		return sourceDSD
 	case host == "sorani.net" || host == "www.sorani.net" || host == "api.sorani.cc" || host == "sorani.cc":
@@ -95,6 +102,8 @@ func providerSourceForURL(raw string) string {
 		return sourceGuipian
 	case host == "jennyhow.com" || host == "www.jennyhow.com":
 		return sourceHanxiaoquan
+	case host == "heitaodj.com" || host == "www.heitaodj.com":
+		return sourceHeitao
 	case host == "ikanbot.com" || host == "www.ikanbot.com" || host == "www1.ikanbot.com":
 		return sourceIkanbot
 	case host == "a123tv.com" || host == "www.a123tv.com":
@@ -160,6 +169,15 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceYeguo {
 		return d.resolveYeguoMedia(ctx, task)
+	}
+	if chapter.Source == sourceJinguoDuanju {
+		return d.resolveJinguoDuanjuMedia(ctx, task)
+	}
+	if chapter.Source == sourceJinguo {
+		return d.resolveJinguoMedia(ctx, task)
+	}
+	if chapter.Source == sourceHeitao {
+		return d.resolveHeitaoMedia(ctx, task)
 	}
 	if chapter.Source == sourceDSD {
 		return d.resolveDSDMedia(ctx, task)

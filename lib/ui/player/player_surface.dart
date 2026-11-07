@@ -330,6 +330,7 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
               DanmakuOverlay(
                 controller: _session.danmaku,
                 aspectRatio: _session.aspectRatio,
+                style: _session.danmakuStyle,
               ),
               if (widget.touch)
                 LayoutBuilder(

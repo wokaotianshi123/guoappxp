@@ -2,6 +2,31 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.2.7+112
+
+把另一条分叉分支上的 6 项改动移植过来：真果鉴新增「黑桃 / 禁果短剧 / 禁果」三个站源、黄豆域名池与显示名修复、播放量为 0 时不显示、弹幕样式设置。仍然按功能最小合并，没有整仓覆盖——本分支独有的番茄源、直播、XBPQ / 自定义源、跨源聚合搜索、TV 播放器线路 / 选集、投屏、画质增强、青空账号链路与本地服务版全部保留。Android / Windows / macOS / iOS / 本地服务版同步生效。
+
+### 改进
+- **真果鉴新增站源「黑桃」**（`heitaodj.com`）：「全部」列出全站剧集，也可选站点分类，支持翻页、详情 / 分集与在线搜索。海报左下角照搬站点角标（如「6集」「完整版」），站点没给角标的剧看过详情后回落显示「共 N 集」。新增 `provider_heitao.go`，播放页取流用 `heitao://` 地址，`providerTextCookieKey{}` 给站点抓取附带 `heitao_age_confirmed=1` 年龄确认 Cookie；`Drama.Badge` / `nativeDrama.Badge` 贯通 Go ↔ Dart，`app_catalog_cache.go` 的 `mergeNativeDrama()` 保留旧角标，避免目录刷新冲掉站点角标。
+- **真果鉴新增站源「禁果短剧」**（`jinguoduanju.app` 网页版，与同名「禁果」App 不是同一个产品，剧库不同）：目录、详情 / 分集、播放地址都走网页同一套 `/api/v1` 接口；可选推荐、热度、站点分类和题材，支持在线搜索与翻页。站点不分页，翻页时复用第一页取回的整份目录，不再每页重新下载。播放权限以站点接口返回为准（目前站点对会员 / 金币解锁剧集也直接放行），站点明确拒绝时提示需要会员或解锁，不会代为解锁。新增 `provider_jinguoduanju.go` / `provider_jinguoduanju_client.go` / `provider_jinguoduanju_test.go`，`jinguoDuanjuContentSite()` 负责 `jinguoduanju.app` / `jgdj.app` 线路。
+- **真果鉴新增站源「禁果」**（禁果短剧 App，`com.hgaidj.ozThree`）：与黄果旧版是同一套后台的另一个部署、剧库不同。可选精选、最新和站点分类，支持在线搜索与翻页；访客会话自动注册并保存在本机，失效后自动重新登录；主线路不可用时自动切到同一部署的备用线路。付费集（需金币 / 会员）在分集列表标 VIP，播放时提示需要解锁，不代为解锁，也不会播放站点给未解锁分集的广告片花。新增 `provider_jinguo.go` / `provider_jinguo_client.go` / `provider_jinguo_test.go`，客户端用 `sync.Once` 缓存会话。站点不少剧本身只有 1 集。
+- **弹幕样式设置（#74）**：入口在播放页 ›「播放设置」›「弹幕样式」（`ExpansionTile`），以及设置里新增的「弹幕」分组。字号改为 60%～200% 连续可调（`danmakuScaleMin = .6` / `danmakuScaleMax = 2.0`），原来的小 / 标准 / 大 / 特大档位照常生效（渲染仍走 `MediaQuery.textScalerOf(context)`，新 `scale` 是相对倍率）；另可调颜色、透明度、加粗、描边、阴影，以及 `DanmakuCoverage` 三档显示区域（顶部四分之一 / 一半 / 全部），改动立即生效。新增 `danmaku_style.dart`、`ui/player/danmaku_settings.dart`、`ui/widgets/slider_tile.dart`，`danmaku_overlay.dart` 按 `style` 计算字号、行数与描边 / 阴影双层文字；四个播放器页面（横屏、竖屏、TV、`PlayerSurface`）都把 `session.danmakuStyle` 传给 `DanmakuOverlay`。屏蔽词链路一并补齐：`normalizeDanmakuWords()` 规范化、`DanmakuController.setBlockedWords()` 过滤、`blockedCount` 在无弹幕但有屏蔽时显示「这段弹幕都被屏蔽了」，`PlaybackSession` 在初始化、存档变更与 `dispose()` 时同步。`playback_preferences.dart` 合并了新弹幕字段与本分支独有的 `adBlock` / `VideoEnhancementPreferences enhancement`，旧 JSON 自动回退默认值、越界值 clamp。
+
+### 修复
+- **黄豆站源打不开（#76）**：站点换了域名，原来写死的主域名 `tideember.cc` 已解析不到，唯一写死的备用 `xqjurgek.top` 证书过期且域名对不上，所以每次换线必然失败。`provider_huangdou.go` 改用当前可用域名池 `ferncider.cc` / `onyxripple.cc` / `reeflumen.cc` / `niniharbor.top` / `halomeadow.top` / `larksummit.icu`，主线路连不上按顺序换下一个、全部换完才报错；换域名属于换目标，`backoff = 0` 不再空等重试间隔，超时预算按剩余域名数分配。`providerSourceForURL()` / `nativeCoverReferer()` 改为 `isHuangdouHost()` 判断，封面 referer 跟随域名池当前域名。站点显示名由域名改为「黄豆」。
+- **黄豆自制剧详情显示「播放 0」**：站点不给这类剧提供播放量，`detail_page.dart` 的统计行改为 `drama.views.isNotEmpty && drama.views != '0'` 才显示，其余站源同样处理。
+
+### 接入与约束
+- 三个新站源在 `SourceSite.restrictedValues` 中，默认关闭（`SourceSite.isRestricted(id)` + `LocalStore.sourceEnabled()` 默认 `!isRestricted`），红果鉴的 `SourceSite.values = [hongguo, fanqie]` 不变，因此只在真果鉴出现；开启后才进入目录、分类、详情与「全部源」聚合搜索。
+- Go 侧接入点：`models.go`（`Drama.Badge`）、`provider_huangguo.go`（源常量、`isHuangguoProviderSource()`、`canonicalProviderSource()` 域名识别、`GetHuangguoDetail()` 分发）、`provider_web.go`（`providerTextCookieKey`）、`provider_media.go`（URL 基址 / 反查源 / 取流分发）、`app_categories.go`、`app_cover_metadata.go`、`app_runtime.go`（`JinguoDuanjuURL` / `HeitaoURL` 配置、client 缓存、`nativeDrama.Badge`、目录与详情分支）、`app_catalog_cache.go`、`app_search_across.go`（本分支独有的跨源聚合搜索增量接入 3 个源）。Dart 侧 `models.dart` 新增 `badge` / `score` 并保留 B 独有的 `peers`，`pagedSearch` 补上 4 个源。
+- 付费 / VIP 集只提示、不代解锁；不分页站点的翻页复用第一页数据；换域名不算重试、不空等间隔。
+
+### 测试
+- Go：新增 `provider_jinguo_test.go`、`provider_jinguoduanju_test.go`、`provider_huangdou_domain_test.go`（域名池换线、不空等重试间隔、超时预算、封面 referer 跟随域名池）。定向 `go test ./core -run 'Heitao|Jinguo|Huangdou'` 通过，全量 `go test ./...` 通过（core 27.8s），`go vet ./...` 通过。
+- Dart：新增 `test/playback_preferences_test.dart`（旧 JSON 回退、弹幕字段 round trip、越界 clamp、屏蔽词规范化、非法 speed 抛异常，5 例）与 `test/new_sources_and_danmaku_test.dart`（三个源默认关闭且支持在线搜索、`badge` / `score` JSON 与 merge、`DanmakuStyle.of()` 与三档 coverage、设置页包含全部可调项，4 例）。`dart analyze lib test` 无问题，全量 `flutter test --no-pub` 177 例全过，本轮改动文件通过 `gofmt` / `dart format`。
+
+> 未验证项：黑桃 / 禁果短剧 / 禁果的真实站点可用性、禁果 App 访客会话与备用线路、黄豆 6 个域名的真实访问、VIP 付费集提示、弹幕样式在真机 TV / 横竖屏 / Windows 上的实际观感，均需在联网真机上验收。
+
 ## 1.2.6+111
 
 把另一条分叉分支上的 10 项改动整体移植过来（青空登录、大屏缩放、野果 / 黄果 AI 接口改版、红果设备注册门禁、包名统一、Windows 辅助功能、Flutter 3.47.9、音量记忆）。合并时保留了本分支独有的番茄源、直播、XBPQ / 自定义源、TV 播放器线路 / 选集、投屏与本地服务版等能力，没有整仓覆盖。Android / Windows / macOS / iOS / 本地服务版同步生效。

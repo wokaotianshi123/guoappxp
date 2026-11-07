@@ -50,7 +50,8 @@ type nativeSearchAcrossResult struct {
 // 这里只依据站源自身能力，不再把「已加载的本地资源」当作搜索来源。
 func nativeSourceSupportsSearch(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHongguo, sourceHuangju, sourceYeguo, sourceDSD, sourceSorani,
+	case sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo,
+		sourceHeitao, sourceDSD, sourceSorani,
 		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie,
 		sourceXChina, sourceTheporny, sourceHuangguoAI:
 		return true
@@ -125,6 +126,12 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 		items, more, err = d.fetchHuangjuCatalogPage(ctx, page, "", query)
 	case sourceYeguo:
 		items, more, err = d.fetchYeguoCatalogPage(ctx, page, "", query)
+	case sourceJinguoDuanju:
+		items, more, err = d.fetchJinguoDuanjuCatalogPage(ctx, page, "", query)
+	case sourceJinguo:
+		items, more, err = d.fetchJinguoCatalogPage(ctx, page, "", query)
+	case sourceHeitao:
+		items, more, err = d.fetchHeitaoCatalogPage(ctx, page, "", query)
 	case sourceDSD:
 		items, more, err = d.fetchDSDCatalogPage(ctx, page, "", query)
 	case sourceSorani:

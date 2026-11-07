@@ -17,6 +17,10 @@ class SourceSite {
       id == 'hongguo' ||
       id == 'huangju' ||
       id == 'yeguo' ||
+      id == 'jinguoduanju' ||
+      id == 'jinguo' ||
+      id == 'heitao' ||
+      id == 'huangguoai' ||
       id == 'dsd' ||
       id == 'sorani' ||
       id == 'guipian' ||
@@ -121,6 +125,9 @@ class SourceSite {
     SourceSite('huangju', '剧果', '热门 · 最新 · 分类短剧'),
     SourceSite('yeguo', '野果', '分类短剧 · 在线搜索'),
     dsd,
+    SourceSite('jinguoduanju', '禁果短剧', '推荐 · 分类短剧 · 在线搜索'),
+    SourceSite('jinguo', '禁果', '精选 · 最新 · 分类短剧 · 在线搜索'),
+    SourceSite('heitao', '黑桃', '分类短剧 · 在线搜索'),
     SourceSite('xchina', 'XChina', '分类视频 · 在线搜索'),
     SourceSite('theporny', 'Theporny', '分类视频 · 在线搜索'),
     SourceSite('huangguo-video', '黄果视频', '视频剧集'),
@@ -129,6 +136,7 @@ class SourceSite {
   ];
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
+
   /// 红果鉴（非全站源版）只带红果与番茄两个内置源：红果是默认主站源，
   /// 番茄仅作为内置源保留（可在站源切换 / 站源管理 / 全部源搜索里使用）。
   /// 真果鉴（`--dart-define=ALL_SOURCES=true`）才展开全部站源。
@@ -245,6 +253,8 @@ class Drama {
     this.onlineDate = '',
     this.tags = const [],
     this.releaseStatus = '',
+    this.badge = '',
+    this.score = '',
     this.peers = const [],
   }) : vipStatus = vip;
   final String id;
@@ -262,6 +272,10 @@ class Drama {
   final String onlineDate;
   final List<String> tags;
   final String releaseStatus;
+
+  /// 站点自己的海报角标（如「6集」「完整版」）；为空时回落到集数。
+  final String badge;
+  final String score;
 
   /// 跨源聚合搜索里同一部剧在其它站源的副本，供「全部源」结果展示与切换播放源。
   final List<Drama> peers;
@@ -292,6 +306,8 @@ class Drama {
     onlineDate: json['onlineDate'] as String? ?? '',
     tags: (json['tags'] as List? ?? const []).whereType<String>().toList(),
     releaseStatus: json['releaseStatus'] as String? ?? '',
+    badge: json['badge'] as String? ?? '',
+    score: json['score'] as String? ?? '',
     peers: [
       for (final row in json['peers'] as List? ?? const [])
         Drama.fromJson(Map<String, dynamic>.from(row as Map)),
@@ -313,6 +329,8 @@ class Drama {
     'onlineDate': onlineDate,
     'tags': tags,
     'releaseStatus': releaseStatus,
+    'badge': badge,
+    'score': score,
   };
 
   Drama merge(Drama fresh) {
@@ -352,6 +370,8 @@ class Drama {
           fresh.releaseStatus.isEmpty || fresh.releaseStatus == 'unknown'
           ? releaseStatus
           : fresh.releaseStatus,
+      badge: fresh.badge.isEmpty ? badge : fresh.badge,
+      score: fresh.score.isEmpty ? score : fresh.score,
     );
   }
 }

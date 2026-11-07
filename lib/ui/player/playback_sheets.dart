@@ -5,6 +5,7 @@ import '../../cast/cast_sheet.dart';
 import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../theme/app_theme.dart';
+import 'danmaku_settings.dart';
 
 ThemeData playerTheme(BuildContext context) {
   final theme = Theme.of(context);
@@ -152,7 +153,11 @@ class PlaybackSettings extends StatelessWidget {
                     spacing: 8,
                     runSpacing: 8,
                     children: [
-                      for (var route = 0; route < session.routeCount; route += 1)
+                      for (
+                        var route = 0;
+                        route < session.routeCount;
+                        route += 1
+                      )
                         _Choice(
                           label: '线路 ${route + 1}',
                           selected: route == session.routeIndex,
@@ -219,6 +224,25 @@ class PlaybackSettings extends StatelessWidget {
               title: const Text('弹幕'),
               value: session.danmakuEnabled,
               onChanged: (_) => _change(session.toggleDanmaku),
+            ),
+            ExpansionTile(
+              tilePadding: EdgeInsets.zero,
+              childrenPadding: const EdgeInsets.only(bottom: 8),
+              shape: const Border(),
+              collapsedShape: const Border(),
+              leading: const Icon(Icons.text_fields_rounded),
+              title: const Text('弹幕样式'),
+              subtitle: Text(
+                '字号、颜色、透明度与显示区域',
+                style: TextStyle(fontSize: 12, color: label.color),
+              ),
+              children: [
+                DanmakuSettings(
+                  session: session,
+                  onFailure: onFailure,
+                  dense: true,
+                ),
+              ],
             ),
           ],
         ],

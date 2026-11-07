@@ -110,7 +110,8 @@ func nativeCoverReferer(downloader *Downloader, source, address string) string {
 		}
 	}
 	if source == sourceHuangdou {
-		if parsed, err := url.Parse(address); err == nil && (strings.EqualFold(parsed.Hostname(), "tideember.cc") || strings.EqualFold(parsed.Hostname(), "xqjurgek.top")) {
+		// 域名池里任一域名都要用自己作为封面 referer，否则换线后封面会被拒绝。
+		if parsed, err := url.Parse(address); err == nil && isHuangdouHost(parsed.Hostname()) {
 			return parsed.Scheme + "://" + parsed.Host + "/home"
 		}
 		downloader.providerMu.Lock()

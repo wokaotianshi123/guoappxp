@@ -22,11 +22,69 @@ import (
 )
 
 const (
-	huangdouBaseURL     = "https://tideember.cc"
 	huangdouVersion     = "2.0.0"
 	huangdouDeviceType  = "web"
 	huangdouPlatformKey = "7961beb44246e3012ce228d6b5ced05a"
 )
+
+const huangdouBaseHost = "ferncider.cc"
+
+var huangdouHostPool = [...]string{
+	huangdouBaseHost,
+	"onyxripple.cc",
+	"reeflumen.cc",
+	"niniharbor.top",
+	"halomeadow.top",
+	"larksummit.icu",
+}
+
+const huangdouBaseURL = "https://" + huangdouBaseHost
+
+const (
+	huangdouAttemptTimeout      = 8 * time.Second
+	huangdouFirstAttemptTimeout = 12 * time.Second
+)
+
+func huangdouHostname(candidate string) string {
+	candidate = strings.ToLower(strings.TrimSpace(candidate))
+	if index := strings.Index(candidate, "://"); index >= 0 {
+		candidate = candidate[index+3:]
+	}
+	candidate = strings.TrimPrefix(candidate, "//")
+	if index := strings.IndexAny(candidate, "/?#"); index >= 0 {
+		candidate = candidate[:index]
+	}
+	if index := strings.LastIndex(candidate, "@"); index >= 0 {
+		candidate = candidate[index+1:]
+	}
+	if index := strings.LastIndex(candidate, ":"); index >= 0 {
+		candidate = candidate[:index]
+	}
+	return strings.TrimSuffix(candidate, ".")
+}
+
+func isHuangdouHost(candidate string) bool {
+	host := huangdouHostname(candidate)
+	if host == "" {
+		return false
+	}
+	for _, pooled := range huangdouHostPool {
+		if pooled == host {
+			return true
+		}
+	}
+	return false
+}
+
+func huangdouNextHostURL(current string) string {
+	host := huangdouHostname(current)
+	for index, pooled := range huangdouHostPool {
+		if pooled == host {
+			return "https://" + huangdouHostPool[(index+1)%len(huangdouHostPool)]
+		}
+	}
+	return "https://" + huangdouHostPool[0]
+}
 
 type huangdouAPIClient struct {
 	d         *Downloader
@@ -119,23 +177,39 @@ func (d *Downloader) resolveHuangdouPlayback(ctx context.Context, client *huangd
 }
 
 func (c *huangdouAPIClient) call(ctx context.Context, path string, data map[string]any, out *any) error {
-	retries := c.d.cfg.Retries
-	if retries < 1 {
-		retries = 1
+	rotate := c.d.cfg.HuangdouURL == ""
+	attempts := 1
+	if rotate {
+		attempts = len(huangdouHostPool)
+	} else if configured := c.d.cfg.Retries; configured > attempts {
+		attempts = configured
 	}
 	var lastErr error
-	for attempt := 0; attempt < retries; attempt++ {
-		if err := ctx.Err(); err != nil {
+	var backoff time.Duration
+	hostsTried := make(map[string]bool, attempts)
+	fail := func(err error) error {
+		if err == nil || len(hostsTried) < 2 {
 			return err
 		}
-		if attempt > 0 {
+		return fmt.Errorf("黄豆站点连接失败：已尝试 %d 个域名，最后错误：%w", len(hostsTried), err)
+	}
+	for attempt := 0; attempt < attempts; attempt++ {
+		if err := ctx.Err(); err != nil {
+			return fail(err)
+		}
+		if backoff > 0 {
 			select {
-			case <-time.After(time.Duration(attempt) * time.Second):
+			case <-time.After(backoff):
 			case <-ctx.Done():
-				return ctx.Err()
+				return fail(ctx.Err())
 			}
 		}
-		lastErr = c.callOnce(ctx, path, data, out)
+		hostsTried[huangdouHostname(c.host)] = true
+		ceiling := huangdouAttemptTimeout
+		if len(hostsTried) == 1 {
+			ceiling = huangdouFirstAttemptTimeout
+		}
+		lastErr = c.callOnce(ctx, path, data, out, c.attemptTimeout(ctx, attempts-attempt, ceiling))
 		if lastErr == nil {
 			return nil
 		}
@@ -143,11 +217,33 @@ func (c *huangdouAPIClient) call(ctx context.Context, path string, data map[stri
 		if errors.As(lastErr, &apiErr) {
 			return lastErr
 		}
-		if c.host == huangdouBaseURL && c.d.cfg.HuangdouURL == "" {
-			c.host = "https://xqjurgek.top"
+		if attempt+1 >= attempts {
+			break
+		}
+		if !rotate {
+			backoff = time.Duration(attempt+1) * time.Second
+			continue
+		}
+		c.host = huangdouNextHostURL(c.host)
+		backoff = 0
+	}
+	return fail(lastErr)
+}
+
+func (c *huangdouAPIClient) attemptTimeout(ctx context.Context, remainingTries int, ceiling time.Duration) time.Duration {
+	if remainingTries < 1 {
+		remainingTries = 1
+	}
+	timeout := ceiling
+	if deadline, ok := ctx.Deadline(); ok {
+		if budget := time.Until(deadline) / time.Duration(remainingTries); budget < timeout {
+			timeout = budget
 		}
 	}
-	return lastErr
+	if timeout < time.Second {
+		timeout = time.Second
+	}
+	return timeout
 }
 
 type huangdouAPIError struct {
@@ -192,7 +288,7 @@ func huangdouPreviewOnly(data map[string]any, media, host string) bool {
 	return path == "preview.mp4" || path == "preview.m3u8" || strings.HasSuffix(path, "/preview.mp4") || strings.HasSuffix(path, "/preview.m3u8")
 }
 
-func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[string]any, out *any) error {
+func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[string]any, out *any, timeout time.Duration) error {
 	path = "/" + strings.TrimLeft(path, "/")
 	rid := uuidLike()
 	key, err := huangdouKey(rid)
@@ -233,7 +329,7 @@ func (c *huangdouAPIClient) callOnce(ctx context.Context, path string, data map[
 	req.Header.Set("deviceType", huangdouDeviceType)
 	req.Header.Set("requestId", rid)
 	req.Header.Set("sessionId", c.sessionID)
-	resp, err := c.d.doPreparedCatalogRequest(req, 20*time.Second, func(prepared *http.Request) {
+	resp, err := c.d.doPreparedCatalogRequest(req, timeout, func(prepared *http.Request) {
 		timestamp := strconv.FormatInt(time.Now().Unix(), 10)
 		signRaw := "Dart|" + c.sessionID + "|" + rid + "|" + timestamp + "|" + path
 		signSum := sha256.Sum256([]byte(signRaw))
@@ -368,7 +464,7 @@ func huangdouDramaFromMap(item map[string]any) Drama {
 		}
 	}
 	category := firstNonEmpty(mapString(item, "category", "category_name", "categoryName"), "未分类")
-	return Drama{VIP: huangdouVIPFlag(item), ID: providerDramaID(sourceHuangdou, sourceID), Source: sourceHuangdou, SourceID: sourceID, Title: title, Name: title, Desc: firstNonEmpty(mapString(item, "description"), mapString(item, "summary")), Intro: firstNonEmpty(mapString(item, "description"), mapString(item, "summary")), Cover: cover, CoverURL: cover, CategoryName: category, ChannelName: "tideember.cc", Remark: remark, TotalEpisode: mapString(item, "episode_count"), EpisodeCount: mapString(item, "episode_count"), Tags: mapStringSlice(item, "tags"), ReleaseStatus: releaseStatus, Heat: mapString(item, "hot_rate"), Views: normalizeViews(mapString(item, "click")), OnlineDate: providerReleaseDate(mapString(item, "issue_date"))}
+	return Drama{VIP: huangdouVIPFlag(item), ID: providerDramaID(sourceHuangdou, sourceID), Source: sourceHuangdou, SourceID: sourceID, Title: title, Name: title, Desc: firstNonEmpty(mapString(item, "description"), mapString(item, "summary")), Intro: firstNonEmpty(mapString(item, "description"), mapString(item, "summary")), Cover: cover, CoverURL: cover, CategoryName: category, ChannelName: "黄豆", Remark: remark, TotalEpisode: mapString(item, "episode_count"), EpisodeCount: mapString(item, "episode_count"), Tags: mapStringSlice(item, "tags"), ReleaseStatus: releaseStatus, Heat: mapString(item, "hot_rate"), Views: normalizeViews(mapString(item, "click")), OnlineDate: providerReleaseDate(mapString(item, "issue_date"))}
 }
 
 func huangdouDataMap(v any) map[string]any {

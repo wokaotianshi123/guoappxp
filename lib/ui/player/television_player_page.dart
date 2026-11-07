@@ -373,11 +373,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
 
   void _scrollMenuTo(int index) {
     if (!_menuScroll.hasClients) return;
-    _scrollRowIntoView(
-      _menuScroll,
-      index * _menuRowExtent,
-      44,
-    );
+    _scrollRowIntoView(_menuScroll, index * _menuRowExtent, 44);
   }
 
   void _scrollEpisodeTo(int index) {
@@ -570,8 +566,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
         builder: (context, _) {
           final failed = _session.error != null;
           return PopScope(
-            canPop:
-                failed || !_visible && _menu == null && !_episodePanel,
+            canPop: failed || !_visible && _menu == null && !_episodePanel,
             onPopInvokedWithResult: (didPop, _) {
               if (!didPop) _back();
             },
@@ -597,6 +592,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                     DanmakuOverlay(
                       controller: _session.danmaku,
                       aspectRatio: _session.aspectRatio,
+                      style: _session.danmakuStyle,
                     ),
                     if (_session.loading) PlaybackLoading(session: _session),
                     if (_session.ready && _session.stalled)
@@ -809,13 +805,12 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                   return GridView.builder(
                     controller: _episodeScroll,
                     padding: const EdgeInsets.fromLTRB(16, 4, 16, 16),
-                    gridDelegate:
-                        SliverGridDelegateWithFixedCrossAxisCount(
-                          crossAxisCount: _episodeColumns,
-                          mainAxisExtent: _episodeCellHeight,
-                          crossAxisSpacing: _episodeGap,
-                          mainAxisSpacing: _episodeGap,
-                        ),
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: _episodeColumns,
+                      mainAxisExtent: _episodeCellHeight,
+                      crossAxisSpacing: _episodeGap,
+                      mainAxisSpacing: _episodeGap,
+                    ),
                     itemCount: episodes.length,
                     itemBuilder: (context, index) => _episodeCell(index),
                   );
@@ -878,11 +873,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                     const Positioned(
                       right: 5,
                       top: 5,
-                      child: Icon(
-                        Icons.lock_rounded,
-                        size: 12,
-                        color: vipGold,
-                      ),
+                      child: Icon(Icons.lock_rounded, size: 12, color: vipGold),
                     ),
                 ],
               ),
