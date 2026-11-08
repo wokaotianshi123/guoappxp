@@ -211,13 +211,8 @@ abstract class AppRepository {
     int quality = 0,
     bool adBlock = true,
     int route = 0,
-  }) => resolve(
-    drama,
-    episode,
-    quality: quality,
-    adBlock: adBlock,
-    route: route,
-  );
+  }) =>
+      resolve(drama, episode, quality: quality, adBlock: adBlock, route: route);
   Future<void> initialize();
   Future<CatalogPage> catalog(
     String source, {
@@ -238,6 +233,7 @@ abstract class AppRepository {
   Future<String> cover(Drama drama, {bool force = false});
   bool coverCached(Drama drama) => false;
   Future<DramaDetail> detail(Drama drama);
+
   /// [route] 是上一次选中的线路序号（0 起）：切集、换清晰度时沿用它，
   /// 只有这一集没有这条线路时核心才会回落到第一条线路。
   Future<PlaybackPlan> resolve(
@@ -284,6 +280,11 @@ abstract class AppRepository {
   Future<Map<String, dynamic>> importCustomSources(String content) async =>
       throw AppFailure('当前环境不支持自定义源');
   Future<int> resetCustomSources() async => throw AppFailure('当前环境不支持自定义源');
+
+  /// 输入站点网址，抓取网页 HTML 自动反推 XBPQ 规则。只返回规则与诊断说明，
+  /// 不会写入自定义源；是否保存由用户在表单里点「保存」决定。
+  Future<Map<String, dynamic>> analyzeCustomSourceSite(String base) async =>
+      throw AppFailure('当前环境不支持自定义源');
 }
 
 class NativeRepository extends AppRepository {
@@ -689,6 +690,8 @@ class NativeRepository extends AppRepository {
             Duration(
               seconds: action == 'moveDownloads'
                   ? 620
+                  : action == 'analyzeCustomSourceSite'
+                  ? 100
                   : action == 'danmaku'
                   ? 15
                   : action == 'preload'
@@ -708,10 +711,7 @@ class NativeRepository extends AppRepository {
           final reason = await FanqieBackend.describeNow();
           message = '番茄内容引擎未就绪（$action）：$reason；调用失败原文：$original';
         }
-        throw AppFailure(
-          message,
-          code: response['code'] as String? ?? '',
-        );
+        throw AppFailure(message, code: response['code'] as String? ?? '');
       }
       final data = response['data'];
       if (!unrestricted && epoch != access?.profileEpoch) {
@@ -1204,5 +1204,14 @@ class NativeRepository extends AppRepository {
   Future<int> resetCustomSources() async {
     final result = await _call({'action': 'resetCustomSources'});
     return (result as Map)['removed'] as int? ?? 0;
+  }
+
+  @override
+  Future<Map<String, dynamic>> analyzeCustomSourceSite(String base) async {
+    final result = await _call({
+      'action': 'analyzeCustomSourceSite',
+      'base': base,
+    });
+    return Map<String, dynamic>.from(result as Map);
   }
 }

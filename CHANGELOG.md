@@ -2,6 +2,27 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.2.8+113
+
+把 `一键写XBPQ源.py` 的站点探测算法移植进 Go 核心，给「新增自定义源」补上按网页 HTML 自动识别规则的能力。Flutter App 与本地服务版网页前端同步提供入口，Android / Windows / macOS / iOS / 本地服务版同步生效。原来的手工粘贴规则、MacCMS 运行时自动适配都保持不变。
+
+### 改进
+- **自定义源自动识别规则**：设置 › 自定义源 › 新增自定义源，填好网址后点「自动识别规则」，会依次抓取首页、分类页、搜索接口与详情页，反推 `分类url` / `分类`、`数组` / `标题` / `链接` / `图片` / `副标题`、`搜索url` 与搜索字段、`影片名称` / `简介`、`播放数组` / `线路数组` / `播放列表` / `播放标题` / `播放链接` / `跳转播放链接`，生成 XBPQ 规则 JSON 回填到规则框并自动切到「规则」模式。名称为空时用识别出的站名补上；下方显示诊断说明（命中站点预设、编码识别、列表字段实测抽样条数、识别失败原因等）。识别结果只回填表单，**不写盘**，是否保存仍由用户点「保存」决定，保存前可任意微调。
+- **本地服务版同款入口**：网页前端新增自定义源弹窗里的「自动识别规则（抓取网页 HTML）」按钮，走新增的 `POST /api/custom-sources/analyze`，同样回填规则 / 名称 / 规则勾选并展示诊断信息；服务端 `customSourceAnalyze()` 通过 `core.NativeRequest` 调同一个 Go action，两端结果一致。
+
+### 实现与约束
+- 新增 `native/core/provider_site_analyzer.go`（抓取、预算、字段白名单、规则拼装、详情反推）与 `provider_site_analyzer_probe.go`（分类 URL 反推、列表 / 搜索 / 播放字段反推）。只移植 Python 脚本的站点分析算法，**不搬** TVBox / OK影视 的 py 源外壳、安卓 UI、落盘 / 剪贴板 / 一键配置接口，也不输出 jar 专属字段（`搜索模式`、`搜索后缀`、`链接前缀`、`嗅探词`、`图片代理`、`编码`、`站名` 等）。
+- 输出字段受 `siteRuleKeyOrder` 白名单约束，且生成后必须过 `parseXBPQRule()` 校验，不通过就不写规则。**按 guoappxp 引擎语义做了关键适配**：`播放列表` 输出 `<li` / `<a` / `</a>` 这类**分集分隔符**（引擎内部是 `strings.Split`），绝不写成 `>&&</a>` 之类的 jar 截取串，否则整段分集会被塌成 1 集；JSON 搜索接口转成 `j:list` / `j:name` / `+j:id+` 这类引擎能消费的模式；列表数组与播放容器锚点都用真实 HTML 调 `xbpqList()` / `xbpqCutOnce()` 试截，截不出条目的字段**整组省略**，交给 `xbpqApplyTemplate()` 按 `分类url` 形态套模板家族兜底，避免写错字段覆盖模板备选链。GBK / GB2312 由 `xbpqDecodeBody()` 处理，不写 `编码` 字段。另有 `siteKnownRules` 站点预设（如 `dmdy3.com`），命中即直接套用实测规则。
+- **识别不出就不生成坏规则**：抓不到首页、命中盾页 / 人机验证、SPA 前端渲染站（分类由 JS / 签名 API 加载）、未识别到分类链接、规则未通过解析校验时，返回 `mode: "网址"` 与空规则，保留普通网页源（引擎仍会自动适配 MacCMS 站点），用户也可以自己粘贴规则。诊断 `notes` 会说明具体原因。
+- **安全预算**：分析器总预算 `siteAnalyzerBudget = 45s`、单次请求 `siteAnalyzerRequestTimeout = 4s`、最多 `siteAnalyzerMaxRequests = 26` 次请求；首页抓取会试手机 / 电脑 UA 与 http / https 兜底。Go 侧 RPC 超时给到 90s，Dart `_call()` 给到 100s，UI 期间按钮禁用并显示进度。抓取复用 `fetchProviderText()` + `xbpqDecodeBody()`，不新增网络栈。
+- 接入点：Go `nativeDispatch()` 新增 `case "analyzeCustomSourceSite"`（`app_runtime.go`）；Dart `AppRepository.analyzeCustomSourceSite()` / `NativeRepository` override 与 `_call()` 超时（`core_bridge.dart`）；`custom_sources_view.dart` 的编辑器新增按钮、回填与诊断区；`native/server/main.go` 新增 `/api/custom-sources/analyze` handler，`native/server/web/app.js` 新增 `customSourceAnalyze()` 与按钮。`custom:` 前缀自定义源不受 `ALL_SOURCES` 变体限制，`nativeAuthorizeInput()` 对该 action 无需额外授权。权威持久化仍在 Go `custom_sources.json`，Dart `LocalStore` 只做镜像缓存，本次没有改动数据模型。
+
+### 测试
+- Go：新增 `provider_site_analyzer_test.go`，用 `httptest.NewServer` 搭本地 MacCMS 风格站点桩（首页分类导航 / 分类页影片卡片 / 详情页分集列表 / 搜索 JSON 接口），共 8 例覆盖分类 URL 反推、字段白名单、站点预设引擎兼容、JSON 键与盾页识别、RPC 接线、完整链路生成规则、盾页回落普通网页源、非法地址拒绝；断言 `分类url` 带 `{cateId}` / `{catePg}`、`搜索数组 == j:list`、`播放列表` 不含 `&&`、生成的 `数组` 用真实分类页能截出至少 2 条。全量 `go test ./... -count=1 -timeout 300s` 通过（core 20.9s），`go vet ./...`、`go build ./core ./server`、`gofmt -l` 通过。
+- Dart：新增 `test/custom_source_analyze_test.dart`，用 `FakeRepository` 派生仓储覆盖「识别成功回填规则 / 名称 / 诊断并切到规则模式」「识别不出保留普通网页源」「识别失败显示错误并恢复按钮」3 例。`dart analyze lib test` 无问题，本轮改动文件通过 `dart format` 复检，`node --check native/server/web/app.js` 通过。全量 `flutter test --no-pub` **180 例全过**（`01:06 +180: All tests passed!`，含本次新增的 3 例）；收口后又补跑一次，结果一致。补跑用 `-j 1` 单并发并把输出重定向到日志文件，避免多份 `output.dill` 副本同时写入临时盘触发 errno 112。
+
+> 未验证项：真实站点（尤其非 MacCMS 家族、需 Cookie / 签名 / 登录、Cloudflare 盾、SPA 站）的识别率、生成规则在真实站点上能否完整跑通分类 / 列表 / 详情 / 播放、`siteKnownRules` 预设站点当前可用性，以及本地服务版网页前端在浏览器里的实际交互，均需联网真机 / 真站验收。自动识别只做静态 HTML 反推，不执行站点 JS，也不解除任何源站授权限制。
+
 ## 1.2.7+112
 
 把另一条分叉分支上的 6 项改动移植过来：真果鉴新增「黑桃 / 禁果短剧 / 禁果」三个站源、黄豆域名池与显示名修复、播放量为 0 时不显示、弹幕样式设置。仍然按功能最小合并，没有整仓覆盖——本分支独有的番茄源、直播、XBPQ / 自定义源、跨源聚合搜索、TV 播放器线路 / 选集、投屏、画质增强、青空账号链路与本地服务版全部保留。Android / Windows / macOS / iOS / 本地服务版同步生效。

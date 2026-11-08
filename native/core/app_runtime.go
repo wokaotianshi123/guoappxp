@@ -404,6 +404,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 	duration := 60 * time.Second
 	if input.Action == "moveDownloads" {
 		duration = 10 * time.Minute
+	} else if input.Action == "analyzeCustomSourceSite" {
+		// 自动识别要依次抓首页 / 分类页 / 搜索接口 / 详情页，给足预算；
+		// 分析器内部另有 45 秒硬预算与请求数上限，不会真的拖到 90 秒。
+		duration = 90 * time.Second
 	} else if input.Action == "danmaku" {
 		duration = 10 * time.Second
 	} else if input.Action == "preload" {
@@ -546,6 +550,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return true, nil
 	case "customSources":
 		return map[string]any{"items": engine.customMaccmsSources()}, nil
+	// analyzeCustomSourceSite：新增自定义源时按网页 HTML 自动反推 XBPQ 规则。
+	// 只返回规则文本与诊断说明，不写盘；是否保存仍由用户在表单里点「保存」决定。
+	case "analyzeCustomSourceSite":
+		return engine.downloader.analyzeCustomSourceSite(ctx, input.Base)
 	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
 	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
 	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。

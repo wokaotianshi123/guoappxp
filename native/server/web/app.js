@@ -2205,6 +2205,22 @@ function customSourceImportUrl(url) {
   });
 }
 
+// 自动识别：把站点网址交给 Go 核心抓 HTML 反推规则；只回填表单，不保存。
+function customSourceAnalyze(base) {
+  return fetch('/api/custom-sources/analyze', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ base: base }),
+  }).then(function (response) {
+    return response.json().then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '自动识别失败');
+      }
+      return data.data || {};
+    });
+  });
+}
+
 function customSourceResetAll() {
   return fetch('/api/custom-sources/reset', { method: 'POST' })
     .then(function (response) {
@@ -2630,6 +2646,8 @@ function openCustomSourceEditor(existing) {
     '<label style="display:block;font-size:12px;opacity:0.8;margin-bottom:4px">源网址（MacCMS 站点根地址）</label>' +
     '<input id="cs-base" class="search" type="url" placeholder="https://example.com" ' +
     'style="width:100%;margin-bottom:12px" value="' + escapeHTML(existing ? existing.base : '') + '" />' +
+    '<div style="display:flex;justify-content:flex-end;margin:-6px 0 12px">' +
+    '<button type="button" class="btn" id="cs-analyze">自动识别规则（抓取网页 HTML）</button></div>' +
     '<label style="display:block;font-size:12px;opacity:0.8;margin-bottom:4px">源类型（快速判定走网页模块还是 JSON API 模块）</label>' +
     '<select id="cs-kind" class="search" ' +
     'style="width:100%;margin-bottom:12px;background:var(--bg,#12161f);color:inherit;border:1px solid var(--border,#333);border-radius:8px;padding:8px">' +
@@ -2643,6 +2661,7 @@ function openCustomSourceEditor(existing) {
     '<textarea id="cs-rule" spellcheck="false" placeholder=\'{"主页url":"https://…","分类url":"…{cateId}-{catePg}…","数组":"…&&…","标题":"…","链接":"…"}\' ' +
     'style="width:100%;min-height:130px;font-family:monospace;font-size:12px;box-sizing:border-box;background:var(--bg,#12161f);color:inherit;border:1px solid var(--border,#333);border-radius:8px;padding:8px">' +
     escapeHTML(existing && existing.rule ? existing.rule : '') + '</textarea></div>' +
+    '<div id="cs-analyze-info" style="font-size:12px;opacity:0.85;white-space:pre-wrap;line-height:1.5;margin-top:8px"></div>' +
     '<div id="cs-error" style="color:#ff8b90;font-size:12px;min-height:18px;margin-top:8px"></div>' +
     '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:6px">' +
     '<button type="button" class="btn" id="cs-cancel">取消</button>' +
@@ -2659,12 +2678,54 @@ function openCustomSourceEditor(existing) {
   var errorBox = document.getElementById('cs-error');
   var saveButton = document.getElementById('cs-save');
   var cancelButton = document.getElementById('cs-cancel');
+  var analyzeButton = document.getElementById('cs-analyze');
+  var analyzeInfo = document.getElementById('cs-analyze-info');
   if (nameInput) nameInput.focus();
   if (ruleToggle) {
     ruleToggle.addEventListener('change', function () {
       if (ruleWrap) ruleWrap.style.display = ruleToggle.checked ? 'block' : 'none';
       if (!ruleToggle.checked && baseInput) baseInput.removeAttribute('readonly');
       else if (baseInput) baseInput.placeholder = '留空则自动取规则「主页url」';
+    });
+  }
+  if (analyzeButton) {
+    analyzeButton.addEventListener('click', function () {
+      var base = (baseInput && baseInput.value ? baseInput.value : '').trim();
+      if (!base) {
+        errorBox.textContent = '请先填写源网址再自动识别';
+        return;
+      }
+      var label = '自动识别规则（抓取网页 HTML）';
+      function restore() {
+        analyzeButton.disabled = false;
+        analyzeButton.textContent = label;
+      }
+      analyzeButton.disabled = true;
+      analyzeButton.textContent = '识别中…';
+      errorBox.textContent = '';
+      if (analyzeInfo) analyzeInfo.textContent = '正在抓取网页 HTML 并反推分类、列表、搜索与播放字段…';
+      customSourceAnalyze(base)
+        .then(function (result) {
+          var rule = (result && result.rule ? String(result.rule) : '').trim();
+          if (rule) {
+            if (ruleToggle) ruleToggle.checked = true;
+            if (ruleWrap) ruleWrap.style.display = 'block';
+            if (ruleInput) ruleInput.value = rule;
+            if (nameInput && !nameInput.value.trim() && result.name) nameInput.value = result.name;
+          }
+          var notes = (result && Array.isArray(result.notes) ? result.notes : []).slice(0, 8);
+          var text = rule
+            ? '已按网页 HTML 生成规则：可直接保存，也可在下方微调后保存。规则优先于源类型。'
+            : '未能识别出可靠规则，已保留为普通网页源（引擎会自动适配 MacCMS），也可以手动粘贴规则。';
+          if (notes.length) { text += '\n• ' + notes.join('\n• '); }
+          if (analyzeInfo) analyzeInfo.textContent = text;
+          restore();
+        })
+        .catch(function (error) {
+          errorBox.textContent = error.message || '自动识别失败';
+          if (analyzeInfo) analyzeInfo.textContent = '';
+          restore();
+        });
     });
   }
   function close() {

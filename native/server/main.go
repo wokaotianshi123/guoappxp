@@ -767,6 +767,31 @@ func customSourceImport(content string) (map[string]any, error) {
 	return reply.Data, nil
 }
 
+// customSourceAnalyze 调用核心的站点分析器：抓首页 / 分类页 / 搜索接口 / 详情页，
+// 反推出分类、列表、搜索、详情、播放等 XBPQ 字段。核心只在内存里组装，不写盘。
+func customSourceAnalyze(base string) (map[string]any, error) {
+	payload, err := json.Marshal(map[string]any{"action": "analyzeCustomSourceSite", "base": base})
+	if err != nil {
+		return nil, err
+	}
+	var reply struct {
+		OK    bool           `json:"ok"`
+		Data  map[string]any `json:"data"`
+		Error string         `json:"error"`
+	}
+	if err := json.Unmarshal([]byte(core.NativeRequest(string(payload))), &reply); err != nil {
+		return nil, errors.New("核心响应无法解析")
+	}
+	if !reply.OK || reply.Data == nil {
+		message := strings.TrimSpace(reply.Error)
+		if message == "" {
+			message = "自动识别失败"
+		}
+		return nil, errors.New(message)
+	}
+	return reply.Data, nil
+}
+
 // customSourceReset 清空全部自定义源，恢复默认内置源状态。
 func customSourceReset() (int, error) {
 	var reply struct {
@@ -855,6 +880,33 @@ func handleCustomSources(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		writeJSON(writer, map[string]any{"ok": true, "removed": removed})
+		return
+	}
+	// 自动识别：输入站点网址，由 Go 核心抓取网页 HTML 反推 XBPQ 规则。
+	// 只返回规则文本与诊断说明，不写盘；保存仍走上面的 POST/PUT。
+	if request.URL.Path == "/api/custom-sources/analyze" {
+		if request.Method != http.MethodPost {
+			customSourceError(writer, "自动识别不支持该请求方法")
+			return
+		}
+		body, err := io.ReadAll(io.LimitReader(request.Body, 64<<10))
+		if err != nil {
+			customSourceError(writer, "读取请求失败")
+			return
+		}
+		var payload struct {
+			Base string `json:"base"`
+		}
+		if json.Unmarshal(body, &payload) != nil || strings.TrimSpace(payload.Base) == "" {
+			customSourceError(writer, "请提供要识别的源网址")
+			return
+		}
+		result, err := customSourceAnalyze(strings.TrimSpace(payload.Base))
+		if err != nil {
+			customSourceError(writer, err.Error())
+			return
+		}
+		writeJSON(writer, map[string]any{"ok": true, "data": result})
 		return
 	}
 	switch request.Method {

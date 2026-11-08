@@ -439,13 +439,20 @@ class _CustomSourceEditorState extends State<_CustomSourceEditor> {
   late final _rule = TextEditingController(text: widget.existing?.rule ?? '');
   bool _ruleMode = false;
   bool _busy = false;
+  bool _analyzing = false;
   String? _error;
+  List<String> _analysisNotes = const [];
+  String? _analysisSummary;
   late String _kind = widget.existing?.kind ?? '';
 
   @override
   void initState() {
     super.initState();
     _ruleMode = widget.existing?.hasRule ?? false;
+    // 网址一变化就刷新「自动识别」按钮的可用状态。
+    _base.addListener(() {
+      if (mounted) setState(() {});
+    });
   }
 
   @override
@@ -503,6 +510,57 @@ class _CustomSourceEditorState extends State<_CustomSourceEditor> {
     }
   }
 
+  /// 抓取站点网页 HTML，让 Go 核心反推分类 / 列表 / 搜索 / 详情 / 播放规则并回填表单。
+  /// 这里只填表，不写盘；用户看过规则后仍需点「保存」才真正新增自定义源。
+  Future<void> _analyze() async {
+    if (_busy) return;
+    final base = _base.text.trim();
+    if (base.isEmpty) {
+      setState(() => _error = '请先填写源网址再自动识别');
+      return;
+    }
+    setState(() {
+      _busy = true;
+      _analyzing = true;
+      _error = null;
+      _analysisNotes = const [];
+      _analysisSummary = null;
+    });
+    try {
+      final result = await widget.repository.analyzeCustomSourceSite(base);
+      final rule = (result['rule'] as String? ?? '').trim();
+      final notes = (result['notes'] as List? ?? const [])
+          .whereType<String>()
+          .where((line) => line.isNotEmpty)
+          .toList();
+      if (!mounted) return;
+      setState(() {
+        _analysisNotes = notes;
+        if (rule.isNotEmpty) {
+          _rule.text = rule;
+          _ruleMode = true;
+          if (_name.text.trim().isEmpty) {
+            _name.text = (result['name'] as String? ?? '').trim();
+          }
+          _analysisSummary =
+              '已按网页 HTML 生成规则：可直接保存，也可在下方微调后保存。规则优先于源类型，无需改动源类型。';
+        } else {
+          _analysisSummary =
+              '未能识别出可靠规则，已保留为普通网页源（引擎会自动适配 MacCMS 站点），也可以手动粘贴规则。';
+        }
+      });
+    } catch (error) {
+      if (mounted) setState(() => _error = '自动识别失败：$error');
+    } finally {
+      if (mounted) {
+        setState(() {
+          _busy = false;
+          _analyzing = false;
+        });
+      }
+    }
+  }
+
   @override
   Widget build(BuildContext context) => AlertDialog(
     title: Text(widget.existing == null ? '新增自定义源' : '编辑自定义源'),
@@ -534,11 +592,26 @@ class _CustomSourceEditorState extends State<_CustomSourceEditor> {
                 labelText: '源网址',
                 hintText: 'https://example.com',
                 helperText: _ruleMode
-                    ? '规则模式下自动取规则「主页url」'
-                    : '支持符合 MacCMS 规范的站点，自动适配目录、搜索与播放。',
+                    ? '规则模式下网址由规则「主页url」决定；要识别别的站点请先关闭规则开关。'
+                    : '填好网址后点「自动识别规则」，会抓取网页 HTML 反推分类、列表、搜索与播放字段。',
                 helperMaxLines: 3,
               ),
             ),
+            Align(
+              alignment: Alignment.centerRight,
+              child: FilledButton.tonalIcon(
+                onPressed: _busy || _base.text.trim().isEmpty ? null : _analyze,
+                icon: _analyzing
+                    ? const SizedBox(
+                        width: 16,
+                        height: 16,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.auto_fix_high_rounded, size: 18),
+                label: Text(_analyzing ? '识别中…' : '自动识别规则'),
+              ),
+            ),
+            const SizedBox(height: 8),
             DropdownButtonFormField<String>(
               initialValue: _kind,
               decoration: const InputDecoration(
@@ -587,6 +660,39 @@ class _CustomSourceEditorState extends State<_CustomSourceEditor> {
                         '"数组":"…&&…","标题":"…","链接":"…"}',
                     helperText: '兼容截取语法（A&&B）与 p: 选择器；保存时校验规则有效性。',
                     helperMaxLines: 2,
+                  ),
+                ),
+              ),
+            if (_analysisSummary case final summary?)
+              Padding(
+                padding: const EdgeInsets.only(top: 10),
+                child: Container(
+                  width: double.infinity,
+                  padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
+                  decoration: BoxDecoration(
+                    border: Border.all(color: Theme.of(context).dividerColor),
+                    borderRadius: BorderRadius.circular(8),
+                  ),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        summary,
+                        style: Theme.of(context).textTheme.bodySmall,
+                      ),
+                      if (_analysisNotes.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        for (final note in _analysisNotes.take(8))
+                          Padding(
+                            padding: const EdgeInsets.only(top: 2),
+                            child: Text(
+                              '• $note',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                      ],
+                    ],
                   ),
                 ),
               ),
