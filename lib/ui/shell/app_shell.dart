@@ -12,6 +12,7 @@ import '../app_scope.dart';
 import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
+import '../magnet/magnet_page.dart';
 import '../mine/mine_page.dart';
 import '../widgets/bar_button.dart';
 import '../widgets/focus_ring.dart';
@@ -20,7 +21,9 @@ import '../widgets/source_bar.dart';
 enum AppTab {
   explore('发现', Icons.explore_outlined, Icons.explore),
   follow('追剧', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
-  mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
+  mine('我的', Icons.person_outline_rounded, Icons.person_rounded),
+  // 磁力与发现 / 追剧 / 我的并列；放在最后，保持前三项的索引与退出逻辑不变。
+  magnet('磁力', Icons.cloud_download_outlined, Icons.cloud_download);
 
   const AppTab(this.label, this.icon, this.selectedIcon);
   final String label;
@@ -126,7 +129,7 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  /// 顶栏这一行的遥控器顺序：发现 → 追剧 → 我的 → 切换站源 → 搜索。
+  /// 顶栏这一行的遥控器顺序：发现 → 追剧 → 我的 → 磁力 → 切换站源 → 搜索。
   /// 站源为空时 SourceBar 不渲染，两个按钮的 context 也就为空，自动出列。
   List<FocusNode> get _televisionHeaderNodes => [
     ..._tabFocus,
@@ -147,7 +150,9 @@ class _AppShellState extends State<AppShell> {
       final entry = switch (_tab) {
         AppTab.follow => _followEntry,
         AppTab.mine => _mineEntry,
+        // 磁力页与发现页一样由页面自己接管内容区焦点。
         AppTab.explore => null,
+        AppTab.magnet => null,
       };
       if (entry?.context == null) return KeyEventResult.ignored;
       revealFocus(entry!);
@@ -200,8 +205,7 @@ class _AppShellState extends State<AppShell> {
 
   /// 发现页没有自己的「上」处理：这里兜底把焦点从内容送回顶栏。
   KeyEventResult _televisionPageKey(FocusNode _, KeyEvent event) {
-    if (event is KeyUpEvent ||
-        event.logicalKey != LogicalKeyboardKey.arrowUp) {
+    if (event is KeyUpEvent || event.logicalKey != LogicalKeyboardKey.arrowUp) {
       return KeyEventResult.ignored;
     }
     final focus = FocusManager.instance.primaryFocus;
@@ -259,6 +263,7 @@ class _AppShellState extends State<AppShell> {
       entryFocus: _mineEntry,
       onExitUp: _exitUpToHeader,
     ),
+    AppTab.magnet => MagnetPage(store: widget.store),
   };
 
   @override

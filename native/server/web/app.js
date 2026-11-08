@@ -167,6 +167,20 @@ var state = {
   libraryQuery: '',
   // 跨源聚合搜索得到的同名剧副本（按剧 id 缓存），供详情页「切换播放源」使用。
   crossPeers: {},
+  // 磁力搜索页的查询/结果/站源勾选缓存：切换 hash 回来仍能接着看上次的结果。
+  magnet: {
+    sites: [],
+    selected: {},
+    sitesLoaded: false,
+    query: '',
+    page: 1,
+    items: [],
+    hasMore: false,
+    warning: '',
+    error: '',
+    loading: false,
+    searchSites: [],
+  },
 };
 
 var hlsInstance = null;
@@ -3386,6 +3400,491 @@ function renderLiveView() {
   });
 }
 
+/* ---------- 磁力搜索：复用 /api/request 通用转发与网页版现有播放器 ---------- */
+
+// api() 已经把 {ok, data} 信封拆开并 resolve data.data，所以下面四个封装
+// 拿到的就是各 action 的返回对象本身，不用再取一层 .data。
+function magnetSites() {
+  return api({ action: 'magnetSites' });
+}
+
+function magnetSearch(query, page, sites) {
+  return api({ action: 'magnetSearch', query: query, page: page, sites: sites || [] });
+}
+
+function magnetFiles(magnet) {
+  return api({ action: 'magnetFiles', magnet: magnet });
+}
+
+function magnetPlay(magnet, fileIndex) {
+  return api({ action: 'magnetPlay', magnet: magnet, fileIndex: fileIndex });
+}
+
+function magnetFormatSize(size) {
+  if (typeof size === 'number' && isFinite(size)) {
+    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
+    var value = size;
+    var unit = 0;
+    while (value >= 1024 && unit < units.length - 1) {
+      value /= 1024;
+      unit += 1;
+    }
+    return (unit === 0 ? String(value) : value.toFixed(2)) + ' ' + units[unit];
+  }
+  return size === undefined || size === null ? '' : String(size);
+}
+
+function magnetSetHTML(html) {
+  var box = document.getElementById('magnet-status');
+  if (!box) {
+    return;
+  }
+  box.innerHTML = html || '';
+  box.style.display = html ? 'block' : 'none';
+}
+
+function magnetSetStatus(message, kind) {
+  if (!message) {
+    magnetSetHTML('');
+    return;
+  }
+  var tone = kind === 'error'
+    ? ';border-color:#7a2b2f;background:rgba(255,90,95,0.12)'
+    : '';
+  magnetSetHTML(
+    '<div class="notice" style="display:block' + tone + '">' +
+    escapeHTML(message) + '</div>'
+  );
+}
+
+// 全选时传空数组，交给后端「全部启用站源」的语义；用户取消任意勾选后，
+// 才把剩下勾选的站源 id 明确传过去。
+function magnetSelectedSites() {
+  var sites = state.magnet.sites || [];
+  var allSelected = sites.length
+    ? sites.every(function (item) { return !!state.magnet.selected[item.id]; })
+    : true;
+  if (allSelected) {
+    return [];
+  }
+  return sites
+    .filter(function (item) { return !!state.magnet.selected[item.id]; })
+    .map(function (item) { return Number(item.id); });
+}
+
+function magnetSitesCountText() {
+  var sites = state.magnet.sites || [];
+  var selected = sites.filter(function (item) { return !!state.magnet.selected[item.id]; }).length;
+  return '站源 ' + sites.length + ' 个 · 已选 ' + selected + ' 个';
+}
+
+function renderMagnetSitesPanel() {
+  var count = document.getElementById('magnet-sites-count');
+  if (count) {
+    count.textContent = magnetSitesCountText();
+  }
+  var all = document.getElementById('magnet-sites-all');
+  var sites = state.magnet.sites || [];
+  if (all) {
+    all.checked = sites.every(function (item) { return !!state.magnet.selected[item.id]; });
+  }
+  var list = document.getElementById('magnet-sites-list');
+  if (!list) {
+    return;
+  }
+  list.innerHTML = sites.length
+    ? sites.map(function (item) {
+        return (
+          '<label style="display:inline-flex;align-items:center;gap:6px;min-width:160px;' +
+          'font-size:13px;color:var(--muted);cursor:pointer;padding:4px 8px;' +
+          'border:1px solid var(--line);border-radius:8px">' +
+          '<input type="checkbox" class="magnet-site" data-id="' + escapeHTML(item.id) + '"' +
+          (state.magnet.selected[item.id] ? ' checked' : '') + ' />' +
+          '<span>' + escapeHTML(item.name || item.id) +
+          (item.state === false ? '（停用）' : '') + '</span>' +
+          '</label>'
+        );
+      }).join('')
+    : '<div class="empty">暂无站源。</div>';
+  var boxes = list.querySelectorAll('.magnet-site');
+  Array.prototype.forEach.call(boxes, function (box) {
+    box.addEventListener('change', function () {
+      state.magnet.selected[box.getAttribute('data-id')] = box.checked;
+      renderMagnetSitesPanel();
+    });
+  });
+}
+
+function renderMagnetResults() {
+  var box = document.getElementById('magnet-results');
+  if (!box) {
+    return;
+  }
+  var items = state.magnet.items || [];
+  var warning = state.magnet.warning
+    ? '<div class="cross-warning">' + escapeHTML(state.magnet.warning) + '</div>'
+    : '';
+  if (!items.length) {
+    box.innerHTML = warning +
+      (state.magnet.query
+        ? '<div class="empty">没有找到结果，换个关键词或站源试试。</div>'
+        : '<div class="empty">输入关键词开始搜索磁力资源。</div>');
+  } else {
+    box.innerHTML = warning + items.map(function (item, i) {
+      var meta = [item.site, magnetFormatSize(item.size), item.date]
+        .filter(function (part) { return !!part; })
+        .join(' · ');
+      return (
+        '<div class="card" style="padding:10px 12px;margin:8px 0">' +
+        '<div style="font-size:14px;font-weight:600;word-break:break-all;line-height:1.4">' +
+        escapeHTML(item.title || '无标题') + '</div>' +
+        '<div class="meta" style="color:var(--muted);font-size:12px;padding:6px 0 8px">' +
+        escapeHTML(meta) + (item.playable ? ' · 可在线播放' : '') + '</div>' +
+        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+        '<button type="button" class="btn mini magnet-play" data-play="' + i + '">播放</button>' +
+        '<button type="button" class="btn mini magnet-copy" data-copy="' + i + '">复制磁力链接</button>' +
+        '</div></div>'
+      );
+    }).join('');
+  }
+  bindMagnetResults();
+  renderMagnetMore();
+}
+
+function bindMagnetResults() {
+  var plays = view.querySelectorAll('.magnet-play');
+  Array.prototype.forEach.call(plays, function (button) {
+    button.addEventListener('click', function () {
+      var item = state.magnet.items[Number(button.getAttribute('data-play'))];
+      if (item) {
+        startMagnetPlay(item.magnet, item.title);
+      }
+    });
+  });
+  var copies = view.querySelectorAll('.magnet-copy');
+  Array.prototype.forEach.call(copies, function (button) {
+    button.addEventListener('click', function () {
+      var item = state.magnet.items[Number(button.getAttribute('data-copy'))];
+      if (item) {
+        copyMagnetLink(item.magnet);
+      }
+    });
+  });
+}
+
+function renderMagnetMore() {
+  var box = document.getElementById('magnet-more');
+  if (!box) {
+    return;
+  }
+  if (!state.magnet.items.length || !state.magnet.hasMore) {
+    box.innerHTML = '';
+    return;
+  }
+  box.innerHTML =
+    '<div class="pager"><button type="button" class="btn" id="magnet-more-btn">加载更多</button>' +
+    '<span>第 ' + state.magnet.page + ' 页</span></div>';
+  var more = document.getElementById('magnet-more-btn');
+  if (more) {
+    more.addEventListener('click', function () {
+      loadMagnetPage(state.magnet.page + 1);
+    });
+  }
+}
+
+function loadMagnetPage(page) {
+  if (state.magnet.loading || !state.magnet.query) {
+    return Promise.resolve();
+  }
+  state.magnet.loading = true;
+  var more = document.getElementById('magnet-more-btn');
+  if (more) {
+    more.disabled = true;
+    more.textContent = '加载中…';
+  }
+  if (page <= 1) {
+    magnetSetStatus('正在搜索「' + state.magnet.query + '」…');
+  }
+  var query = state.magnet.query;
+  var sites = state.magnet.searchSites || [];
+  return magnetSearch(query, page, sites).then(function (result) {
+    var fresh = result.items || [];
+    // 首屏整体替换，翻页追加，避免把已加载的结果顶掉。
+    if (page <= 1) {
+      state.magnet.items = fresh;
+    } else {
+      state.magnet.items = state.magnet.items.concat(fresh);
+    }
+    state.magnet.page = Number(result.page) || page;
+    state.magnet.hasMore = !!result.hasMore;
+    state.magnet.warning = result.warning || '';
+    state.magnet.error = '';
+    magnetSetStatus('');
+  }, function (error) {
+    state.magnet.error = (error && error.message) || '搜索失败';
+    magnetSetStatus('搜索失败：' + state.magnet.error, 'error');
+  }).then(function () {
+    state.magnet.loading = false;
+    renderMagnetResults();
+  });
+}
+
+function submitMagnetSearch() {
+  var input = document.getElementById('magnet-query');
+  var query = input ? input.value.trim() : '';
+  if (!query) {
+    magnetSetStatus('请输入搜索关键词。', 'error');
+    return;
+  }
+  state.magnet.query = query;
+  state.magnet.page = 1;
+  state.magnet.items = [];
+  state.magnet.hasMore = false;
+  state.magnet.warning = '';
+  state.magnet.error = '';
+  state.magnet.searchSites = magnetSelectedSites();
+  var results = document.getElementById('magnet-results');
+  if (results) {
+    results.innerHTML = '';
+  }
+  var more = document.getElementById('magnet-more');
+  if (more) {
+    more.innerHTML = '';
+  }
+  loadMagnetPage(1);
+}
+
+function copyMagnetLink(magnet) {
+  if (!magnet) {
+    magnetSetStatus('该结果没有磁力链接。', 'error');
+    return;
+  }
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(magnet).then(function () {
+      magnetSetStatus('已复制磁力链接到剪贴板。');
+    }).catch(function () {
+      window.prompt('复制失败，请手动复制磁力链接：', magnet);
+    });
+  } else {
+    window.prompt('浏览器不支持自动复制，请手动复制磁力链接：', magnet);
+  }
+}
+
+function startMagnetPlay(magnet, title) {
+  if (!magnet) {
+    magnetSetStatus('该结果没有磁力链接，无法播放。', 'error');
+    return;
+  }
+  magnetSetStatus('正在读取种子文件列表…');
+  magnetFiles(magnet).then(function (result) {
+    var files = result.items || [];
+    var videos = files.filter(function (file) { return !!file.video; });
+    if (videos.length > 1) {
+      showMagnetFilePicker(magnet, videos, title);
+      return;
+    }
+    // 只有 1 个视频文件直接播；0 个时用 -1 让后端自动选最大的视频文件。
+    var file = videos.length === 1 ? videos[0] : null;
+    playMagnetFile(magnet, file ? file.index : -1, file ? file.name : '', title);
+  }).catch(function (error) {
+    magnetSetStatus(
+      '读取种子文件失败：' + ((error && error.message) || '未知错误') +
+      '（常见于 DHT 获取元数据超时，可稍后重试）',
+      'error'
+    );
+  });
+}
+
+function showMagnetFilePicker(magnet, videos, title) {
+  var rows = videos.map(function (file, i) {
+    return (
+      '<button type="button" class="btn mini magnet-file-pick" data-pick="' + i + '">' +
+      escapeHTML(file.name || ('文件 ' + (i + 1))) + ' · ' +
+      escapeHTML(magnetFormatSize(file.size)) + '</button>'
+    );
+  }).join('');
+  magnetSetHTML(
+    '<div class="cross-warning">该种子包含多个视频文件，请选择要播放的一个：</div>' +
+    '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">' + rows + '</div>' +
+    '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
+    '<button type="button" class="btn mini" id="magnet-file-auto">自动选最大视频</button>' +
+    '<button type="button" class="btn mini" id="magnet-file-cancel">取消</button>' +
+    '</div>'
+  );
+  var picks = view.querySelectorAll('.magnet-file-pick');
+  Array.prototype.forEach.call(picks, function (button) {
+    button.addEventListener('click', function () {
+      var file = videos[Number(button.getAttribute('data-pick'))];
+      if (file) {
+        playMagnetFile(magnet, file.index, file.name, title);
+      }
+    });
+  });
+  var auto = document.getElementById('magnet-file-auto');
+  if (auto) {
+    auto.addEventListener('click', function () {
+      playMagnetFile(magnet, -1, '', title);
+    });
+  }
+  var cancel = document.getElementById('magnet-file-cancel');
+  if (cancel) {
+    cancel.addEventListener('click', function () {
+      magnetSetStatus('');
+    });
+  }
+}
+
+function playMagnetFile(magnet, fileIndex, name, title) {
+  magnetSetStatus('正在准备播放…');
+  magnetPlay(magnet, fileIndex).then(function (plan) {
+    var url = plan && plan.url;
+    if (!url) {
+      magnetSetStatus('未取得播放地址。', 'error');
+      return;
+    }
+    mountMagnetVideo(url, name || title || '磁力播放');
+    magnetSetStatus('');
+  }).catch(function (error) {
+    magnetSetStatus('播放准备失败：' + ((error && error.message) || '未知错误'), 'error');
+  });
+}
+
+// 复用网页版观看页的 DOM 结构与 mountVideo()：它内部已经接好 hls.js / 原生
+// <video>、倍速、进度上报，这里不再另起一套播放器 UI，也不引入新播放器库。
+function mountMagnetVideo(url, title) {
+  var box = document.getElementById('magnet-player');
+  if (!box) {
+    return;
+  }
+  stopPlayback();
+  // 清掉观看页状态：reportProgress / scheduleAutoNext 见到 drama 为 null 会直接返回，
+  // 磁力播放不会往「播放记录」里写一条错剧集。
+  state.drama = null;
+  state.plan = null;
+  state.chapters = [];
+  state.index = 0;
+  box.innerHTML =
+    '<div class="watch" style="margin:14px 0">' +
+      '<div class="player-wrap">' +
+        '<div class="player-title">' + escapeHTML(title) + '</div>' +
+        '<div class="player-stage"><video id="player" controls autoplay playsinline></video></div>' +
+        '<div class="notice" id="play-note"></div>' +
+        '<div class="player-bar"><span class="spacer"></span>' +
+          '<button type="button" class="btn" id="magnet-player-close">关闭播放</button>' +
+        '</div>' +
+      '</div>' +
+    '</div>';
+  var close = document.getElementById('magnet-player-close');
+  if (close) {
+    close.addEventListener('click', function () {
+      stopPlayback();
+      box.innerHTML = '';
+    });
+  }
+  var video = document.getElementById('player');
+  if (video) {
+    // mountVideo 把 onerror 指向自动换线；磁力播放没有多线路，补一个直白提示。
+    video.addEventListener('error', function () {
+      showNotice('视频加载失败：种子可能尚未就绪，或浏览器不支持该格式。');
+    });
+  }
+  mountVideo(url, 0);
+  if (box.scrollIntoView) {
+    box.scrollIntoView();
+  }
+}
+
+function bindMagnetView() {
+  var form = document.getElementById('magnet-form');
+  if (form) {
+    form.addEventListener('submit', function (event) {
+      event.preventDefault();
+      submitMagnetSearch();
+    });
+  }
+  var toggle = document.getElementById('magnet-sites-toggle');
+  var panel = document.getElementById('magnet-sites-panel');
+  if (toggle && panel) {
+    toggle.addEventListener('click', function () {
+      var open = panel.style.display !== 'none';
+      panel.style.display = open ? 'none' : 'block';
+      toggle.textContent = open ? '站源选择 ▾' : '站源选择 ▴';
+    });
+  }
+  var all = document.getElementById('magnet-sites-all');
+  if (all) {
+    all.addEventListener('change', function () {
+      var checked = all.checked;
+      (state.magnet.sites || []).forEach(function (item) {
+        state.magnet.selected[item.id] = checked;
+      });
+      renderMagnetSitesPanel();
+    });
+  }
+}
+
+function renderMagnet() {
+  view.innerHTML =
+    '<div class="magnet-wrap" style="max-width:1000px;margin:0 auto">' +
+      '<div class="lib-toolbar" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">' +
+        '<form id="magnet-form" style="display:flex;gap:8px;flex:1 1 320px;min-width:0">' +
+          '<input id="magnet-query" type="search" placeholder="输入关键词搜索磁力资源" ' +
+            'autocomplete="off" style="flex:1 1 auto;min-width:0" />' +
+          '<button type="submit" class="btn">搜索</button>' +
+        '</form>' +
+        '<span id="magnet-sites-count" style="font-size:13px;color:var(--muted)"></span>' +
+      '</div>' +
+      '<div class="section" style="margin-top:10px">' +
+        '<button type="button" class="btn mini" id="magnet-sites-toggle">站源选择 ▾</button>' +
+        '<div id="magnet-sites-panel" style="display:none;margin-top:10px;padding:10px 12px;' +
+          'border:1px solid var(--line);border-radius:10px;background:var(--panel)">' +
+          '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
+            '默认全选（即全部启用站源）；勾选变更后在下一次搜索时生效。' +
+            '站源较多，可折叠查看、面板内滚动。</div>' +
+          '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;' +
+            'cursor:pointer;margin-bottom:8px"><input type="checkbox" id="magnet-sites-all" /> ' +
+            '全选 / 全不选</label>' +
+          '<div id="magnet-sites-list" style="display:flex;flex-wrap:wrap;gap:8px;' +
+            'max-height:220px;overflow-y:auto"></div>' +
+        '</div>' +
+      '</div>' +
+      '<div id="magnet-player"></div>' +
+      '<div id="magnet-status" style="display:none"></div>' +
+      '<div id="magnet-results"></div>' +
+      '<div id="magnet-more"></div>' +
+    '</div>';
+  var input = document.getElementById('magnet-query');
+  if (input) {
+    input.value = state.magnet.query;
+  }
+  bindMagnetView();
+  // 结果/站源都缓存在 state.magnet，切换 hash 回来时这里直接把上次结果画回来。
+  renderMagnetResults();
+  if (state.magnet.sitesLoaded) {
+    renderMagnetSitesPanel();
+    return Promise.resolve();
+  }
+  magnetSetStatus('正在加载站源列表…');
+  return magnetSites().then(function (result) {
+    var items = result.items || [];
+    state.magnet.sites = items;
+    state.magnet.selected = {};
+    items.forEach(function (item) {
+      state.magnet.selected[item.id] = true;
+    });
+    state.magnet.sitesLoaded = true;
+    renderMagnetSitesPanel();
+    magnetSetStatus('');
+  }).catch(function (error) {
+    state.magnet.error = (error && error.message) || '站源加载失败';
+    renderMagnetSitesPanel();
+    magnetSetStatus(
+      '站源加载失败：' + state.magnet.error + '（仍可搜索全部启用站源）',
+      'error'
+    );
+  });
+}
+
 function render() {
   cancelAutoNext();
   // 换路由就放弃还在跑的全部源搜索，别让它的轮询继续往页面上画结果。
@@ -3423,6 +3922,10 @@ function render() {
   if (visibilityButton) {
     visibilityButton.classList.toggle('active', current.path === 'source-visibility');
   }
+  var magnetButton = document.getElementById('magnet-btn');
+  if (magnetButton) {
+    magnetButton.classList.toggle('active', current.path === 'magnet');
+  }
   var task;
   // #/drama 与 #/play 统一渲染融合观看页（播放器在上、选集居中、详情沉底）；
   // 旧链接 #/play 继续兼容，落到同一页并带上 index。
@@ -3438,6 +3941,8 @@ function render() {
     task = renderSourceVisibility();
   } else if (current.path === 'live') {
     task = Promise.resolve().then(renderLiveView);
+  } else if (current.path === 'magnet') {
+    task = renderMagnet();
   } else {
     state.category = params.get('category') || '';
     state.page = Number(params.get('page') || 1);

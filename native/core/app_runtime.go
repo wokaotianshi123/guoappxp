@@ -151,6 +151,11 @@ type nativeInput struct {
 	Force           bool                    `json:"force"`
 	AdBlock         *bool                   `json:"adBlock"`
 	Account         soraniAccountInput      `json:"account"`
+	// 磁力：搜索关键词 / 页码 / 勾选的站源，播放用的磁力链接与种子内文件序号。
+	// fileIndex < 0 表示自动挑最大的视频文件。
+	Magnet    string `json:"magnet"`
+	FileIndex *int   `json:"fileIndex"`
+	Sites     []int  `json:"sites"`
 }
 
 type nativeCatalogResult struct {
@@ -412,6 +417,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		duration = 10 * time.Second
 	} else if input.Action == "preload" {
 		duration = 15 * time.Second
+	} else if input.Action == "magnetSearch" || input.Action == "magnetFiles" || input.Action == "magnetPlay" {
+		// 磁力搜索要并发抓多个站源，播放要等 DHT / tracker 返回种子元数据；
+		// 两个实现内部各有 40 秒硬预算，这里留出余量避免外层先超时。
+		duration = 90 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
@@ -554,6 +563,20 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 只返回规则文本与诊断说明，不写盘；是否保存仍由用户在表单里点「保存」决定。
 	case "analyzeCustomSourceSite":
 		return engine.downloader.analyzeCustomSourceSite(ctx, input.Base)
+	// 磁力：cisou 的站源规则表 + cibo 等价的「磁力 → 本机 HTTP 流」播放。
+	// 这四个 action 不属于站源白名单，nativeAuthorizeInput 不拦截。
+	case "magnetSites":
+		return magnetSiteList()
+	case "magnetSearch":
+		return magnetSearch(ctx, input.Query, input.Page, input.Sites)
+	case "magnetFiles":
+		return magnetFileList(ctx, input.Magnet)
+	case "magnetPlay":
+		wanted := -1
+		if input.FileIndex != nil {
+			wanted = *input.FileIndex
+		}
+		return magnetPlaybackPlan(ctx, input.Magnet, wanted)
 	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
 	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
 	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。

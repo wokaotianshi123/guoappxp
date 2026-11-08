@@ -2,6 +2,29 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.2.9+114
+
+把 `cisou.apk`（超强磁力搜索）的磁力搜索与 `cibo.apk`（种子磁力播放器）的磁力播放移植进 guoappxp：Flutter App 主页新增「磁力」标签、本地服务版网页顶栏新增「磁力」入口，搜索结果可直接调用项目原有播放器播放。Android / Windows / macOS / iOS / 本地服务版同步生效。
+
+### 改进
+- **主页「磁力」入口**：`AppTab` 新增 `magnet`，排在 `explore / follow / mine` 之后，手机 `NavigationBar`、平板 / 桌面 `_SideBar`、电视顶栏都由 `AppTab.values` 自动生成，一处接入四端齐活。前三项索引不变，退出逻辑与站源按钮行为不变；电视顶栏遥控器顺序相应更新为「发现 → 追剧 → 我的 → 磁力 → 切换站源 → 搜索」，`app_shell_tv_focus_test.dart` 同步断言 4 个标签。本地服务版 `index.html` 顶栏在「直播」后新增「磁力」链接（`#/magnet`）。
+- **35 个磁力站源聚合搜索**：从 `cisou.apk` 的 `assets/site-1.0.1.json` 保真导出 35 个启用站源规则，作为 `native/core/magnet_sites.json` 用 `//go:embed` 嵌进二进制（Flutter FFI 与本地服务版都不依赖运行时外部文件）。规则含 `[keyword]` / `[page]` 搜索模板、请求头与 `group / title / date / size / url / magnet` 的 XPath 字段；Go 侧按模板替换关键词、附带规则头、用 `htmlquery` 抽列表，6 个站源并发、4 个详情页并发，总预算 40 秒、单次抓取 12 秒。列表里没直接给出 infohash 的结果再抓一次详情页（隐藏 input / 下载按钮 / 正文磁力链接）补齐；按 infohash 跨站去重，单站失败只记账不影响其它站，全部失败时给 warning。搜索结果可勾选站源、最多翻 10 页、复制磁力链接。
+- **磁力播放接回原播放器**：`cibo.apk` 的播放链路是「迅雷 SDK `XLTaskHelper.addMagentTask()` → `.torrent` → 下载视频 → 本地播放器」，核心是 Android 闭源 `libxl_thunder_sdk.so`，无法搬进 Go 核心 / Flutter 五端。这里做等价重实现：内置纯 Go BT 客户端（`github.com/anacrolix/torrent`）解析 DHT / tracker 元数据，把选中的种子文件挂到本机 `127.0.0.1:<随机端口>/magnet/<infohash>/<文件序号>`，用 `http.ServeContent` 提供 Range / 206 流，播放器边下边播。多文件种子先列文件（标出视频后缀与大小）供选集；Flutter 侧用一套「伪剧集」把 `magnet` / `fileIndex` 放进 `Episode.raw`，`PlaybackLoader.load()` 见到 `raw['magnet']` 就短路到 `magnetPlay()`，返回的 `PlaybackPlan` 与站源取流完全一致，播放器、弹幕、进度、选集逻辑一行未改。
+- **本地服务版同款能力**：网页端复用 `/api/request` 通用转发，不新增后端路由；`rewriteLocalMedia()` 把本机磁力流地址改写成 `/api/media/magnet/...`，`handleMedia()` 反代回 BT 流端口并透传 Range，局域网设备与浏览器都能播。播放复用现有 `mountVideo(url, 0)`，不引入新播放器库；磁力播放时清空观看页 `state.drama`，不会往播放记录里写一条错剧集。
+
+### 实现与约束
+- Go 新增 `provider_magnet.go`（站源加载 / 搜索 URL 模板 / XPath 属性表达式拆取 / infohash 提取 / 详情补磁力 / 并发去重）与 `provider_magnet_torrent.go`（BT 客户端 / 文件选择 / Range 流）。编码沿用 `xbpqDecodeBody()` 处理 GBK，站源请求头与 UA 沿用项目既有约定。`app_runtime.go` 新增 `magnetSites / magnetSearch / magnetFiles / magnetPlay` 四个 action 与 90 秒 RPC 超时；这四个 action 不属于站源白名单分支，`nativeAuthorizeInput()` 不拦截，两个构建变体都能用。
+- 依赖：新增 `github.com/antchfx/htmlquery@v1.3.4`、`github.com/anacrolix/torrent@v1.54.1`。后者会带入 WebRTC / SQLite / bbolt / otel 等间接依赖，`go.mod` 依赖面明显变大，首次冷编译较慢；本机 `CGO_ENABLED=0` 下可正常构建（SQLite 走纯 Go 后端）。BT 客户端 `Seed = false` / `NoUpload = true` / 关闭默认端口映射，缓存写在系统临时目录，只下载不上传。缺少 tracker 的磁力会补 3 个公共 UDP tracker，元数据等待上限 40 秒，超时不删任务，后台继续找种子、稍后重试可命中缓存。
+- Dart 新增 `magnet_models.dart`、`ui/magnet/magnet_page.dart`，改动 `core_bridge.dart`（4 个 RPC 抽象与 `NativeRepository` 实现、磁力 action 100 秒超时）、`playback_loader.dart`（磁力短路）、`ui/shell/app_shell.dart`（新标签）。修掉三处实际缺陷：`AppScope` 的相对导入层级错误；站源清单在 `initState` 里读 InheritedWidget 会触发 Flutter 生命周期断言，改到 `didChangeDependencies` 只加载一次；「正在准备」标记原本用 `id` 且初值为空串，会让所有未解析出 infohash 的条目一直转圈，改成以磁力链接为键的可空标记。
+- **约束**：本机流只在 `127.0.0.1` 监听，`nativePlan.Local = true`、`DirectURL` 为空，因此不支持投屏；元数据与分片都依赖真实 DHT / tracker / peer 可达性，国内网络下冷门种子可能长时间拿不到元数据；APK 内置的站源域名是快照，可能已失效，失效站点只影响自己那一路结果。本项目不提供、不托管任何磁力资源，请仅用于合法内容。
+
+### 测试
+- Go：新增 `native/core/provider_magnet_test.go`，13 例覆盖嵌入站源表完整性、搜索 URL 模板替换、相对 / 绝对 / 磁力地址补全、infohash（hex / base32 / magnet xt）提取、XPath 属性抽取与非法表达式容错、列表五字段解析、详情页绝对 XPath 补磁力、跨站去重与勾选站源、单站失败给 warning、视频后缀与文件挑选、tracker 追加去重、磁力流端点对未知任务返回 503 / 非法路径返回 400、四个磁力 action 不被站源白名单拦截。HTTP 用假 `RoundTripper` 与 `httptest`，不依赖真实站点与 DHT。
+- Dart：新增 `test/magnet_test.dart`，覆盖四个标签并列且原三项索引不变、Go ↔ Dart JSON 模型（缺磁力链接时不可点播）、`PlaybackLoader` 见 `raw['magnet']` 短路到 `magnetPlay()` 且不再走站源取流、磁力页选站源 / 搜索 / 结果列表、点播后列出种子内文件供选集。更新 `test/app_shell_tv_focus_test.dart` 适配 4 标签顶栏焦点顺序。
+- 全量校验全部通过：`go build ./core ./server`（`BUILD=0`）、`go test ./... -count=1 -timeout 300s`（core 29.1s，`TEST=0`）、`go vet ./...`（`VET=0`）、本轮 4 个 Go 文件 `gofmt -l` 无输出（仓库里 `provider_maccms_api.go` / `livestream.go` 两个既有文件仍会被 formatter 列出，本次未改动以免产生无关 diff）；`dart analyze lib test` → `No issues found!`、本轮改动文件 `dart format` 通过；`node --check native/server/web/app.js` 通过；全量 `flutter test --no-pub -j 1` → `01:42 +185: All tests passed!`，0 失败（上一版 180 例，新增 5 例磁力测试）。Flutter 全量套件沿用后台 / 长超时 + `-j 1` + 日志重定向的跑法，避免多份 `output.dill` 同时写入临时盘触发 errno 112。
+
+> 未验证项：真实磁力站源当前可用性、真实种子的 DHT / tracker 元数据获取与边下边播体验（测试全部用桩，不发真实 BT 流量）、Android / iOS / macOS 上 gomobile 链接新增 BT 依赖的兼容性、本地服务版网页前端在浏览器里的实际交互，以及 BT 依赖对各端包体与冷启动的影响，均需联网真机 / 真种子验收。
+
 ## 1.2.8+113
 
 把 `一键写XBPQ源.py` 的站点探测算法移植进 Go 核心，给「新增自定义源」补上按网页 HTML 自动识别规则的能力。Flutter App 与本地服务版网页前端同步提供入口，Android / Windows / macOS / iOS / 本地服务版同步生效。原来的手工粘贴规则、MacCMS 运行时自动适配都保持不变。

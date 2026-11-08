@@ -9,6 +9,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'magnet_models.dart';
 import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'fanqie_backend.dart';
@@ -285,6 +286,19 @@ abstract class AppRepository {
   /// 不会写入自定义源；是否保存由用户在表单里点「保存」决定。
   Future<Map<String, dynamic>> analyzeCustomSourceSite(String base) async =>
       throw AppFailure('当前环境不支持自定义源');
+
+  /// 磁力搜索：站源列表、分页搜索、种子内的文件列表、以及可直接交给播放器的地址。
+  Future<List<MagnetSite>> magnetSites() async =>
+      throw AppFailure('当前环境不支持磁力搜索');
+  Future<MagnetSearchPage> magnetSearch(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+  }) async => throw AppFailure('当前环境不支持磁力搜索');
+  Future<List<MagnetFile>> magnetFiles(String magnet) async =>
+      throw AppFailure('当前环境不支持磁力播放');
+  Future<PlaybackPlan> magnetPlay(String magnet, {int fileIndex = -1}) async =>
+      throw AppFailure('当前环境不支持磁力播放');
 }
 
 class NativeRepository extends AppRepository {
@@ -691,6 +705,10 @@ class NativeRepository extends AppRepository {
               seconds: action == 'moveDownloads'
                   ? 620
                   : action == 'analyzeCustomSourceSite'
+                  ? 100
+                  : action == 'magnetSearch' ||
+                        action == 'magnetFiles' ||
+                        action == 'magnetPlay'
                   ? 100
                   : action == 'danmaku'
                   ? 15
@@ -1214,4 +1232,50 @@ class NativeRepository extends AppRepository {
     });
     return Map<String, dynamic>.from(result as Map);
   }
+
+  @override
+  Future<List<MagnetSite>> magnetSites() async {
+    final result = await _call({'action': 'magnetSites'});
+    return [
+      for (final row in (result as Map)['items'] as List? ?? const [])
+        MagnetSite.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
+  }
+
+  @override
+  Future<MagnetSearchPage> magnetSearch(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+  }) async {
+    final result = await _call({
+      'action': 'magnetSearch',
+      'query': query,
+      'page': page,
+      'sites': sites,
+    });
+    return MagnetSearchPage.fromJson(Map<String, dynamic>.from(result as Map));
+  }
+
+  @override
+  Future<List<MagnetFile>> magnetFiles(String magnet) async {
+    final result = await _call({'action': 'magnetFiles', 'magnet': magnet});
+    return [
+      for (final row in (result as Map)['items'] as List? ?? const [])
+        MagnetFile.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
+  }
+
+  @override
+  Future<PlaybackPlan> magnetPlay(String magnet, {int fileIndex = -1}) async =>
+      PlaybackPlan.fromJson(
+        Map<String, dynamic>.from(
+          await _call({
+                'action': 'magnetPlay',
+                'magnet': magnet,
+                'fileIndex': fileIndex,
+              })
+              as Map,
+        ),
+      );
 }
