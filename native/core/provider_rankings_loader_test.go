@@ -28,6 +28,8 @@ func TestHongguoRankingMergeLoaderFormatsPreserveMetadata(t *testing.T) {
 			rows[0]["scoreText"] = "评分9.0"
 			rows[0]["tags"] = []string{"剧情", "成长"}
 			rows[0]["description"] = "文字简介 & 内容"
+			// 站点显式声明总集数；episodeVids 只代表试看集，不能当总集数。
+			rows[0]["episodeCount"] = 202
 			legacy, err := parseHongguoRanking(rankingFixture(board, page, rows), board, page)
 			if err != nil {
 				t.Fatal(err)
@@ -36,7 +38,7 @@ func TestHongguoRankingMergeLoaderFormatsPreserveMetadata(t *testing.T) {
 			if err != nil || !reflect.DeepEqual(merged, legacy) {
 				t.Fatal("merged and streamed formats differ", board.ID, page, err)
 			}
-			if merged.Items[0].Drama.TotalEpisode != 2 || merged.Items[0].Drama.Score != "9.0" || merged.Items[0].Drama.Title != rows[0]["title"] {
+			if merged.Items[0].Drama.TotalEpisode != 202 || merged.Items[0].Drama.Score != "9.0" || merged.Items[0].Drama.Title != rows[0]["title"] {
 				t.Fatal("lost episode, score or escaped text metadata")
 			}
 		}

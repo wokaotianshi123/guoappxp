@@ -44,10 +44,36 @@ type magnetStreamEngineState struct {
 }
 
 var (
-	magnetEngineOnce  sync.Once
+	magnetEngineMu    sync.Mutex
 	magnetEngineState *magnetStreamEngineState
-	magnetEngineError error
 )
+
+// magnetCacheDirectory 固定落在 initialize 传入的应用数据目录里。
+// 不能用 os.TempDir()：Android 上它是 /data/local/tmp，普通应用没有写权限，
+// 点磁力播放会直接报 "mkdir /data/local/tmp/duanjuapp-magnet: permission denied"。
+// 固定路径也让「清理缓存」能准确找到 BT 分片。
+func magnetCacheDirectory(base string) string {
+	return filepath.Join(base, "magnet-cache")
+}
+
+func magnetEngineDataDir(base string) (string, error) {
+	base = strings.TrimSpace(base)
+	if base == "" || !filepath.IsAbs(base) {
+		return "", errors.New("应用数据目录未设置")
+	}
+	dir := magnetCacheDirectory(base)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return "", err
+	}
+	probe, err := os.CreateTemp(dir, ".write-test-*")
+	if err != nil {
+		return "", err
+	}
+	name := probe.Name()
+	_ = probe.Close()
+	_ = os.Remove(name)
+	return dir, nil
+}
 
 // magnetPublicTrackers 补在规范化磁力后面。cisou 的站源很多只给 infohash，
 // 没有 tracker 时单靠 DHT 在国内网络里经常拿不到元数据。
@@ -69,42 +95,63 @@ func magnetWithTrackers(link string) string {
 	return link
 }
 
-func magnetEngine() (*magnetStreamEngineState, error) {
-	magnetEngineOnce.Do(func() {
-		dataDir := filepath.Join(os.TempDir(), "duanjuapp-magnet")
-		if err := os.MkdirAll(dataDir, 0o755); err != nil {
-			magnetEngineError = err
-			return
-		}
-		config := torrent.NewDefaultClientConfig()
-		config.DataDir = dataDir
-		config.Seed = false
-		config.NoUpload = true
-		config.NoDefaultPortForwarding = true
-		client, err := torrent.NewClient(config)
-		if err != nil {
-			magnetEngineError = err
-			return
-		}
-		listener, err := net.Listen("tcp", "127.0.0.1:0")
-		if err != nil {
-			_ = client.Close()
-			magnetEngineError = err
-			return
-		}
-		state := &magnetStreamEngineState{
-			client:   client,
-			listener: listener,
-			base:     "http://127.0.0.1:" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) + "/",
-			tasks:    map[string]*torrent.Torrent{},
-			files:    map[string]map[int]*torrent.File{},
-		}
-		mux := http.NewServeMux()
-		mux.HandleFunc("/magnet/", state.serve)
-		go func() { _ = http.Serve(listener, mux) }()
-		magnetEngineState = state
-	})
-	return magnetEngineState, magnetEngineError
+// magnetEngine 懒启动 BT 客户端与本机流服务。用互斥锁而不是 sync.Once：
+// 一次初始化失败（例如权限或端口问题）不应把错误永久钉死，用户重试或
+// 清理缓存后应能重新拉起引擎。
+func magnetEngine(dataDir string) (*magnetStreamEngineState, error) {
+	magnetEngineMu.Lock()
+	defer magnetEngineMu.Unlock()
+	if magnetEngineState != nil {
+		return magnetEngineState, nil
+	}
+	dir, err := magnetEngineDataDir(dataDir)
+	if err != nil {
+		return nil, fmt.Errorf("磁力缓存目录不可用：%w", err)
+	}
+	config := torrent.NewDefaultClientConfig()
+	config.DataDir = dir
+	config.Seed = false
+	config.NoUpload = true
+	config.NoDefaultPortForwarding = true
+	client, err := torrent.NewClient(config)
+	if err != nil {
+		return nil, fmt.Errorf("启动 BT 引擎失败：%w", err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		_ = client.Close()
+		return nil, fmt.Errorf("启动磁力本机播放服务失败：%w", err)
+	}
+	state := &magnetStreamEngineState{
+		client:   client,
+		listener: listener,
+		base:     "http://127.0.0.1:" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) + "/",
+		tasks:    map[string]*torrent.Torrent{},
+		files:    map[string]map[int]*torrent.File{},
+	}
+	mux := http.NewServeMux()
+	mux.HandleFunc("/magnet/", state.serve)
+	go func() { _ = http.Serve(listener, mux) }()
+	magnetEngineState = state
+	return state, nil
+}
+
+// magnetEngineReset 关闭 BT 客户端，释放它持有的分片文件句柄，再允许清理
+// 磁力缓存；下次播放会重新懒启动。Windows 上不关闭客户端是删不掉分片的。
+func magnetEngineReset() {
+	magnetEngineMu.Lock()
+	defer magnetEngineMu.Unlock()
+	state := magnetEngineState
+	if state == nil {
+		return
+	}
+	magnetEngineState = nil
+	state.mu.Lock()
+	state.tasks = map[string]*torrent.Torrent{}
+	state.files = map[string]map[int]*torrent.File{}
+	state.mu.Unlock()
+	_ = state.client.Close()
+	_ = state.listener.Close()
 }
 
 func magnetVideoExtension(name string) bool {
@@ -228,8 +275,8 @@ func (state *magnetStreamEngineState) serve(writer http.ResponseWriter, request 
 	http.ServeContent(writer, request, name, time.Time{}, reader)
 }
 
-func magnetFileList(ctx context.Context, link string) (map[string]any, error) {
-	state, err := magnetEngine()
+func magnetFileList(ctx context.Context, link, dataDir string) (map[string]any, error) {
+	state, err := magnetEngine(dataDir)
 	if err != nil {
 		return nil, err
 	}
@@ -241,8 +288,8 @@ func magnetFileList(ctx context.Context, link string) (map[string]any, error) {
 }
 
 // magnetPlaybackPlan 返回 guoappxp 播放器能直接吃的 PlaybackPlan。
-func magnetPlaybackPlan(ctx context.Context, link string, wanted int) (nativePlan, error) {
-	state, err := magnetEngine()
+func magnetPlaybackPlan(ctx context.Context, link string, wanted int, dataDir string) (nativePlan, error) {
+	state, err := magnetEngine(dataDir)
 	if err != nil {
 		return nativePlan{}, err
 	}

@@ -3957,6 +3957,50 @@ function render() {
   });
 }
 
+// 顶栏「清理缓存」：调用核心统计/清理，删除磁力分片与播放临时文件。
+// 本地服务版没有「我的 → 设置」分组，入口直接放在顶栏。
+function readableCacheSize(bytes) {
+  if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  if (bytes < 1024 * 1024 * 1024) return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+  return (bytes / (1024 * 1024 * 1024)).toFixed(2) + ' GB';
+}
+
+(function bindClearCacheButton() {
+  var button = document.getElementById('clear-cache-btn');
+  if (!button) return;
+  button.addEventListener('click', function (event) {
+    event.preventDefault();
+    if (button.disabled) return;
+    button.disabled = true;
+    api({ action: 'cacheInfo' })
+      .then(function (info) {
+        var bytes = Number(info.bytes || 0);
+        if (!bytes) {
+          window.alert('没有需要清理的缓存');
+          return null;
+        }
+        if (!window.confirm(
+          '发现 ' + readableCacheSize(bytes) + ' 可清理缓存（磁力分片、播放与转码临时文件）。\n' +
+          '已下载视频、剧库和设置不会受影响，是否清理？'
+        )) {
+          return null;
+        }
+        return api({ action: 'clearCache' }).then(function (result) {
+          var cleared = Number(result.clearedBytes || 0);
+          var message = cleared > 0 ? '已释放 ' + readableCacheSize(cleared) : '没有文件被删除';
+          if (result.warning) message += '\n' + result.warning;
+          window.alert(message);
+        });
+      })
+      .catch(function (error) {
+        window.alert('清理缓存失败：' + (error.message || error));
+      })
+      .then(function () {
+        button.disabled = false;
+      });
+  });
+})();
+
 sourceSelect.addEventListener('change', function () {
   state.source = sourceSelect.value;
   state.category = '';

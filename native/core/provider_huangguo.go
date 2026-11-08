@@ -308,8 +308,9 @@ func (d *Downloader) GetHuangguoDetail(ctx context.Context, source, sourceID str
 		title, chapters, err := d.fetchHuangdouChapters(ctx, sourceID)
 		return plainProviderDrama(source, sourceID, title), chapters, err
 	case sourceHongguo:
-		title, chapters, err := d.fetchHongguoChapters(ctx, sourceID)
-		return plainProviderDrama(source, sourceID, title), chapters, err
+		// 网页详情带 episode_cnt（真实总集数），不能退化成只有标题的
+		// plainProviderDrama，否则详情页会把可访问的试看集当成总集数。
+		return d.fetchHongguoChapters(ctx, sourceID)
 	default:
 		if isDuanjuProviderSource(source) {
 			return d.fetchDuanjuDetail(ctx, source, sourceID)

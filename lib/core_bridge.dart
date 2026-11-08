@@ -167,6 +167,10 @@ abstract class AppRepository {
   bool get supportsSourceManagement => false;
   Future<List<String>> suggestions(String query) async => const [];
   Future<Map<String, dynamic>> storage() async => {};
+  Future<Map<String, dynamic>> cacheInfo({String cacheDirectory = ''}) async =>
+      {};
+  Future<Map<String, dynamic>> clearCache({String cacheDirectory = ''}) async =>
+      {};
   Future<String> downloadDirectory() async =>
       (await storage())['directory'] as String? ?? '';
   Future<void> moveDownloads(String directory) async =>
@@ -599,6 +603,14 @@ class NativeRepository extends AppRepository {
     _downloadPermission();
     return _call({'action': 'storage'});
   }
+
+  @override
+  Future<Map<String, dynamic>> cacheInfo({String cacheDirectory = ''}) =>
+      _call({'action': 'cacheInfo', 'cacheDirectory': cacheDirectory});
+
+  @override
+  Future<Map<String, dynamic>> clearCache({String cacheDirectory = ''}) =>
+      _call({'action': 'clearCache', 'cacheDirectory': cacheDirectory});
 
   @override
   Future<void> moveDownloads(String directory) async {

@@ -128,37 +128,49 @@ func (d *Downloader) fetchHongguoCategoryPage(ctx context.Context, route, catego
 	return out, pages, nil
 }
 
-func (d *Downloader) fetchHongguoChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
+// fetchHongguoChapters 返回完整 Drama：网页详情里的 episode_cnt 是站点声明的
+// 真实总集数，而 vid_list 只含开放的试看集；只返回 chapters 会让详情页把
+// 「共 3 集」误当成全剧集数。
+func (d *Downloader) fetchHongguoChapters(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	sourceID = strings.TrimPrefix(strings.TrimSpace(sourceID), "hg-series-v1:")
 	if sourceID == "" {
-		return "", nil, fmt.Errorf("empty hongguo sourceID")
+		return Drama{}, nil, fmt.Errorf("empty hongguo sourceID")
 	}
 	entry, appErr := d.hongguoAppDetail(ctx, sourceID)
 	if appErr == nil {
-		return entry.Drama.DisplayTitle(), append([]Chapter(nil), entry.Chapters...), nil
+		return entry.Drama, append([]Chapter(nil), entry.Chapters...), nil
 	}
 	if ctx.Err() != nil {
-		return "", nil, ctx.Err()
+		return Drama{}, nil, ctx.Err()
 	}
-	title, chapters, webErr := d.fetchHongguoWebChapters(ctx, sourceID)
+	drama, chapters, webErr := d.fetchHongguoWebChapters(ctx, sourceID)
 	if webErr == nil {
-		return title, chapters, nil
+		return drama, chapters, nil
 	}
-	return "", nil, fmt.Errorf("App 详情失败: %v；网页详情失败: %w", publicError(appErr), webErr)
+	return Drama{}, nil, fmt.Errorf("App 详情失败: %v；网页详情失败: %w", publicError(appErr), webErr)
 }
 
-func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID string) (string, []Chapter, error) {
+func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
 	body, err := d.fetchProviderText(ctx, hongguoBaseURL+"/detail?series_id="+url.QueryEscape(sourceID), hongguoBaseURL+"/")
 	if err != nil {
-		return "", nil, err
+		return Drama{}, nil, err
 	}
+	return parseHongguoWebDetail(body, sourceID)
+}
+
+// parseHongguoWebDetail 拆成纯函数，便于用站点真实结构回归集数解析。
+func parseHongguoWebDetail(body, sourceID string) (Drama, []Chapter, error) {
 	data := parseRouterData(body)
 	page := routerLoaderMap(data, "detail_page", "detail_")
 	detail, _ := page["seriesDetail"].(map[string]any)
 	if len(detail) == 0 {
-		return "", nil, fmt.Errorf("hongguo detail is empty")
+		return Drama{}, nil, fmt.Errorf("hongguo detail is empty")
 	}
 	title := firstNonEmpty(mapString(detail, "series_name", "series_title", "name"), sourceID)
+	drama := plainProviderDrama(sourceHongguo, sourceID, title)
+	if count, _ := strconv.Atoi(mapString(detail, "episode_cnt")); count > 0 {
+		drama.TotalEpisode, drama.EpisodeCount = count, count
+	}
 	vids := anyList(detail["vid_list"])
 	chapters := make([]Chapter, 0, len(vids))
 	for i, v := range vids {
@@ -170,9 +182,9 @@ func (d *Downloader) fetchHongguoWebChapters(ctx context.Context, sourceID strin
 		chapters = append(chapters, Chapter{ID: providerChapterID(sourceHongguo, sourceID, vid), Source: sourceHongguo, Title: fmt.Sprintf("第%d集", idx), VideoURL: "hongguo-cenc://" + vid, CurrentEpisode: rawEpisode(idx)})
 	}
 	if len(chapters) == 0 {
-		return title, nil, errors.New("红果详情没有返回剧集 ID")
+		return Drama{}, nil, errors.New("红果详情没有返回剧集 ID")
 	}
-	return title, chapters, nil
+	return drama, chapters, nil
 }
 
 func parseRouterData(raw string) map[string]any {

@@ -153,9 +153,10 @@ type nativeInput struct {
 	Account         soraniAccountInput      `json:"account"`
 	// 磁力：搜索关键词 / 页码 / 勾选的站源，播放用的磁力链接与种子内文件序号。
 	// fileIndex < 0 表示自动挑最大的视频文件。
-	Magnet    string `json:"magnet"`
-	FileIndex *int   `json:"fileIndex"`
-	Sites     []int  `json:"sites"`
+	Magnet         string `json:"magnet"`
+	FileIndex      *int   `json:"fileIndex"`
+	Sites          []int  `json:"sites"`
+	CacheDirectory string `json:"cacheDirectory"`
 }
 
 type nativeCatalogResult struct {
@@ -472,6 +473,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]string{"directory": root}, nil
 	case "storage":
 		return engine.storage()
+	case "cacheInfo":
+		return engine.cacheInfo(input.CacheDirectory), nil
+	case "clearCache":
+		return engine.clearCache(input.CacheDirectory)
 	case "moveDownloads":
 		return true, engine.moveDownloads(ctx, input.Directory)
 	case "workLease":
@@ -570,13 +575,13 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "magnetSearch":
 		return magnetSearch(ctx, input.Query, input.Page, input.Sites)
 	case "magnetFiles":
-		return magnetFileList(ctx, input.Magnet)
+		return magnetFileList(ctx, input.Magnet, engine.directory)
 	case "magnetPlay":
 		wanted := -1
 		if input.FileIndex != nil {
 			wanted = *input.FileIndex
 		}
-		return magnetPlaybackPlan(ctx, input.Magnet, wanted)
+		return magnetPlaybackPlan(ctx, input.Magnet, wanted, engine.directory)
 	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
 	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
 	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。
@@ -867,7 +872,14 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 			}
 		}
 	}
+	// 覆盖前留一份「榜单 / 剧库 / 详情元数据」给出的总集数。
+	metadataEpisodes := drama.Episodes
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
+	if source == sourceHongguo {
+		// 红果网页只开放前几集 vid，len(chapters) 是「可看集数」而非总集数；
+		// 站点声明的 episode_cnt / 榜单 episodeCount 才应该显示成「共 N 集」。
+		drama.Episodes = max(max(drama.Episodes, metadataEpisodes), nativeNormalize(raw).Episodes)
+	}
 	if source == sourceHuangju || source == sourceYeguo || source == sourceJinguoDuanju || source == sourceJinguo {
 		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
 	}

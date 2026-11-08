@@ -27,8 +27,11 @@ type hongguoRankingContent struct {
 		Score       string   `json:"scoreText"`
 		Tags        []string `json:"tags"`
 		Description string   `json:"description"`
-		EpisodeIDs  []string `json:"episodeVids"`
-		Cover       any      `json:"cover"`
+		// episodeVids 只是站点开放的试看集 vid（通常 3~5 个），不是总集数。
+		// 真实总集数在 episodeCount；用 any 兼容站点返回数字或字符串。
+		EpisodeIDs   []string `json:"episodeVids"`
+		EpisodeCount any      `json:"episodeCount"`
+		Cover        any      `json:"cover"`
 	} `json:"rankList"`
 	Pagination struct {
 		Page       int `json:"pageNum"`
@@ -92,8 +95,11 @@ func parseHongguoRanking(body string, board rankingBoard, page int) (rankingPage
 		if len(row.Tags) > 0 {
 			drama.CategoryName = row.Tags[0]
 		}
-		if len(row.EpisodeIDs) > 0 {
-			drama.TotalEpisode = len(row.EpisodeIDs)
+		// 榜单卡片上的「共 N 集」必须取站点声明的总集数。以前用
+		// len(episodeVids) 会把 3~5 个试看 vid 显示成「共 3 集」；
+		// 站点没给 episodeCount 时留空，让详情页再补，也不拿试看数冒充。
+		if count, _ := strconv.Atoi(nativeText(row.EpisodeCount)); count > 0 {
+			drama.TotalEpisode, drama.EpisodeCount = count, count
 		}
 		result.Items = append(result.Items, rankingItem{Rank: row.Rank, Drama: drama, Metric: row.Heat})
 	}

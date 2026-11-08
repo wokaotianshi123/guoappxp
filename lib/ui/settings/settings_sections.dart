@@ -18,6 +18,7 @@ import '../widgets/focus_ring.dart';
 import '../widgets/group_card.dart';
 import 'appearance_settings.dart';
 import 'backup_actions.dart';
+import 'cache_view.dart';
 import 'diary_view.dart';
 import 'settings_rows.dart';
 import 'sources_view.dart';
@@ -28,6 +29,7 @@ enum SettingsGroup {
   playback('播放', Icons.play_arrow_rounded),
   danmaku('弹幕', Icons.subtitles_outlined),
   download('下载', Icons.download_rounded),
+  cache('缓存', Icons.cleaning_services_outlined),
   sources('站源', Icons.dns_outlined),
   proxy('代理', Icons.language_rounded),
   users('用户', Icons.manage_accounts_outlined),
@@ -90,6 +92,7 @@ class SettingsSection extends StatelessWidget {
               SettingsGroup.playback => _playback(context),
               SettingsGroup.danmaku => _danmaku(context),
               SettingsGroup.download => _download(context),
+              SettingsGroup.cache => _cache(context),
               SettingsGroup.sources => _sources(context),
               SettingsGroup.proxy => _proxy(context),
               SettingsGroup.users => [UsersView(store: store, open: open)],
@@ -255,6 +258,19 @@ class SettingsSection extends StatelessWidget {
       if (Platform.isIOS) const _Note('iOS 下载和媒体处理需要保持应用在前台；切到后台会暂停，回到前台后可继续。'),
     ];
   }
+
+  List<Widget> _cache(BuildContext context) => [
+    SettingsCard(
+      children: [
+        SettingsTile(
+          icon: Icons.cleaning_services_outlined,
+          title: '清理缓存',
+          subtitle: '查看占用，清除磁力下载缓存与播放临时文件',
+          onTap: () => open('清理缓存', (_) => const CacheView()),
+        ),
+      ],
+    ),
+  ];
 
   List<Widget> _sources(BuildContext context) {
     final settings = editor.settings;

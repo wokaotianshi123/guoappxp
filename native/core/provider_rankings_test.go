@@ -70,6 +70,26 @@ func TestHongguoRankingStreamAndValidation(t *testing.T) {
 	}
 }
 
+func TestHongguoRankingUsesDeclaredEpisodeCount(t *testing.T) {
+	board, _ := findRankingBoard("hongguo-hot")
+	for _, declared := range []any{202, "202"} {
+		rows := rankingRows(1)
+		// 站点只给 3 个试看 vid，真实总集数是 202。
+		rows[0]["episodeVids"] = []string{"111", "222", "333"}
+		rows[0]["episodeCount"] = declared
+		result, err := parseHongguoRanking(rankingFixture(board, 1, rows), board, 1)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if got := nativeNormalize(result.Items[0].Drama).Episodes; got != 202 {
+			t.Fatalf("声明 %v 集时展示 %d 集，试看 vid 数被误当成总集数", declared, got)
+		}
+		if got := nativeNormalize(result.Items[1].Drama).Episodes; got != 0 {
+			t.Fatalf("站点未声明总集数时应留空，实际 %d 集", got)
+		}
+	}
+}
+
 func TestHuangdouRankingPreservesOrderAndMetrics(t *testing.T) {
 	rows := []any{
 		map[string]any{"id": "rp_first", "name": "低热度先返回", "hot_rate": "20", "click": "100"},
