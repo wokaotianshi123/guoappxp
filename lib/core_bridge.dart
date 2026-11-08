@@ -303,6 +303,16 @@ abstract class AppRepository {
       throw AppFailure('当前环境不支持磁力播放');
   Future<PlaybackPlan> magnetPlay(String magnet, {int fileIndex = -1}) async =>
       throw AppFailure('当前环境不支持磁力播放');
+
+  /// 批量探测每条结果当前可连接的 DHT 节点数（测试替身默认返回空结果）。
+  /// [force] 为真时跳过 Go 侧的 5 分钟缓存，对应界面上的「刷新」。
+  Future<MagnetPeersInfo> magnetPeers(
+    List<String> hashes, {
+    bool force = false,
+  }) async => const MagnetPeersInfo();
+
+  /// 立即终止上一条磁力的元数据加载与分片下载，方便快速切换到新磁力。
+  Future<void> magnetCancel() async {}
 }
 
 class NativeRepository extends AppRepository {
@@ -646,6 +656,7 @@ class NativeRepository extends AppRepository {
             'release',
             'cancelPlayback',
             'cancelRead',
+            'magnetCancel',
             'updateSystemProxy',
           }.contains(action) ||
           action == 'workLease' && input['command'] == 'end' ||
@@ -722,6 +733,10 @@ class NativeRepository extends AppRepository {
                         action == 'magnetFiles' ||
                         action == 'magnetPlay'
                   ? 100
+                  : action == 'magnetPeers'
+                  ? 40
+                  : action == 'magnetCancel'
+                  ? 10
                   : action == 'danmaku'
                   ? 15
                   : action == 'preload'
@@ -1290,4 +1305,23 @@ class NativeRepository extends AppRepository {
               as Map,
         ),
       );
+
+  @override
+  Future<MagnetPeersInfo> magnetPeers(
+    List<String> hashes, {
+    bool force = false,
+  }) async {
+    if (hashes.isEmpty) return const MagnetPeersInfo();
+    final result = await _call({
+      'action': 'magnetPeers',
+      'hashes': hashes,
+      'force': force,
+    });
+    return MagnetPeersInfo.fromJson(Map<String, dynamic>.from(result as Map));
+  }
+
+  @override
+  Future<void> magnetCancel() async {
+    await _call({'action': 'magnetCancel'});
+  }
 }

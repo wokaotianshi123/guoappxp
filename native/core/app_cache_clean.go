@@ -206,6 +206,9 @@ func (engine *nativeEngine) cacheInfo(extra string) nativeCacheInfo {
 // 被进程占用的文件会跳过并给出提示，其余照常清理。
 func (engine *nativeEngine) clearCache(extra string) (nativeCacheInfo, error) {
 	files := engine.nativeCacheFiles(extra)
+	// 先取消还在等元数据的加载并 Drop 旧种子，再关客户端释放分片句柄；
+	// 否则清理时挂着的 prepare 要一直等到 40 秒超时。
+	magnetCancelAll()
 	magnetEngineReset()
 	info := nativeCacheInfo{}
 	failed := 0

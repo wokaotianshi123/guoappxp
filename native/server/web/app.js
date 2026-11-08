@@ -168,6 +168,7 @@ var state = {
   // 跨源聚合搜索得到的同名剧副本（按剧 id 缓存），供详情页「切换播放源」使用。
   crossPeers: {},
   // 磁力搜索页的查询/结果/站源勾选缓存：切换 hash 回来仍能接着看上次的结果。
+  // tabs 按站源分组（0 号是「全部」），每个标签独立记忆排序与「仅含磁力」。
   magnet: {
     sites: [],
     selected: {},
@@ -175,6 +176,15 @@ var state = {
     query: '',
     page: 1,
     items: [],
+    visible: [],
+    tabs: [],
+    activeTab: 0,
+    sorts: {},
+    onlyMagnet: {},
+    dhtNodes: 0,
+    dhtLoading: false,
+    probeSeq: 0,
+    playSeq: 0,
     hasMore: false,
     warning: '',
     error: '',
@@ -3420,6 +3430,16 @@ function magnetPlay(magnet, fileIndex) {
   return api({ action: 'magnetPlay', magnet: magnet, fileIndex: fileIndex });
 }
 
+// 批量探测每条结果当前能连上的 DHT / tracker 节点数；force 跳过 Go 侧缓存。
+function magnetPeers(hashes, force) {
+  return api({ action: 'magnetPeers', hashes: hashes || [], force: !!force });
+}
+
+// 用户点另一条磁力时先掐掉上一条的元数据加载与分片下载，避免旧任务抢带宽。
+function magnetCancel() {
+  return api({ action: 'magnetCancel' });
+}
+
 function magnetFormatSize(size) {
   if (typeof size === 'number' && isFinite(size)) {
     var units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -3515,25 +3535,222 @@ function renderMagnetSitesPanel() {
   });
 }
 
+// ---- 站源标签 / 每标签筛选 / DHT 节点探测 ----
+// 与 Flutter 端 magnetSiteGroups / magnetFilterResults 保持同一套语义：
+// 有 siteId 按 id 分组，没有就按站源名分组，规则缺失时也能正确分标签。
+function magnetGroupKey(item) {
+  return Number(item.siteId) > 0
+    ? 'id:' + item.siteId
+    : 'name:' + (item.site || '');
+}
+
+function magnetBuildTabs() {
+  var items = state.magnet.items || [];
+  var order = [], names = {}, grouped = {};
+  items.forEach(function (item) {
+    var key = magnetGroupKey(item);
+    if (!grouped[key]) {
+      grouped[key] = [];
+      order.push(key);
+      names[key] = item.site || '其它站源';
+    }
+    grouped[key].push(item);
+  });
+  state.magnet.tabs = [{ key: '*', name: '全部', items: items }].concat(
+    order.map(function (key) {
+      return { key: key, name: names[key], items: grouped[key] };
+    })
+  );
+  if (state.magnet.activeTab >= state.magnet.tabs.length) {
+    state.magnet.activeTab = 0;
+  }
+}
+
+function magnetCurrentTab() {
+  return state.magnet.tabs[state.magnet.activeTab] ||
+    state.magnet.tabs[0] ||
+    { key: '*', name: '全部', items: [] };
+}
+
+function magnetVisibleItems() {
+  var key = magnetCurrentTab().key;
+  var sort = state.magnet.sorts[key] || 'default';
+  var only = !!state.magnet.onlyMagnet[key];
+  var list = (magnetCurrentTab().items || []).filter(function (item) {
+    return !only || (item.playable && /^magnet:/.test(item.magnet || ''));
+  });
+  if (sort === 'default') {
+    return list;
+  }
+  return list.slice().sort(function (a, b) {
+    var av, bv;
+    if (sort === 'date') {
+      av = Number(a.timestamp) || 0; bv = Number(b.timestamp) || 0;
+    } else if (sort === 'size') {
+      av = Number(a.sizeBytes) || 0; bv = Number(b.sizeBytes) || 0;
+    } else {
+      av = Number(a.dht) || 0; bv = Number(b.dht) || 0;
+      if (av === bv) { av = Number(a.peers) || 0; bv = Number(b.peers) || 0; }
+    }
+    return bv - av;
+  });
+}
+
+function renderMagnetTabs() {
+  var box = document.getElementById('magnet-tabs');
+  if (!box) {
+    return;
+  }
+  var active = state.magnet.activeTab;
+  box.innerHTML = state.magnet.tabs.map(function (tab, i) {
+    return '<button type="button" class="btn mini magnet-tab" data-tab="' + i + '"' +
+      (i === active ? ' style="border-color:#6c8cff;font-weight:700"' : '') + '>' +
+      escapeHTML(tab.name) + ' ' + (tab.items || []).length + '</button>';
+  }).join('');
+  var buttons = box.querySelectorAll('.magnet-tab');
+  Array.prototype.forEach.call(buttons, function (button) {
+    button.addEventListener('click', function () {
+      var index = Number(button.getAttribute('data-tab'));
+      if (index === state.magnet.activeTab) {
+        return;
+      }
+      state.magnet.activeTab = index;
+      renderMagnetTabs();
+      renderMagnetControls();
+      renderMagnetResults();
+      probeMagnetDht(false);
+    });
+  });
+}
+
+var magnetSortLabels = {
+  'default': '默认',
+  date: '按时间',
+  size: '按大小',
+  dht: '按 DHT 数量'
+};
+
+function renderMagnetControls() {
+  var box = document.getElementById('magnet-controls');
+  if (!box) {
+    return;
+  }
+  var key = magnetCurrentTab().key;
+  var sort = state.magnet.sorts[key] || 'default';
+  var only = !!state.magnet.onlyMagnet[key];
+  var options = Object.keys(magnetSortLabels).map(function (value) {
+    return '<option value="' + value + '"' + (value === sort ? ' selected' : '') + '>' +
+      escapeHTML(magnetSortLabels[value]) + '</option>';
+  }).join('');
+  var dhtText = state.magnet.dhtLoading
+    ? '正在探测可连接的 DHT 节点…'
+    : state.magnet.dhtNodes > 0
+      ? 'DHT 网络已连接 ' + state.magnet.dhtNodes + ' 个节点'
+      : 'DHT 网络暂未连上节点，节点数会随探测自动更新';
+  box.innerHTML =
+    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;' +
+      'padding:8px 0;font-size:13px;color:var(--muted)">' +
+      '<label style="display:inline-flex;align-items:center;gap:6px">排序 ' +
+        '<select id="magnet-sort">' + options + '</select></label>' +
+      '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">' +
+        '<input type="checkbox" id="magnet-only"' + (only ? ' checked' : '') + ' /> 仅含磁力</label>' +
+      '<button type="button" class="btn mini" id="magnet-dht-refresh">刷新 DHT</button>' +
+      '<span>' + escapeHTML(dhtText) + '</span>' +
+    '</div>';
+  var select = document.getElementById('magnet-sort');
+  if (select) {
+    select.addEventListener('change', function () {
+      state.magnet.sorts[key] = select.value;
+      renderMagnetResults();
+      probeMagnetDht(false);
+    });
+  }
+  var onlyBox = document.getElementById('magnet-only');
+  if (onlyBox) {
+    onlyBox.addEventListener('change', function () {
+      state.magnet.onlyMagnet[key] = onlyBox.checked;
+      renderMagnetResults();
+    });
+  }
+  var refresh = document.getElementById('magnet-dht-refresh');
+  if (refresh) {
+    refresh.addEventListener('click', function () { probeMagnetDht(true); });
+  }
+}
+
+// 探测与展示解耦：结果先画出来，节点数回来后再增量回填并重绘。
+function probeMagnetDht(force) {
+  var hashes = magnetVisibleItems()
+    .filter(function (item) {
+      return item.playable && /^magnet:/.test(item.magnet || '') && item.id;
+    })
+    .slice(0, 24)
+    .map(function (item) { return item.id; });
+  if (!hashes.length) {
+    return Promise.resolve();
+  }
+  var seq = ++state.magnet.probeSeq;
+  state.magnet.dhtLoading = true;
+  renderMagnetControls();
+  return magnetPeers(hashes, force).then(function (result) {
+    if (seq !== state.magnet.probeSeq) {
+      return;
+    }
+    var byHash = {};
+    (result.items || []).forEach(function (row) {
+      byHash[String(row.hash || '').toLowerCase()] = row;
+    });
+    state.magnet.items = (state.magnet.items || []).map(function (item) {
+      var row = byHash[String(item.id || '').toLowerCase()];
+      if (!row) {
+        return item;
+      }
+      return Object.assign({}, item, {
+        dht: Number(row.dht) || 0,
+        peers: Number(row.peers) || 0,
+        dhtProbed: true
+      });
+    });
+    state.magnet.dhtNodes = Number(result.dhtNodes) || 0;
+    state.magnet.dhtLoading = false;
+    magnetBuildTabs();
+    renderMagnetResults();
+    renderMagnetControls();
+  }).catch(function () {
+    if (seq !== state.magnet.probeSeq) {
+      return;
+    }
+    state.magnet.dhtLoading = false;
+    renderMagnetControls();
+  });
+}
+
 function renderMagnetResults() {
   var box = document.getElementById('magnet-results');
   if (!box) {
     return;
   }
-  var items = state.magnet.items || [];
+  var items = magnetVisibleItems();
+  state.magnet.visible = items;
   var warning = state.magnet.warning
     ? '<div class="cross-warning">' + escapeHTML(state.magnet.warning) + '</div>'
     : '';
   if (!items.length) {
     box.innerHTML = warning +
       (state.magnet.query
-        ? '<div class="empty">没有找到结果，换个关键词或站源试试。</div>'
+        ? '<div class="empty">当前标签没有符合条件的结果，换个关键词、站源或筛选条件试试。</div>'
         : '<div class="empty">输入关键词开始搜索磁力资源。</div>');
   } else {
     box.innerHTML = warning + items.map(function (item, i) {
       var meta = [item.site, magnetFormatSize(item.size), item.date]
         .filter(function (part) { return !!part; })
         .join(' · ');
+      if (item.dhtProbed) {
+        meta += ' · DHT ' + (Number(item.dht) || 0);
+        if ((Number(item.peers) || 0) > (Number(item.dht) || 0)) {
+          meta += ' · 节点 ' + (Number(item.peers) || 0);
+        }
+      }
       return (
         '<div class="card" style="padding:10px 12px;margin:8px 0">' +
         '<div style="font-size:14px;font-weight:600;word-break:break-all;line-height:1.4">' +
@@ -3541,7 +3758,8 @@ function renderMagnetResults() {
         '<div class="meta" style="color:var(--muted);font-size:12px;padding:6px 0 8px">' +
         escapeHTML(meta) + (item.playable ? ' · 可在线播放' : '') + '</div>' +
         '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-        '<button type="button" class="btn mini magnet-play" data-play="' + i + '">播放</button>' +
+        '<button type="button" class="btn mini magnet-play" data-play="' + i + '"' +
+          (item.playable ? '' : ' disabled') + '>播放</button>' +
         '<button type="button" class="btn mini magnet-copy" data-copy="' + i + '">复制磁力链接</button>' +
         '</div></div>'
       );
@@ -3555,7 +3773,7 @@ function bindMagnetResults() {
   var plays = view.querySelectorAll('.magnet-play');
   Array.prototype.forEach.call(plays, function (button) {
     button.addEventListener('click', function () {
-      var item = state.magnet.items[Number(button.getAttribute('data-play'))];
+      var item = state.magnet.visible[Number(button.getAttribute('data-play'))];
       if (item) {
         startMagnetPlay(item.magnet, item.title);
       }
@@ -3564,7 +3782,7 @@ function bindMagnetResults() {
   var copies = view.querySelectorAll('.magnet-copy');
   Array.prototype.forEach.call(copies, function (button) {
     button.addEventListener('click', function () {
-      var item = state.magnet.items[Number(button.getAttribute('data-copy'))];
+      var item = state.magnet.visible[Number(button.getAttribute('data-copy'))];
       if (item) {
         copyMagnetLink(item.magnet);
       }
@@ -3625,7 +3843,12 @@ function loadMagnetPage(page) {
     magnetSetStatus('搜索失败：' + state.magnet.error, 'error');
   }).then(function () {
     state.magnet.loading = false;
+    magnetBuildTabs();
+    renderMagnetTabs();
+    renderMagnetControls();
     renderMagnetResults();
+    // 结果先出，DHT 节点数在后台补齐；翻页时缓存会跳过已探测过的 hash。
+    probeMagnetDht(false);
   });
 }
 
@@ -3639,6 +3862,10 @@ function submitMagnetSearch() {
   state.magnet.query = query;
   state.magnet.page = 1;
   state.magnet.items = [];
+  state.magnet.visible = [];
+  state.magnet.tabs = [];
+  state.magnet.activeTab = 0;
+  state.magnet.probeSeq += 1;
   state.magnet.hasMore = false;
   state.magnet.warning = '';
   state.magnet.error = '';
@@ -3673,20 +3900,30 @@ function copyMagnetLink(magnet) {
 function startMagnetPlay(magnet, title) {
   if (!magnet) {
     magnetSetStatus('该结果没有磁力链接，无法播放。', 'error');
-    return;
+    return Promise.resolve();
   }
+  // 每次点击都作废旧任务：先立即终止上一条的加载，再用新序号启动。
+  var seq = ++state.magnet.playSeq;
   magnetSetStatus('正在读取种子文件列表…');
-  magnetFiles(magnet).then(function (result) {
+  return magnetCancel().catch(function () {}).then(function () {
+    return magnetFiles(magnet);
+  }).then(function (result) {
+    if (seq !== state.magnet.playSeq) {
+      return;
+    }
     var files = result.items || [];
     var videos = files.filter(function (file) { return !!file.video; });
     if (videos.length > 1) {
-      showMagnetFilePicker(magnet, videos, title);
+      showMagnetFilePicker(magnet, videos, title, seq);
       return;
     }
     // 只有 1 个视频文件直接播；0 个时用 -1 让后端自动选最大的视频文件。
     var file = videos.length === 1 ? videos[0] : null;
-    playMagnetFile(magnet, file ? file.index : -1, file ? file.name : '', title);
+    playMagnetFile(magnet, file ? file.index : -1, file ? file.name : '', title, seq);
   }).catch(function (error) {
+    if (seq !== state.magnet.playSeq) {
+      return;
+    }
     magnetSetStatus(
       '读取种子文件失败：' + ((error && error.message) || '未知错误') +
       '（常见于 DHT 获取元数据超时，可稍后重试）',
@@ -3695,7 +3932,7 @@ function startMagnetPlay(magnet, title) {
   });
 }
 
-function showMagnetFilePicker(magnet, videos, title) {
+function showMagnetFilePicker(magnet, videos, title, seq) {
   var rows = videos.map(function (file, i) {
     return (
       '<button type="button" class="btn mini magnet-file-pick" data-pick="' + i + '">' +
@@ -3716,14 +3953,14 @@ function showMagnetFilePicker(magnet, videos, title) {
     button.addEventListener('click', function () {
       var file = videos[Number(button.getAttribute('data-pick'))];
       if (file) {
-        playMagnetFile(magnet, file.index, file.name, title);
+        playMagnetFile(magnet, file.index, file.name, title, seq);
       }
     });
   });
   var auto = document.getElementById('magnet-file-auto');
   if (auto) {
     auto.addEventListener('click', function () {
-      playMagnetFile(magnet, -1, '', title);
+      playMagnetFile(magnet, -1, '', title, seq);
     });
   }
   var cancel = document.getElementById('magnet-file-cancel');
@@ -3734,9 +3971,15 @@ function showMagnetFilePicker(magnet, videos, title) {
   }
 }
 
-function playMagnetFile(magnet, fileIndex, name, title) {
+function playMagnetFile(magnet, fileIndex, name, title, seq) {
+  if (seq === undefined) {
+    seq = state.magnet.playSeq;
+  }
   magnetSetStatus('正在准备播放…');
   magnetPlay(magnet, fileIndex).then(function (plan) {
+    if (seq !== state.magnet.playSeq) {
+      return;
+    }
     var url = plan && plan.url;
     if (!url) {
       magnetSetStatus('未取得播放地址。', 'error');
@@ -3745,6 +3988,9 @@ function playMagnetFile(magnet, fileIndex, name, title) {
     mountMagnetVideo(url, name || title || '磁力播放');
     magnetSetStatus('');
   }).catch(function (error) {
+    if (seq !== state.magnet.playSeq) {
+      return;
+    }
     magnetSetStatus('播放准备失败：' + ((error && error.message) || '未知错误'), 'error');
   });
 }
@@ -3821,6 +4067,36 @@ function bindMagnetView() {
       renderMagnetSitesPanel();
     });
   }
+  // 结果区左右滑动也能换站源标签；桌面端可以直接点标签。
+  var results = document.getElementById('magnet-results');
+  if (results) {
+    var startX = null;
+    results.addEventListener('touchstart', function (event) {
+      startX = event.touches && event.touches.length ? event.touches[0].clientX : null;
+    }, { passive: true });
+    results.addEventListener('touchend', function (event) {
+      if (startX === null) {
+        return;
+      }
+      var endX = event.changedTouches && event.changedTouches.length
+        ? event.changedTouches[0].clientX
+        : startX;
+      var delta = endX - startX;
+      startX = null;
+      if (Math.abs(delta) < 60) {
+        return;
+      }
+      var next = state.magnet.activeTab + (delta < 0 ? 1 : -1);
+      if (next < 0 || next >= state.magnet.tabs.length) {
+        return;
+      }
+      state.magnet.activeTab = next;
+      renderMagnetTabs();
+      renderMagnetControls();
+      renderMagnetResults();
+      probeMagnetDht(false);
+    }, { passive: true });
+  }
 }
 
 function renderMagnet() {
@@ -3848,6 +4124,9 @@ function renderMagnet() {
             'max-height:220px;overflow-y:auto"></div>' +
         '</div>' +
       '</div>' +
+      '<div id="magnet-tabs" style="display:flex;gap:8px;overflow-x:auto;' +
+        'white-space:nowrap;padding:8px 0;scrollbar-width:thin"></div>' +
+      '<div id="magnet-controls"></div>' +
       '<div id="magnet-player"></div>' +
       '<div id="magnet-status" style="display:none"></div>' +
       '<div id="magnet-results"></div>' +
@@ -3858,7 +4137,10 @@ function renderMagnet() {
     input.value = state.magnet.query;
   }
   bindMagnetView();
-  // 结果/站源都缓存在 state.magnet，切换 hash 回来时这里直接把上次结果画回来。
+  // 结果/站源/标签状态都缓存在 state.magnet，切换 hash 回来时直接把上次结果画回来。
+  magnetBuildTabs();
+  renderMagnetTabs();
+  renderMagnetControls();
   renderMagnetResults();
   if (state.magnet.sitesLoaded) {
     renderMagnetSitesPanel();

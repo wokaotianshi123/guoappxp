@@ -59,16 +59,20 @@ type magnetSiteItem struct {
 }
 
 // magnetResult 是归一化后的搜索结果。ID 用 infohash，方便跨站去重。
+// SizeBytes / Timestamp 是给「按大小 / 按时间」排序用的数值，站源原文留在
+// Size / Date 里照常显示；解析不出来时为 0，排序会沉到末尾。
 type magnetResult struct {
-	ID       string `json:"id"`
-	Title    string `json:"title"`
-	Magnet   string `json:"magnet"`
-	Size     string `json:"size"`
-	Date     string `json:"date"`
-	Site     string `json:"site"`
-	SiteID   int    `json:"siteId"`
-	Detail   string `json:"detail,omitempty"`
-	Playable bool   `json:"playable"`
+	ID        string `json:"id"`
+	Title     string `json:"title"`
+	Magnet    string `json:"magnet"`
+	Size      string `json:"size"`
+	SizeBytes int64  `json:"sizeBytes"`
+	Date      string `json:"date"`
+	Timestamp int64  `json:"timestamp"`
+	Site      string `json:"site"`
+	SiteID    int    `json:"siteId"`
+	Detail    string `json:"detail,omitempty"`
+	Playable  bool   `json:"playable"`
 }
 
 type magnetSearchResult struct {
@@ -311,6 +315,7 @@ func magnetParseList(site magnetSite, body string) []magnetResult {
 		return nil
 	}
 	items := make([]magnetResult, 0, len(groups))
+	now := time.Now()
 	for _, group := range groups {
 		title := magnetText(group, site.Expression.Title)
 		if title == "" {
@@ -326,15 +331,19 @@ func magnetParseList(site magnetSite, body string) []magnetResult {
 		}
 		detail := magnetAbsoluteURL(site, href)
 		hash := magnetInfoHash(href)
+		size := magnetText(group, site.Expression.Size)
+		date := magnetText(group, site.Expression.Date)
 		items = append(items, magnetResult{
-			ID:     hash,
-			Title:  title,
-			Magnet: magnetCanonical(hash, title),
-			Size:   magnetText(group, site.Expression.Size),
-			Date:   magnetText(group, site.Expression.Date),
-			Site:   site.Name,
-			SiteID: site.ID,
-			Detail: detail,
+			ID:        hash,
+			Title:     title,
+			Magnet:    magnetCanonical(hash, title),
+			Size:      size,
+			SizeBytes: magnetParseSizeBytes(size),
+			Date:      date,
+			Timestamp: magnetParseTimestamp(date, now),
+			Site:      site.Name,
+			SiteID:    site.ID,
+			Detail:    detail,
 		})
 	}
 	return items

@@ -152,11 +152,12 @@ type nativeInput struct {
 	AdBlock         *bool                   `json:"adBlock"`
 	Account         soraniAccountInput      `json:"account"`
 	// 磁力：搜索关键词 / 页码 / 勾选的站源，播放用的磁力链接与种子内文件序号。
-	// fileIndex < 0 表示自动挑最大的视频文件。
-	Magnet         string `json:"magnet"`
-	FileIndex      *int   `json:"fileIndex"`
-	Sites          []int  `json:"sites"`
-	CacheDirectory string `json:"cacheDirectory"`
+	// fileIndex < 0 表示自动挑最大的视频文件；hashes 用于批量探测 DHT 节点数。
+	Magnet         string   `json:"magnet"`
+	FileIndex      *int     `json:"fileIndex"`
+	Sites          []int    `json:"sites"`
+	Hashes         []string `json:"hashes"`
+	CacheDirectory string   `json:"cacheDirectory"`
 }
 
 type nativeCatalogResult struct {
@@ -422,6 +423,9 @@ func nativeDispatch(input nativeInput) (any, error) {
 		// 磁力搜索要并发抓多个站源，播放要等 DHT / tracker 返回种子元数据；
 		// 两个实现内部各有 40 秒硬预算，这里留出余量避免外层先超时。
 		duration = 90 * time.Second
+	} else if input.Action == "magnetPeers" {
+		// 一轮 DHT 探测窗口 6 秒，另留启动 BT 引擎与并发 AddMagnet 的余量。
+		duration = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
@@ -582,6 +586,13 @@ func nativeDispatch(input nativeInput) (any, error) {
 			wanted = *input.FileIndex
 		}
 		return magnetPlaybackPlan(ctx, input.Magnet, wanted, engine.directory)
+	// magnetPeers 批量探测每条结果当前能连上的 DHT / tracker 节点数；
+	// magnetCancel 在用户点另一条磁力时立即掐掉上一条的加载与下载。
+	case "magnetPeers":
+		return magnetPeers(ctx, input.Hashes, engine.directory, input.Force)
+	case "magnetCancel":
+		magnetCancelAll()
+		return true, nil
 	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
 	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
 	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。

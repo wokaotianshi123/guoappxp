@@ -41,6 +41,9 @@ type magnetStreamEngineState struct {
 	mu       sync.Mutex
 	tasks    map[string]*torrent.Torrent
 	files    map[string]map[int]*torrent.File
+	// lastHash 记住最近一次 prepare 的种子：即使上一次加载已经结束，
+	// 用户点另一条磁力时也要把它的下载分片停掉，别让旧任务抢带宽。
+	lastHash string
 }
 
 var (
@@ -149,9 +152,62 @@ func magnetEngineReset() {
 	state.mu.Lock()
 	state.tasks = map[string]*torrent.Torrent{}
 	state.files = map[string]map[int]*torrent.File{}
+	state.lastHash = ""
 	state.mu.Unlock()
 	_ = state.client.Close()
 	_ = state.listener.Close()
+}
+
+// magnetCurrentEngine 只读当前引擎，找不到时返回 nil，绝不在这里懒启动：
+// 取消动作不应该为了「停止」而把 BT 客户端又拉起来。
+func magnetCurrentEngine() *magnetStreamEngineState {
+	magnetEngineMu.Lock()
+	defer magnetEngineMu.Unlock()
+	return magnetEngineState
+}
+
+// dropTorrent 释放某个种子占的连接与分片句柄，并从登记表里摘掉。
+// 之后同一个 hash 再播放会重新 AddMagnet，是干净的切换语义。
+func (state *magnetStreamEngineState) dropTorrent(hash string) {
+	state.mu.Lock()
+	task := state.tasks[hash]
+	delete(state.tasks, hash)
+	delete(state.files, hash)
+	if state.lastHash == hash {
+		state.lastHash = ""
+	}
+	state.mu.Unlock()
+	if task != nil {
+		task.Drop()
+	}
+}
+
+func (state *magnetStreamEngineState) dropLastTask() {
+	state.mu.Lock()
+	hash := state.lastHash
+	state.lastHash = ""
+	state.mu.Unlock()
+	if hash != "" {
+		state.dropTorrent(hash)
+	}
+}
+
+func (state *magnetStreamEngineState) isTask(hash string) bool {
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	_, ok := state.tasks[hash]
+	return ok
+}
+
+// beginTask 记录本次播放的种子，并把上一条种子停掉。
+func (state *magnetStreamEngineState) beginTask(hash string) {
+	state.mu.Lock()
+	previous := state.lastHash
+	state.lastHash = hash
+	state.mu.Unlock()
+	if previous != "" && previous != hash {
+		state.dropTorrent(previous)
+	}
 }
 
 func magnetVideoExtension(name string) bool {
@@ -190,13 +246,18 @@ func magnetPickFile(files []magnetFileItem, wanted int) (int, error) {
 	return best, nil
 }
 
-// prepare 添加磁力、等待元数据并登记文件索引。超时不删除任务，后台会继续找种子，
-// 用户稍后重试就能直接命中缓存。
+// prepare 添加磁力、等待元数据并登记文件索引。
+// 每次 prepare 都会先取消其它 infohash 仍在等待的加载：用户点另一条磁力时，
+// 旧任务立刻退出并释放连接，不必等它 40 秒超时。
 func (state *magnetStreamEngineState) prepare(ctx context.Context, link string) (string, []magnetFileItem, error) {
 	hash := magnetInfoHash(link)
 	if hash == "" {
 		return "", nil, errors.New("磁力链接无效，未找到 infohash")
 	}
+	loadCtx, finish := magnetLoads.begin(ctx, hash, state.dropTorrent)
+	defer finish()
+	state.beginTask(hash)
+
 	state.mu.Lock()
 	task, exists := state.tasks[hash]
 	if !exists {
@@ -209,13 +270,22 @@ func (state *magnetStreamEngineState) prepare(ctx context.Context, link string) 
 		task = created
 	}
 	state.mu.Unlock()
+	if loadCtx.Err() != nil {
+		return hash, nil, errors.New("已取消上一条磁力的加载")
+	}
 
-	budget, cancel := context.WithTimeout(ctx, magnetMetadataBudget)
+	budget, cancel := context.WithTimeout(loadCtx, magnetMetadataBudget)
 	defer cancel()
 	select {
 	case <-task.GotInfo():
 	case <-budget.Done():
+		if loadCtx.Err() != nil {
+			return hash, nil, errors.New("已取消上一条磁力的加载")
+		}
 		return hash, nil, errors.New("获取种子信息超时，请检查网络后重试")
+	}
+	if loadCtx.Err() != nil {
+		return hash, nil, errors.New("已取消上一条磁力的加载")
 	}
 
 	raw := task.Files()
