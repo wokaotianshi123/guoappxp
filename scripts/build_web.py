@@ -9,6 +9,8 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
+from app_build import go_build_tag_args
+
 root = Path(__file__).resolve().parents[1]
 native = root / 'native'
 parser = argparse.ArgumentParser(description='构建红果鉴 / 真果鉴本地服务版')
@@ -63,7 +65,8 @@ def build_binary(slug, all_sources, goos, goarch):
         ' -X main.editionSlug=' + slug + ' -X main.appVersion=' + version
     build_environment = dict(environment, GOOS=goos, GOARCH=goarch)
     print('Building ' + name, flush=True)
-    subprocess.run([go, 'build', '-trimpath', '-ldflags=' + flags, '-o', str(destination), './server'],
+    subprocess.run([go, 'build', '-trimpath', *go_build_tag_args(), '-ldflags=' + flags,
+                    '-o', str(destination), './server'],
                    cwd=native, env=build_environment, check=True)
     return destination, name
 

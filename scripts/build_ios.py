@@ -9,7 +9,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument
+from app_build import BuildVariant, add_variant_argument, go_build_tag_args
 from ffmpeg_frameworks import ensure_pods
 
 root = Path(__file__).resolve().parents[1]
@@ -81,7 +81,8 @@ def build_core(simulator=False, variant=BuildVariant()):
             'GOOS': 'ios', 'GOARCH': architecture, 'CC': compiler,
             'CGO_CFLAGS': flags, 'CGO_LDFLAGS': flags,
         }
-        run([go, 'build', '-trimpath', '-buildmode=c-archive', '-ldflags=' + variant.linker_flags,
+        run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(),
+             '-ldflags=' + variant.linker_flags,
              '-o', str(output), './bridge'], cwd=root / 'native', env=build_env)
         shutil.copy2(output.with_suffix('.h'), headers / 'DuanjuCore.h')
         libraries.append((sdk, output, headers))

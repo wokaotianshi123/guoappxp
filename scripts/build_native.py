@@ -5,7 +5,7 @@ import shutil
 import subprocess
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument
+from app_build import BuildVariant, add_variant_argument, go_build_tag_args
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -40,7 +40,7 @@ def build(goos, architecture, compiler, output, extra=None):
     if extra:
         build_env.update(extra)
     print('Building ' + str(output.relative_to(root)), flush=True)
-    args = [go, 'build', '-trimpath', '-buildmode=c-shared',
+    args = [go, 'build', '-trimpath', '-buildmode=c-shared', *go_build_tag_args(),
             '-ldflags=' + variant.linker_flags, '-o', str(output), './bridge']
     attempt = 0
     while True:
@@ -79,6 +79,11 @@ if options.platform == 'android':
             raise SystemExit('缺少 Android NDK 编译器：' + str(compiler))
         output = root / 'android' / 'app' / 'src' / 'main' / 'jniLibs' / abi / 'libduanju_core.so'
         extra = {'CGO_LDFLAGS': '-Wl,-z,max-page-size=16384'}
+        # 防御：Go 见到 C++ 目标文件会改用 CXX 做外部链接，只设 CC 会落到宿主机
+        # g++（x86_64），链 aarch64 的 go.o 直接报 "EM: 183 / file in wrong format"。
+        cxx = compilers / (name + '++' + ('.cmd' if platform.system() == 'Windows' else ''))
+        if cxx.exists():
+            extra['CXX'] = str(cxx)
         if architecture == 'arm':
             extra['GOARM'] = '7'
         build('android', architecture, compiler, output, extra)
@@ -107,7 +112,7 @@ else:
         build_env = environment | {'GOOS': 'darwin', 'GOARCH': architecture, 'CC': str(compiler),
                                    'CGO_CFLAGS': '-target ' + triple,
                                    'CGO_LDFLAGS': '-target ' + triple}
-        subprocess.run([go, 'build', '-trimpath', '-buildmode=c-archive',
+        subprocess.run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(),
                         '-ldflags=' + variant.linker_flags, '-o', str(library), './bridge'],
                        cwd=root / 'native', env=build_env, check=True)
         slices.append(str(library))
