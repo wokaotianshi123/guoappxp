@@ -154,3 +154,24 @@ func TestMigrationRejectsContainmentAndSymbolicLinks(t *testing.T) {
 		t.Fatal("removed linked directory")
 	}
 }
+
+// 目标落在源目录内时必须快速拒绝，否则 WalkDir 会边遍历边创建子目录导致无限递归。
+func TestCopyTreeRejectsNestedTarget(t *testing.T) {
+	source := filepath.Join(t.TempDir(), "downloads")
+	if err := os.MkdirAll(source, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(source, "media.mp4"), []byte("synthetic-video"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(source, "zhenguojian-downloads")
+	if err := os.MkdirAll(target, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := nativeCopyTree(context.Background(), source, target); err == nil {
+		t.Fatal("nested copy target accepted")
+	}
+	if body, err := os.ReadFile(filepath.Join(source, "media.mp4")); err != nil || string(body) != "synthetic-video" {
+		t.Fatalf("source damaged after rejected copy: %v", err)
+	}
+}

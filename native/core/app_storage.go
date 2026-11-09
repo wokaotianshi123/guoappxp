@@ -56,13 +56,32 @@ func nativeDownloadLocation(directory string) string {
 	return filepath.Join(directory, "downloads")
 }
 
+// nativeCanonicalPath 把路径解析成可相互比较的形式。Windows 上临时目录常以
+// 8.3 短名（如 ADMINI~1）返回，而 EvalSymlinks 会还原成长名；两者混用时
+// filepath.Rel 会算出跨目录的 ".." 前缀，使包含关系判定失效。
+func nativeCanonicalPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
 func nativeCopyTree(ctx context.Context, source, target string) error {
+	source = nativeCanonicalPath(source)
+	target = nativeCanonicalPath(target)
+	// 目标若落在源目录内，遍历过程中不断创建子目录会形成无限递归，必须提前拒绝。
+	if nativePathsOverlap(source, target) {
+		return errors.New("目标目录不能位于待迁移目录内部")
+	}
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
+		}
+		if path == target {
+			return filepath.SkipDir
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return errors.New("下载目录中包含符号链接，无法迁移")
@@ -137,11 +156,12 @@ func (engine *nativeEngine) moveDownloads(ctx context.Context, parent string) er
 		manager.mu.Unlock()
 		return errors.New("请等待下载的分集处理完成后再迁移")
 	}
-	if target == manager.root {
+	source := nativeCanonicalPath(manager.root)
+	if target == source {
 		manager.mu.Unlock()
 		return nil
 	}
-	if nativePathsOverlap(manager.root, target) {
+	if nativePathsOverlap(source, target) {
 		manager.mu.Unlock()
 		return errors.New("新目录不能与原下载目录互相包含")
 	}
@@ -167,7 +187,6 @@ func (engine *nativeEngine) moveDownloads(ctx context.Context, parent string) er
 	if saveErr != nil {
 		return saveErr
 	}
-	source := manager.root
 	if err := os.Mkdir(target, 0700); err != nil {
 		return errors.New("无法创建目标目录，请检查权限或选择其他位置")
 	}
