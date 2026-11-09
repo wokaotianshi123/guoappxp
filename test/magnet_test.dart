@@ -63,9 +63,13 @@ class _MagnetRepository extends FakeRepository {
     );
   }
 
+  // 设成非 null 时模拟「种子元数据解析失败」，用于验证不会直接进播放器。
+  Object? fileError;
+
   @override
   Future<List<MagnetFile>> magnetFiles(String magnet) async {
     fileRequests.add(magnet);
+    if (fileError != null) throw fileError!;
     return const [
       MagnetFile(index: 0, name: 'sample.mp4', size: 100, video: true),
       MagnetFile(index: 1, name: 'movie.mkv', size: 900, video: true),
@@ -96,23 +100,57 @@ class _MagnetRepository extends FakeRepository {
   }
 
   final browseRequests = <String>[];
+  final categoryBrowseRequests = <String>[];
+  final categorySites = <String>[];
   final removedSites = <int>[];
   final savedRules = <String>[];
   int resetCalls = 0;
-  List<String> hotWords = [
-    for (var i = 0; i < 20; i++) '热词$i',
+  List<String> hotWords = [for (var i = 0; i < 20; i++) '热词$i'];
+  // 分类由「站源」给出，测试里可改成空列表来验证没有分类时的回退。
+  List<MagnetCategory> siteCategories = const [
+    MagnetCategory(
+      siteId: 10001,
+      siteName: 'SOBT',
+      name: '电影',
+      url: 'https://sobt.test/list/1.html?page=1',
+    ),
+    MagnetCategory(
+      siteId: 10001,
+      siteName: 'SOBT',
+      name: '剧集',
+      url: 'https://sobt.test/list/2.html?page=1',
+    ),
+    MagnetCategory(
+      siteId: 10002,
+      siteName: '磁力猫',
+      name: '动漫',
+      url: 'https://cat.test/cate/3.html',
+    ),
   ];
 
   @override
   Future<List<String>> magnetHotWords({bool refresh = false}) async => hotWords;
 
   @override
+  Future<List<MagnetCategory>> magnetCategories({
+    List<int> sites = const [],
+    bool refresh = false,
+  }) async {
+    categorySites.add('${sites.join(',')}|$refresh');
+    if (sites.isEmpty) return siteCategories;
+    return siteCategories.where((item) => sites.contains(item.siteId)).toList();
+  }
+
+  @override
   Future<MagnetSearchPage> magnetBrowse(
     String query, {
     int page = 1,
     List<int> sites = const [],
+    String categoryUrl = '',
+    int categorySiteId = 0,
   }) async {
     browseRequests.add('$query|$page|${sites.join(',')}');
+    categoryBrowseRequests.add('$categorySiteId|$categoryUrl');
     return MagnetSearchPage(
       items: const [
         MagnetResult(
@@ -577,17 +615,15 @@ void main() {
     await tester.pumpAndSettle();
 
     expect(find.widgetWithText(FilledButton, '播放'), findsOneWidget);
-    // 分类按实际可用磁力站动态生成（全部 + 两个站源）。
-    expect(find.text('全部'), findsOneWidget);
+    // 站源行仍是「全部 + 两个站源」；分类行另有一个「全部」默认项。
+    expect(find.widgetWithText(FilterChip, '全部'), findsOneWidget);
+    expect(find.widgetWithText(ChoiceChip, '全部'), findsOneWidget);
     expect(find.text('SOBT'), findsOneWidget);
     expect(repository.browseRequests, isNotEmpty);
     expect(find.text('分类列表影片'), findsOneWidget);
     final tile = tester.widget<ListTile>(
       find
-          .ancestor(
-            of: find.text('分类列表影片'),
-            matching: find.byType(ListTile),
-          )
+          .ancestor(of: find.text('分类列表影片'), matching: find.byType(ListTile))
           .first,
     );
     expect(tile.leading, isNull, reason: '按需求列表项不设封面');
@@ -633,10 +669,7 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, '自动识别磁力源'));
     await tester.pumpAndSettle();
 
-    expect(
-      find.textContaining('已按站点 HTML 生成磁力源规则'),
-      findsOneWidget,
-    );
+    expect(find.textContaining('已按站点 HTML 生成磁力源规则'), findsOneWidget);
     expect(field('磁力源规则 JSON').controller?.text, contains('mainUrl'));
     expect(field('源名称').controller?.text, '识别站点');
 
@@ -650,5 +683,102 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, '删除'));
     await tester.pumpAndSettle();
     expect(repository.removedSites, contains(10001));
+  });
+
+  testWidgets('磁力播放标签：粘贴链接和列表项都先解析再加载播放器', (tester) async {
+    final repository = _MagnetRepository();
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力播放'));
+    await tester.pumpAndSettle();
+
+    final input = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          (widget.decoration?.hintText ?? '').contains('magnet:'),
+    );
+    await tester.enterText(input, _magnet);
+    await tester.tap(find.widgetWithText(FilledButton, '播放'));
+    await tester.pumpAndSettle();
+
+    // 与磁力搜索一致：先取消旧任务、解析种子内文件列表，再让用户选集，
+    // 而不是把裸磁力链接直接丢给播放器。
+    expect(repository.cancelCalls, 1);
+    expect(repository.fileRequests, [_magnet]);
+    expect(repository.playRequests, isEmpty);
+    expect(find.text('选择要播放的文件'), findsOneWidget);
+
+    Navigator.of(tester.element(find.text('选择要播放的文件'))).pop();
+    await tester.pumpAndSettle();
+    expect(find.text('选择要播放的文件'), findsNothing);
+
+    await tester.tap(find.byTooltip('播放'));
+    await tester.pumpAndSettle();
+    expect(repository.cancelCalls, 2);
+    expect(repository.fileRequests, [_magnet, _magnet]);
+    expect(find.text('选择要播放的文件'), findsOneWidget);
+  });
+
+  testWidgets('磁力播放标签：解析失败时不进播放器并给出提示', (tester) async {
+    final repository = _MagnetRepository()..fileError = StateError('DHT 超时');
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力播放'));
+    await tester.pumpAndSettle();
+
+    final input = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          (widget.decoration?.hintText ?? '').contains('magnet:'),
+    );
+    await tester.enterText(input, _magnet);
+    await tester.tap(find.widgetWithText(FilledButton, '播放'));
+    await tester.pumpAndSettle();
+
+    expect(repository.fileRequests, [_magnet]);
+    expect(repository.playRequests, isEmpty, reason: '解析失败不应加载播放器');
+    expect(find.textContaining('磁力解析失败'), findsOneWidget);
+    // loading 态已复位，按钮可以直接重试。
+    expect(find.widgetWithText(FilledButton, '播放'), findsOneWidget);
+  });
+
+  testWidgets('磁力播放分类来自站源实际导航，点分类按真实地址浏览', (tester) async {
+    final repository = _MagnetRepository();
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力播放'));
+    await tester.pumpAndSettle();
+
+    // 「全部站源」下分类带站名，且不再出现写死的分类词表。
+    expect(find.widgetWithText(ChoiceChip, 'SOBT·电影'), findsOneWidget);
+    expect(find.widgetWithText(ChoiceChip, '磁力猫·动漫'), findsOneWidget);
+    expect(find.text('最新'), findsNothing);
+    expect(repository.categorySites, isNotEmpty);
+
+    await tester.tap(find.widgetWithText(ChoiceChip, 'SOBT·电影'));
+    await tester.pumpAndSettle();
+    expect(
+      repository.categoryBrowseRequests.last,
+      '10001|https://sobt.test/list/1.html?page=1',
+    );
+    expect(repository.browseRequests.last, '|1|10001');
+
+    // 切到另一个源后，分类行只显示该源自己的分类。
+    await tester.tap(find.widgetWithText(FilterChip, '磁力猫'));
+    await tester.pumpAndSettle();
+    expect(find.widgetWithText(ChoiceChip, '动漫'), findsOneWidget);
+    expect(find.widgetWithText(ChoiceChip, 'SOBT·电影'), findsNothing);
+    expect(find.text('电影'), findsNothing);
+    expect(repository.categorySites.last, startsWith('10002|'));
+  });
+
+  testWidgets('磁力源没有分类时回退全部，列表照常显示', (tester) async {
+    final repository = _MagnetRepository()..siteCategories = const [];
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力播放'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(ChoiceChip, '全部'), findsOneWidget);
+    expect(find.byType(ChoiceChip), findsOneWidget, reason: '只保留「全部」');
+    expect(find.text('分类列表影片'), findsOneWidget);
+    expect(repository.browseRequests, isNotEmpty);
+    expect(repository.categoryBrowseRequests.last, '0|');
   });
 }

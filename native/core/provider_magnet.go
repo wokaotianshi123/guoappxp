@@ -27,13 +27,13 @@ import (
 var magnetSitesJSON []byte
 
 type magnetSiteRequest struct {
-	Method    string            `json:"method"`
-	MainURL   string            `json:"mainUrl"`
-	SearchURL string            `json:"searchUrl"`
+	Method    string `json:"method"`
+	MainURL   string `json:"mainUrl"`
+	SearchURL string `json:"searchUrl"`
 	// ListURL 是可选的「站内列表页」模板，供磁力播放页按分类直接拉取最新资源。
 	// 留空时退回 searchUrl（用热门词填充 [keyword]）。
-	ListURL   string            `json:"listUrl,omitempty"`
-	Header    map[string]string `json:"header"`
+	ListURL string            `json:"listUrl,omitempty"`
+	Header  map[string]string `json:"header"`
 }
 
 type magnetSiteExpression struct {
@@ -46,10 +46,10 @@ type magnetSiteExpression struct {
 }
 
 type magnetSite struct {
-	ID         int                  `json:"id"`
-	Name       string               `json:"name"`
-	Info       string               `json:"info"`
-	State      bool                 `json:"state"`
+	ID    int    `json:"id"`
+	Name  string `json:"name"`
+	Info  string `json:"info"`
+	State bool   `json:"state"`
 	// Custom 标记用户自行新增/编辑的站源；内置 35 站导出为 false。
 	Custom     bool                 `json:"custom,omitempty"`
 	Request    magnetSiteRequest    `json:"request"`
@@ -399,16 +399,22 @@ func magnetParseList(site magnetSite, body string) []magnetResult {
 
 // magnetSearch 并发跑选中的站源，按 infohash 去重；单个站失败只记账，不影响其它站。
 func magnetSearch(ctx context.Context, query string, page int, selected []int) (magnetSearchResult, error) {
-	return magnetRunSearch(ctx, query, page, selected, false)
+	return magnetRunSearch(ctx, query, page, selected, false, "", 0)
 }
 
 // magnetBrowse 给「磁力播放」页的分类列表用：不要求关键词，按站点的 listUrl
 // （没有则用默认热词走搜索地址）拉站内最新一批资源，结果结构与搜索完全一致。
 func magnetBrowse(ctx context.Context, query string, page int, selected []int) (magnetSearchResult, error) {
-	return magnetRunSearch(ctx, query, page, selected, true)
+	return magnetRunSearch(ctx, query, page, selected, true, "", 0)
 }
 
-func magnetRunSearch(ctx context.Context, query string, page int, selected []int, browse bool) (magnetSearchResult, error) {
+// magnetBrowseCategory 用站点首页抓到的真实分类地址拉列表；categorySiteID
+// 保证这个地址只用在它所属的站源上，避免「全部站源」时把 A 站分类套到 B 站。
+func magnetBrowseCategory(ctx context.Context, query string, page int, selected []int, categoryURL string, categorySiteID int) (magnetSearchResult, error) {
+	return magnetRunSearch(ctx, query, page, selected, true, categoryURL, categorySiteID)
+}
+
+func magnetRunSearch(ctx context.Context, query string, page int, selected []int, browse bool, categoryURL string, categorySiteID int) (magnetSearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
 		if !browse {
@@ -477,12 +483,26 @@ func magnetRunSearch(ctx context.Context, query string, page int, selected []int
 			if browse {
 				address = magnetBrowseAddress(site, query, page)
 			}
+			categorySite := categoryURL != "" && categorySiteID > 0 && site.ID == categorySiteID
+			if categorySite {
+				address = magnetCategoryAddress(categoryURL, page)
+			}
 			body, err := magnetFetch(budget, address, site.Request.Header)
 			if err != nil {
 				outcomes[index] = siteOutcome{err: err}
 				return
 			}
-			outcomes[index] = siteOutcome{items: magnetParseList(site, body)}
+			items := magnetParseList(site, body)
+			if categorySite && len(items) == 0 {
+				// 分类页结构可能和站源规则里的搜索列表 XPath 不一致；这时退回
+				// 该站默认浏览地址，保证选了分类也不会只剩一个空列表。
+				if fallback := magnetBrowseAddress(site, query, page); fallback != address {
+					if fallbackBody, fallbackErr := magnetFetch(budget, fallback, site.Request.Header); fallbackErr == nil {
+						items = magnetParseList(site, fallbackBody)
+					}
+				}
+			}
+			outcomes[index] = siteOutcome{items: items}
 		}(i)
 	}
 	wait.Wait()

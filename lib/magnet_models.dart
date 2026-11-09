@@ -62,6 +62,33 @@ class MagnetSiteAnalysis {
       );
 }
 
+/// 「磁力播放」页从某个磁力站首页导航里实际抓到的分类。
+/// [url] 是该分类的列表地址，点分类时直接按它拉列表；站点没提供分类时
+/// 界面回退到「全部」，照常按站点默认浏览地址显示列表。
+class MagnetCategory {
+  const MagnetCategory({
+    required this.siteId,
+    required this.siteName,
+    required this.name,
+    required this.url,
+  });
+
+  final int siteId;
+  final String siteName;
+  final String name;
+  final String url;
+
+  /// 不同站的同名分类是不同项，用站点 id + 地址做选中键。
+  String get key => '$siteId::$url';
+
+  factory MagnetCategory.fromJson(Map<String, dynamic> json) => MagnetCategory(
+    siteId: json['siteId'] as int? ?? 0,
+    siteName: json['siteName'] as String? ?? '',
+    name: json['name'] as String? ?? '',
+    url: json['url'] as String? ?? '',
+  );
+}
+
 /// 每个站源标签独立记忆的排序 / 筛选方式。
 enum MagnetSort { defaultOrder, date, size, dht }
 

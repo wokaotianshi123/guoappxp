@@ -322,11 +322,21 @@ abstract class AppRepository {
   Future<List<String>> magnetHotWords({bool refresh = false}) async =>
       const <String>[];
 
+  /// 「磁力播放」页的分类：按站源实际抓回来的导航分类，站点没有分类时返回空，
+  /// 由界面回退到「全部」照常显示列表。[refresh] 跳过 Go 侧缓存重新抓。
+  Future<List<MagnetCategory>> magnetCategories({
+    List<int> sites = const [],
+    bool refresh = false,
+  }) async => const <MagnetCategory>[];
+
   /// 按分类浏览站内列表（可不带关键词），结果与 magnetSearch 同结构。
+  /// [categoryUrl] 非空时按这个真实分类地址抓，[categorySiteId] 限定它属于哪个源。
   Future<MagnetSearchPage> magnetBrowse(
     String query, {
     int page = 1,
     List<int> sites = const [],
+    String categoryUrl = '',
+    int categorySiteId = 0,
   }) async => const MagnetSearchPage();
 
   /// 输入网址自动反推磁力源规则，只回填表单、不写盘。
@@ -349,8 +359,7 @@ abstract class AppRepository {
   Future<void> removeMagnetSite(int id) async =>
       throw AppFailure('当前环境不支持磁力源管理');
 
-  Future<int> resetMagnetSites() async =>
-      throw AppFailure('当前环境不支持磁力源管理');
+  Future<int> resetMagnetSites() async => throw AppFailure('当前环境不支持磁力源管理');
 }
 
 class NativeRepository extends AppRepository {
@@ -776,6 +785,8 @@ class NativeRepository extends AppRepository {
                   ? 50
                   : action == 'magnetHotWords'
                   ? 25
+                  : action == 'magnetCategories'
+                  ? 35
                   : action == 'magnetPeers'
                   ? 40
                   : action == 'magnetCancel'
@@ -1370,13 +1381,26 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<List<String>> magnetHotWords({bool refresh = false}) async {
+    final result = await _call({'action': 'magnetHotWords', 'force': refresh});
+    return [
+      for (final row in (result as Map)['items'] as List? ?? const [])
+        if (row is String && row.trim().isNotEmpty) row,
+    ];
+  }
+
+  @override
+  Future<List<MagnetCategory>> magnetCategories({
+    List<int> sites = const [],
+    bool refresh = false,
+  }) async {
     final result = await _call({
-      'action': 'magnetHotWords',
+      'action': 'magnetCategories',
+      'sites': sites,
       'force': refresh,
     });
     return [
       for (final row in (result as Map)['items'] as List? ?? const [])
-        if (row is String && row.trim().isNotEmpty) row,
+        if (row is Map) MagnetCategory.fromJson(Map<String, dynamic>.from(row)),
     ];
   }
 
@@ -1385,12 +1409,16 @@ class NativeRepository extends AppRepository {
     String query, {
     int page = 1,
     List<int> sites = const [],
+    String categoryUrl = '',
+    int categorySiteId = 0,
   }) async {
     final result = await _call({
       'action': 'magnetBrowse',
       'query': query,
       'page': page,
       'sites': sites,
+      if (categoryUrl.isNotEmpty) 'categoryUrl': categoryUrl,
+      if (categorySiteId > 0) 'categorySiteId': categorySiteId,
     });
     return MagnetSearchPage.fromJson(Map<String, dynamic>.from(result as Map));
   }

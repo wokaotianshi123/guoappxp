@@ -153,14 +153,18 @@ type nativeInput struct {
 	Account         soraniAccountInput      `json:"account"`
 	// 磁力：搜索关键词 / 页码 / 勾选的站源，播放用的磁力链接与种子内文件序号。
 	// fileIndex < 0 表示自动挑最大的视频文件；hashes 用于批量探测 DHT 节点数。
-	Magnet         string   `json:"magnet"`
-	FileIndex      *int     `json:"fileIndex"`
-	Sites          []int    `json:"sites"`
-	Hashes         []string `json:"hashes"`
+	Magnet    string   `json:"magnet"`
+	FileIndex *int     `json:"fileIndex"`
+	Sites     []int    `json:"sites"`
+	Hashes    []string `json:"hashes"`
 	// 磁力源管理：SiteID 指定要编辑/删除的站源，SiteState 用于启停。
-	SiteID         int      `json:"siteId"`
-	SiteState      *bool    `json:"siteState"`
-	CacheDirectory string   `json:"cacheDirectory"`
+	SiteID    int   `json:"siteId"`
+	SiteState *bool `json:"siteState"`
+	// 磁力播放页从站点首页抓到的真实分类：CategoryURL 是列表地址，
+	// CategorySiteID 限定这个地址只作用于它所属的站源。
+	CategoryURL    string `json:"categoryUrl"`
+	CategorySiteID int    `json:"categorySiteId"`
+	CacheDirectory string `json:"cacheDirectory"`
 }
 
 type nativeCatalogResult struct {
@@ -435,6 +439,9 @@ func nativeDispatch(input nativeInput) (any, error) {
 	} else if input.Action == "magnetHotWords" {
 		// 内部 6 秒硬预算抓站，外面留一点序列化余量即可。
 		duration = 20 * time.Second
+	} else if input.Action == "magnetCategories" {
+		// 内部 10 秒硬预算并发抓各站首页导航。
+		duration = 30 * time.Second
 	} else if input.Action == "magnetPeers" {
 		// 一轮 DHT 探测窗口 6 秒，另留启动 BT 引擎与并发 AddMagnet 的余量。
 		duration = 30 * time.Second
@@ -594,7 +601,12 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 这些 action 同样与站源白名单无关，nativeAuthorizeInput 不拦截。
 	case "magnetHotWords":
 		return magnetHotWords(ctx, input.Force)
+	case "magnetCategories":
+		return magnetCategories(ctx, input.Force, input.Sites)
 	case "magnetBrowse":
+		if input.CategoryURL != "" {
+			return magnetBrowseCategory(ctx, input.Query, input.Page, input.Sites, input.CategoryURL, input.CategorySiteID)
+		}
 		return magnetBrowse(ctx, input.Query, input.Page, input.Sites)
 	case "magnetAnalyzeSite":
 		return magnetAnalyzeSite(ctx, input.Base)

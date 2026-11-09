@@ -8,14 +8,14 @@ import '../../models.dart';
 import '../player/playback_handle.dart';
 import '../player/playback_page.dart';
 
-/// 把一条磁力链接交给内置播放器。
+/// 把「已解析好的」磁力分集交给内置播放器。
 ///
 /// 项目里播放统一走「构造 DramaDetail + PlaybackHandle → push PlaybackPage」，
 /// PlaybackLoader 看到分集 raw['magnet'] 会改走 Go 侧 magnetPlay（BT 元数据 →
 /// 本机 HTTP 流）。因此这里只需要一套「伪剧集」，不需要自己碰播放器/弹幕/进度。
 ///
 /// [files] 为空时造一集并把 fileIndex 设为 -1，让 Go 侧自动挑种子里最大的视频
-/// 文件；[files] 非空时每个文件对应一集，供搜索页选集后回灌。
+/// 文件；[files] 非空时每个文件对应一集，供解析后选集回灌。
 Future<void> openMagnetPlayback(
   BuildContext context, {
   required AppRepository repository,
@@ -78,34 +78,95 @@ Future<void> openMagnetPlayback(
   handle.dispose();
 }
 
-/// 列表项/搜索结果共用：有 magnet 就直接播，没有则给出可理解的提示。
-Future<void> playMagnetResult(
+/// 磁力播放的统一入口：**先解析磁力链接，再加载播放器**。
+///
+/// 「磁力搜索」与「磁力播放」两个标签都必须走这里，不能把裸链接直接丢给
+/// [openMagnetPlayback]：先取消上一个解析任务并取回种子内文件列表，用户选集
+/// （或只有一个视频文件时自动选）之后才构造分集、加载播放器。
+///
+/// [isCurrent] 由调用方提供，用来在每次异步等待后丢弃过期任务（例如用户连续
+/// 点了两条资源）；[onPreparing]/[onError] 用于回显解析中状态与错误提示。
+/// [fileIndex] 可强制指定文件，跳过选集弹窗。
+Future<void> resolveAndPlayMagnet(
   BuildContext context, {
   required AppRepository repository,
   required LocalStore store,
-  required MagnetResult result,
+  required String magnet,
+  required String title,
+  String subtitle = '',
+  int? fileIndex,
+  bool Function()? isCurrent,
+  void Function(bool preparing)? onPreparing,
   void Function(String message)? onError,
 }) async {
-  if (!result.playable || !result.magnet.startsWith('magnet:')) {
+  final link = magnet.trim();
+  if (!link.startsWith('magnet:')) {
     onError?.call('这条资源暂未解析出磁力链接');
     return;
   }
-  try {
-    await openMagnetPlayback(
-      context,
-      repository: repository,
-      store: store,
-      magnet: result.magnet,
-      title: result.title,
-      subtitle: [
-        result.site,
-        if (result.size.isNotEmpty) result.size,
-        if (result.date.isNotEmpty) result.date,
-      ].join(' · '),
-    );
-  } catch (error) {
-    onError?.call('磁力播放失败：$error');
+  bool stillActive() => isCurrent?.call() ?? true;
+
+  Future<void> launch({List<MagnetFile>? files, int startIndex = 0}) async {
+    try {
+      await openMagnetPlayback(
+        context,
+        repository: repository,
+        store: store,
+        magnet: link,
+        title: title,
+        subtitle: subtitle,
+        files: files,
+        startIndex: startIndex,
+      );
+    } catch (error) {
+      if (context.mounted && stillActive()) {
+        onError?.call('磁力播放失败：$error');
+      }
+    }
   }
+
+  onPreparing?.call(true);
+  final List<MagnetFile> files;
+  try {
+    // 每次点播先取消上一个还在 DHT 上挂着的解析任务，避免抢占 BT 客户端。
+    await repository.magnetCancel();
+    files = await repository.magnetFiles(link);
+  } catch (error) {
+    if (context.mounted && stillActive()) {
+      onPreparing?.call(false);
+      onError?.call('磁力解析失败：$error');
+    }
+    return;
+  }
+  if (!context.mounted || !stillActive()) return;
+  onPreparing?.call(false);
+
+  if (files.isEmpty) {
+    // 元数据还没回来也不必卡死：解析已尝试过，这里让 Go 侧自动挑最大视频文件。
+    await launch();
+    return;
+  }
+
+  int chosen = fileIndex ?? -1;
+  if (chosen < 0) {
+    final videos = files.where((file) => file.video).toList();
+    if (videos.length == 1) {
+      chosen = videos.first.index;
+    } else if (files.length == 1) {
+      chosen = files.first.index;
+    } else {
+      chosen =
+          await showModalBottomSheet<int>(
+            context: context,
+            isScrollControlled: true,
+            builder: (_) => _MagnetFilePicker(files: files),
+          ) ??
+          -1;
+    }
+  }
+  if (chosen < 0 || !context.mounted || !stillActive()) return;
+  final start = files.indexWhere((file) => file.index == chosen);
+  await launch(files: files, startIndex: start < 0 ? 0 : start);
 }
 
 Future<void> copyMagnetLink(BuildContext context, String value) async {
@@ -115,5 +176,60 @@ Future<void> copyMagnetLink(BuildContext context, String value) async {
     ScaffoldMessenger.of(
       context,
     ).showSnackBar(const SnackBar(content: Text('已复制磁力链接')));
+  }
+}
+
+/// 解析出多个文件时的选集弹窗（搜索页与播放页共用）。
+class _MagnetFilePicker extends StatelessWidget {
+  const _MagnetFilePicker({required this.files});
+
+  final List<MagnetFile> files;
+
+  String _size(int bytes) {
+    if (bytes <= 0) return '';
+    if (bytes >= 1 << 30) return '${(bytes / (1 << 30)).toStringAsFixed(2)} GB';
+    return '${(bytes / (1 << 20)).toStringAsFixed(1)} MB';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: SizedBox(
+        height: 460,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Text(
+                '选择要播放的文件',
+                style: Theme.of(context).textTheme.titleMedium,
+              ),
+            ),
+            Expanded(
+              child: ListView(
+                children: [
+                  for (final file in files)
+                    ListTile(
+                      leading: Icon(
+                        file.video
+                            ? Icons.movie_outlined
+                            : Icons.insert_drive_file_outlined,
+                      ),
+                      title: Text(
+                        file.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      subtitle: Text(_size(file.size)),
+                      onTap: () => Navigator.of(context).pop(file.index),
+                    ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
   }
 }

@@ -278,70 +278,31 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
     if (!result.playable) return;
     final repository = _repository;
     final generation = ++_playGeneration;
-    if (!mounted) return;
-    setState(() {
-      _preparing = result.magnet;
-      _error = '';
-    });
-    List<MagnetFile> files;
-    try {
-      await repository.magnetCancel();
-      files = await repository.magnetFiles(result.magnet);
-    } catch (error) {
-      if (!mounted || generation != _playGeneration) return;
-      setState(() {
-        _preparing = null;
-        _error = '磁力解析失败：$error';
-      });
-      return;
-    }
-    if (!mounted || generation != _playGeneration) return;
-    setState(() => _preparing = null);
-    if (files.isEmpty) {
-      // 元数据还没回来也不必卡死：单集 + fileIndex -1 让播放器自己解析。
-      await openMagnetPlayback(
-        context,
-        repository: repository,
-        store: widget.store,
-        magnet: result.magnet,
-        title: result.title,
-        subtitle: [result.site, result.size, result.date]
-            .where((part) => part.isNotEmpty)
-            .join(' · '),
-      );
-      return;
-    }
-    int chosen = forced ?? -1;
-    if (chosen < 0) {
-      final videos = files.where((file) => file.video).toList();
-      if (videos.length == 1) {
-        chosen = videos.first.index;
-      } else if (files.length == 1) {
-        chosen = files.first.index;
-      } else {
-        chosen =
-            await showModalBottomSheet<int>(
-              context: context,
-              isScrollControlled: true,
-              builder: (context) =>
-                  _FilePicker(files: files, title: result.title),
-            ) ??
-            -1;
-      }
-    }
-    if (chosen < 0 || !mounted || generation != _playGeneration) return;
-    final start = files.indexWhere((file) => file.index == chosen);
-    await openMagnetPlayback(
+    bool isCurrent() => mounted && generation == _playGeneration;
+    if (!isCurrent()) return;
+    setState(() => _error = '');
+    // 与「磁力播放」标签共用同一条「先解析、再选集、后加载播放器」链路。
+    await resolveAndPlayMagnet(
       context,
       repository: repository,
       store: widget.store,
       magnet: result.magnet,
       title: result.title,
-      subtitle: [result.site, result.size, result.date]
-          .where((part) => part.isNotEmpty)
-          .join(' · '),
-      files: files,
-      startIndex: start < 0 ? 0 : start,
+      subtitle: [
+        result.site,
+        result.size,
+        result.date,
+      ].where((part) => part.isNotEmpty).join(' · '),
+      fileIndex: forced,
+      isCurrent: isCurrent,
+      onPreparing: (preparing) {
+        if (!isCurrent()) return;
+        setState(() => _preparing = preparing ? result.magnet : null);
+      },
+      onError: (message) {
+        if (!isCurrent()) return;
+        setState(() => _error = message);
+      },
     );
   }
 
@@ -427,8 +388,9 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
                           : const Icon(Icons.refresh_rounded),
-                      onPressed:
-                          _hotLoading ? null : () => _loadHotWords(refresh: true),
+                      onPressed: _hotLoading
+                          ? null
+                          : () => _loadHotWords(refresh: true),
                     ),
                   ),
                 ],
@@ -464,10 +426,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
         if (_warning.isNotEmpty)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Text(
-              _warning,
-              style: Theme.of(context).textTheme.bodySmall,
-            ),
+            child: Text(_warning, style: Theme.of(context).textTheme.bodySmall),
           ),
         const SizedBox(height: 8),
         TabBar(
@@ -512,8 +471,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                 label: const Text('仅含磁力'),
                 selected: onlyMagnet,
                 visualDensity: VisualDensity.compact,
-                onSelected: (value) =>
-                    setState(() => _onlyMagnet[key] = value),
+                onSelected: (value) => setState(() => _onlyMagnet[key] = value),
               ),
               const Spacer(),
               if (_dhtLoading)
@@ -620,9 +578,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                                   children: [
                                     IconButton(
                                       tooltip: '复制磁力链接',
-                                      icon: const Icon(
-                                        Icons.copy_all_outlined,
-                                      ),
+                                      icon: const Icon(Icons.copy_all_outlined),
                                       onPressed: () => copyMagnetLink(
                                         context,
                                         item.magnet.isNotEmpty
@@ -774,61 +730,6 @@ class _SitePickerState extends State<_SitePicker> {
                           _chosen.remove(site.id);
                         }
                       }),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _FilePicker extends StatelessWidget {
-  const _FilePicker({required this.files, required this.title});
-
-  final List<MagnetFile> files;
-  final String title;
-
-  String _size(int bytes) {
-    if (bytes <= 0) return '';
-    if (bytes >= 1 << 30) return '${(bytes / (1 << 30)).toStringAsFixed(2)} GB';
-    return '${(bytes / (1 << 20)).toStringAsFixed(1)} MB';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: SizedBox(
-        height: 460,
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Padding(
-              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-              child: Text(
-                '选择要播放的文件',
-                style: Theme.of(context).textTheme.titleMedium,
-              ),
-            ),
-            Expanded(
-              child: ListView(
-                children: [
-                  for (final file in files)
-                    ListTile(
-                      leading: Icon(
-                        file.video
-                            ? Icons.movie_outlined
-                            : Icons.insert_drive_file_outlined,
-                      ),
-                      title: Text(
-                        file.name,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(_size(file.size)),
-                      onTap: () => Navigator.of(context).pop(file.index),
                     ),
                 ],
               ),

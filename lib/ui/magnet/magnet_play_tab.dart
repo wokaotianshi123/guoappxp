@@ -9,8 +9,9 @@ import '../../magnet_models.dart';
 import 'magnet_playback.dart';
 
 /// 三个一级标签里的「磁力播放」：
-/// 上方一行「粘贴磁力链接 → 播放」，直接把链接交给内置播放器解析；
-/// 下方是按磁力站动态生成的分类列表（无封面、按行），点任一行即播放。
+/// 上方一行「粘贴磁力链接 → 播放」，与磁力搜索一样先解析种子文件列表、
+/// 再选集加载内置播放器；下方是按磁力站动态生成的分类列表（无封面、按行），
+/// 点任一行同样先解析再播放。
 class MagnetPlayTab extends StatefulWidget {
   const MagnetPlayTab({
     super.key,
@@ -25,10 +26,6 @@ class MagnetPlayTab extends StatefulWidget {
   State<MagnetPlayTab> createState() => _MagnetPlayTabState();
 }
 
-/// 内容分类快捷词。分类本身按「磁力站实际有哪些站」动态生成（站源 Tab），
-/// 这里只提供一组浏览词，用来换一批站内资源。
-const _categoryWords = <String>['最新', '电影', '剧集', '动漫', '综艺', '4K', '音乐'];
-
 class _MagnetPlayTabState extends State<MagnetPlayTab> {
   final _link = TextEditingController();
 
@@ -37,7 +34,14 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   List<MagnetSite> _sites = const [];
   List<MagnetResult> _items = const [];
   int? _siteId; // null = 全部站源
-  String _category = '最新';
+  // 分类不是写死的词表：由 Go 侧抓各磁力站首页导航得到，点分类按真实地址浏览。
+  // 站点没提供分类时 _categories 为空，分类行只留「全部」，列表照常加载。
+  List<MagnetCategory> _categories = const [];
+  bool _categoryLoading = false;
+  int _categoryGeneration = 0;
+  String _categoryKey = ''; // 空 = 全部（按站点默认浏览地址拉列表）
+  String _categoryUrl = '';
+  int _categorySiteId = 0;
   bool _loading = false;
   bool _loadingMore = false;
   bool _hasMore = false;
@@ -46,6 +50,10 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   String _warning = '';
   bool _booted = false;
   int _generation = 0;
+  // 正在解析的磁力链接（用于列表项/按钮的 loading 态），以及防止旧解析任务
+  // 覆盖新任务的自增序号——行为对齐「磁力搜索」标签。
+  String? _preparing;
+  int _playGeneration = 0;
 
   @override
   void initState() {
@@ -55,6 +63,8 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
 
   void _onSitesChanged() {
     _loadSites();
+    // 站源有增删改，分类缓存也要跟着失效重抓。
+    _loadCategories(refresh: true);
     _browse();
   }
 
@@ -64,6 +74,7 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
     if (!_booted) {
       _booted = true;
       _loadSites();
+      _loadCategories();
       _browse();
     }
   }
@@ -88,12 +99,48 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
     }
   }
 
+  /// 拉取所选站源首页的真实分类。抓不到（站点本来就没有分类 / 超时 / 断网）
+  /// 时不报错、不阻断：_categories 保持空，分类行只剩「全部」，列表照常按
+  /// 站点默认浏览地址加载。
+  Future<void> _loadCategories({bool refresh = false}) async {
+    final generation = ++_categoryGeneration;
+    if (mounted) setState(() => _categoryLoading = true);
+    try {
+      final sites = _siteId == null ? <int>[] : <int>[_siteId!];
+      final categories = await _repository.magnetCategories(
+        sites: sites,
+        refresh: refresh,
+      );
+      if (!mounted || generation != _categoryGeneration) return;
+      var key = _categoryKey;
+      if (key.isNotEmpty && !categories.any((item) => item.key == key)) {
+        key = '';
+        _categoryUrl = '';
+        _categorySiteId = 0;
+      }
+      setState(() {
+        _categories = categories;
+        _categoryKey = key;
+        _categoryLoading = false;
+      });
+    } catch (_) {
+      if (mounted && generation == _categoryGeneration) {
+        setState(() => _categoryLoading = false);
+      }
+    }
+  }
+
   Future<void> _browse({bool more = false}) async {
     if (_loading || _loadingMore) return;
     final generation = ++_generation;
     final page = more ? _page + 1 : 1;
-    final sites = _siteId == null ? <int>[] : <int>[_siteId!];
-    final query = _category == '最新' ? '' : _category;
+    // 选中真实分类时只看它所属的那个源；否则沿用当前站源选择（null=全部）。
+    final sites = _categorySiteId > 0
+        ? <int>[_categorySiteId]
+        : _siteId == null
+        ? <int>[]
+        : <int>[_siteId!];
+    const query = ''; // 分类浏览用真实地址，不再拿固定词当关键词
     setState(() {
       if (more) {
         _loadingMore = true;
@@ -109,6 +156,8 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
         query,
         page: page,
         sites: sites,
+        categoryUrl: _categoryUrl,
+        categorySiteId: _categorySiteId,
       );
       if (!mounted || generation != _generation) return;
       setState(() {
@@ -136,13 +185,26 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
 
   void _selectSite(int? id) {
     if (_siteId == id) return;
-    setState(() => _siteId = id);
+    setState(() {
+      _siteId = id;
+      // 旧分类属于旧站源，切源后回到「全部」，再按新源重抓分类。
+      _categories = const [];
+      _categoryKey = '';
+      _categoryUrl = '';
+      _categorySiteId = 0;
+    });
+    _loadCategories();
     _browse();
   }
 
-  void _selectCategory(String word) {
-    if (_category == word) return;
-    setState(() => _category = word);
+  void _selectCategory(MagnetCategory? category) {
+    final key = category?.key ?? '';
+    if (_categoryKey == key) return;
+    setState(() {
+      _categoryKey = key;
+      _categoryUrl = category?.url ?? '';
+      _categorySiteId = category?.siteId ?? 0;
+    });
     _browse();
   }
 
@@ -162,19 +224,58 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
       setState(() => _error = '请粘贴以 magnet: 开头的磁力链接');
       return;
     }
+    await _resolveAndPlay(
+      magnet: link,
+      title: '磁力链接播放',
+      subtitle: link.length > 80 ? '${link.substring(0, 80)}…' : link,
+    );
+  }
+
+  /// 输入框与分类列表共用的播放入口：先取消旧任务、解析种子文件列表、
+  /// 选集，最后才加载内置播放器（不把裸磁力链接直接丢给播放器）。
+  Future<void> _resolveAndPlay({
+    required String magnet,
+    required String title,
+    String subtitle = '',
+  }) async {
+    final repository = _repository;
+    final generation = ++_playGeneration;
+    bool isCurrent() => mounted && generation == _playGeneration;
+    if (!isCurrent()) return;
     setState(() => _error = '');
-    try {
-      await openMagnetPlayback(
-        context,
-        repository: _repository,
-        store: widget.store,
-        magnet: link,
-        title: '磁力链接播放',
-        subtitle: link.length > 80 ? '${link.substring(0, 80)}…' : link,
-      );
-    } catch (error) {
-      if (mounted) setState(() => _error = '磁力播放失败：$error');
+    await resolveAndPlayMagnet(
+      context,
+      repository: repository,
+      store: widget.store,
+      magnet: magnet,
+      title: title,
+      subtitle: subtitle,
+      isCurrent: isCurrent,
+      onPreparing: (preparing) {
+        if (!isCurrent()) return;
+        setState(() => _preparing = preparing ? magnet : null);
+      },
+      onError: (message) {
+        if (!isCurrent()) return;
+        setState(() => _error = message);
+      },
+    );
+  }
+
+  void _playResult(MagnetResult item) {
+    if (!item.playable || !item.magnet.startsWith('magnet:')) {
+      setState(() => _error = '这条资源暂未解析出磁力链接');
+      return;
     }
+    _resolveAndPlay(
+      magnet: item.magnet,
+      title: item.title,
+      subtitle: [
+        item.site,
+        if (item.size.isNotEmpty) item.size,
+        if (item.date.isNotEmpty) item.date,
+      ].join(' · '),
+    );
   }
 
   @override
@@ -201,7 +302,10 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
                     prefixIcon: const Icon(Icons.link_rounded),
                     suffixIcon: IconButton(
                       tooltip: '从剪贴板粘贴',
-                      icon: const Icon(Icons.content_paste_go_outlined, size: 19),
+                      icon: const Icon(
+                        Icons.content_paste_go_outlined,
+                        size: 19,
+                      ),
                       onPressed: _paste,
                     ),
                     border: const OutlineInputBorder(),
@@ -212,12 +316,16 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
-                onPressed: _playInput,
-                icon: const Icon(Icons.play_arrow_rounded, size: 20),
-                label: const Text('播放'),
-                style: FilledButton.styleFrom(
-                  minimumSize: const Size(88, 48),
-                ),
+                onPressed: _preparing == null ? _playInput : null,
+                icon: _preparing == null
+                    ? const Icon(Icons.play_arrow_rounded, size: 20)
+                    : const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                label: Text(_preparing == null ? '播放' : '解析中…'),
+                style: FilledButton.styleFrom(minimumSize: const Size(88, 48)),
               ),
             ],
           ),
@@ -230,26 +338,68 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
               style: TextStyle(color: theme.colorScheme.error, fontSize: 12),
             ),
           ),
-        // 内容分类快捷词：固定单行高度，不挤占列表。
+        // 内容分类：首项「全部」按站点默认地址浏览，其余全部来自站点首页
+        // 实际抓到的导航分类（每个源各不相同）；站点没分类时这一行只剩「全部」，
+        // 列表照常加载。整行固定 34px，不挤占列表。
         SizedBox(
           height: 34,
-          child: ListView.separated(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            scrollDirection: Axis.horizontal,
-            itemCount: _categoryWords.length,
-            separatorBuilder: (_, _) => const SizedBox(width: 6),
-            itemBuilder: (context, index) {
-              final word = _categoryWords[index];
-              final selected = _category == word;
-              return ChoiceChip(
-                label: Text(word, style: const TextStyle(fontSize: 12)),
-                selected: selected,
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                padding: const EdgeInsets.symmetric(horizontal: 8),
-                onSelected: (_) => _selectCategory(word),
-              );
-            },
+          child: Row(
+            children: [
+              Expanded(
+                child: ListView.separated(
+                  padding: const EdgeInsets.symmetric(horizontal: 16),
+                  scrollDirection: Axis.horizontal,
+                  itemCount: _categories.length + 1,
+                  separatorBuilder: (_, _) => const SizedBox(width: 6),
+                  itemBuilder: (context, index) {
+                    if (index == 0) {
+                      return ChoiceChip(
+                        label: const Text('全部', style: TextStyle(fontSize: 12)),
+                        selected: _categoryKey.isEmpty,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        padding: const EdgeInsets.symmetric(horizontal: 8),
+                        onSelected: (_) => _selectCategory(null),
+                      );
+                    }
+                    final category = _categories[index - 1];
+                    // 「全部站源」下分类可能来自多个站，带上站名避免同名混淆。
+                    final label =
+                        _siteId == null && category.siteName.isNotEmpty
+                        ? '${category.siteName}·${category.name}'
+                        : category.name;
+                    return ChoiceChip(
+                      label: Text(label, style: const TextStyle(fontSize: 12)),
+                      selected: _categoryKey == category.key,
+                      visualDensity: VisualDensity.compact,
+                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      onSelected: (_) => _selectCategory(category),
+                    );
+                  },
+                ),
+              ),
+              SizedBox(
+                width: 30,
+                height: 30,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  tooltip: '刷新分类',
+                  iconSize: 17,
+                  icon: _categoryLoading
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.category_outlined),
+                  onPressed: _categoryLoading
+                      ? null
+                      : () => _loadCategories(refresh: true),
+                ),
+              ),
+              const SizedBox(width: 8),
+            ],
           ),
         ),
         const SizedBox(height: 4),
@@ -300,7 +450,7 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
               : _items.isEmpty
               ? Center(
                   child: Text(
-                    '当前分类暂无资源，点右上角刷新或切换分类',
+                    '暂无资源，可切换分类或点刷新重试',
                     style: theme.textTheme.bodyMedium,
                   ),
                 )
@@ -310,6 +460,8 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
                   separatorBuilder: (_, _) => const Divider(height: 1),
                   itemBuilder: (context, index) {
                     final item = _items[index];
+                    final preparing =
+                        _preparing != null && _preparing == item.magnet;
                     return ListTile(
                       // 按需求不设封面：整行只给文字与操作按钮。
                       title: Text(
@@ -326,49 +478,42 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                       ),
-                      trailing: Row(
-                        mainAxisSize: MainAxisSize.min,
-                        children: [
-                          IconButton(
-                            tooltip: '复制磁力链接',
-                            icon: const Icon(Icons.copy_all_outlined, size: 20),
-                            onPressed: () => copyMagnetLink(
-                              context,
-                              item.magnet.isNotEmpty
-                                  ? item.magnet
-                                  : item.detail,
+                      trailing: preparing
+                          ? const SizedBox(
+                              width: 20,
+                              height: 20,
+                              child: CircularProgressIndicator(strokeWidth: 2),
+                            )
+                          : Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                IconButton(
+                                  tooltip: '复制磁力链接',
+                                  icon: const Icon(
+                                    Icons.copy_all_outlined,
+                                    size: 20,
+                                  ),
+                                  onPressed: () => copyMagnetLink(
+                                    context,
+                                    item.magnet.isNotEmpty
+                                        ? item.magnet
+                                        : item.detail,
+                                  ),
+                                ),
+                                IconButton(
+                                  tooltip: item.playable ? '播放' : '未解析出磁力链接',
+                                  icon: Icon(
+                                    item.playable
+                                        ? Icons.play_circle_fill
+                                        : Icons.link_off_outlined,
+                                  ),
+                                  onPressed: item.playable
+                                      ? () => _playResult(item)
+                                      : null,
+                                ),
+                              ],
                             ),
-                          ),
-                          IconButton(
-                            tooltip: item.playable ? '播放' : '未解析出磁力链接',
-                            icon: Icon(
-                              item.playable
-                                  ? Icons.play_circle_fill
-                                  : Icons.link_off_outlined,
-                            ),
-                            onPressed: item.playable
-                                ? () => playMagnetResult(
-                                      context,
-                                      repository: _repository,
-                                      store: widget.store,
-                                      result: item,
-                                      onError: (message) =>
-                                          setState(() => _error = message),
-                                    )
-                                : null,
-                          ),
-                        ],
-                      ),
-                      onTap: item.playable
-                          ? () => playMagnetResult(
-                                context,
-                                repository: _repository,
-                                store: widget.store,
-                                result: item,
-                                onError: (message) =>
-                                    setState(() => _error = message),
-                              )
-                          : null,
+                      onTap: item.playable ? () => _playResult(item) : null,
                     );
                   },
                 ),
