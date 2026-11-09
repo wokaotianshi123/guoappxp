@@ -30,7 +30,6 @@ class ExplorePage extends StatefulWidget {
 class ExplorePageState extends State<ExplorePage> {
   ExploreFeed? _explore;
   final _scroll = ScrollController();
-  final _search = TextEditingController();
   final _tabsKey = GlobalKey();
   String _shown = '';
 
@@ -44,7 +43,6 @@ class ExplorePageState extends State<ExplorePage> {
   void dispose() {
     _explore?.dispose();
     _scroll.dispose();
-    _search.dispose();
     super.dispose();
   }
 
@@ -68,12 +66,6 @@ class ExplorePageState extends State<ExplorePage> {
       grid: ChoiceGrid.categories,
     );
     if (value != null) explore.select(value);
-  }
-
-  void _searchSubmitted(SourceSite source, String query) {
-    if (query.trim().isEmpty) return;
-    _search.clear();
-    openSearch(context, widget.store, source, query: query);
   }
 
   void _resetScroll(ExploreFeed explore) {
@@ -141,10 +133,8 @@ class ExplorePageState extends State<ExplorePage> {
               if (!television)
                 SourceBar(
                   source: source.name,
-                  searchController: _search,
                   onSwitchSource: (anchor) => pickSource(anchor, widget.store),
                   onOpenSearch: () => openSearch(context, widget.store, source),
-                  onSearchSubmitted: (query) => _searchSubmitted(source, query),
                   actions: [
                     BarButton(
                       icon: Icons.live_tv_rounded,

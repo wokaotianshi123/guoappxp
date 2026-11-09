@@ -392,8 +392,6 @@ class _AppShellState extends State<AppShell> {
       searchFocusNode: _searchFocus,
       onSwitchSource: (anchor) => pickSource(anchor, store),
       onOpenSearch: () => openSearch(context, store, source),
-      onSearchSubmitted: (query) =>
-          openSearch(context, store, source, query: query),
     );
   }
 

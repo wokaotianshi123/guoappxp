@@ -8,6 +8,7 @@ import '../app_scope.dart';
 import '../../core_bridge.dart';
 import '../../local_store.dart';
 import '../../magnet_models.dart';
+import 'magnet_chip_flow.dart';
 import 'magnet_playback.dart';
 
 /// 三个一级标签里的「磁力播放」：
@@ -386,319 +387,349 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
     final unreachableCount = _items
         .where((item) => item.reachability == MagnetReachability.unreachable)
         .length;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        // 输入区：左边可输入/粘贴，右边播放按钮。
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.center,
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _link,
-                  maxLines: 2,
-                  minLines: 1,
-                  textInputAction: TextInputAction.go,
-                  autocorrect: false,
-                  decoration: InputDecoration(
-                    hintText: '粘贴或输入 magnet:?xt=urn:btih:… 磁力链接',
-                    prefixIcon: const Icon(Icons.link_rounded),
-                    suffixIcon: IconButton(
-                      tooltip: '从剪贴板粘贴',
-                      icon: const Icon(
-                        Icons.content_paste_go_outlined,
-                        size: 19,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 矮窗口里站源标签只放一行（35 个源放两行会把列表压没），高窗口给两行。
+        final tight = constraints.maxHeight < 560;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            // 输入区：左边可输入/粘贴，右边播放按钮。
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  Expanded(
+                    child: TextField(
+                      controller: _link,
+                      maxLines: 2,
+                      minLines: 1,
+                      textInputAction: TextInputAction.go,
+                      autocorrect: false,
+                      decoration: InputDecoration(
+                        hintText: '粘贴或输入 magnet:?xt=urn:btih:… 磁力链接',
+                        prefixIcon: const Icon(Icons.link_rounded),
+                        suffixIcon: IconButton(
+                          tooltip: '从剪贴板粘贴',
+                          icon: const Icon(
+                            Icons.content_paste_go_outlined,
+                            size: 19,
+                          ),
+                          onPressed: _paste,
+                        ),
+                        border: const OutlineInputBorder(),
+                        isDense: true,
                       ),
-                      onPressed: _paste,
+                      onSubmitted: (_) => _playInput(),
                     ),
-                    border: const OutlineInputBorder(),
-                    isDense: true,
                   ),
-                  onSubmitted: (_) => _playInput(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              FilledButton.icon(
-                // 解析中再点一次即停止，不必等 40 秒超时。
-                onPressed: _playInput,
-                icon: _preparing == null
-                    ? const Icon(Icons.play_arrow_rounded, size: 20)
-                    : const Icon(Icons.stop_rounded, size: 20),
-                label: Text(_preparing == null ? '播放' : '停止解析'),
-                style: FilledButton.styleFrom(minimumSize: const Size(88, 48)),
-              ),
-            ],
-          ),
-        ),
-        if (_error.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
-            child: Text(
-              _error,
-              style: TextStyle(color: theme.colorScheme.error, fontSize: 12),
-            ),
-          ),
-        // 内容分类：首项「全部」按站点默认地址浏览，其余全部来自站点首页
-        // 实际抓到的导航分类（每个源各不相同）；站点没分类时这一行只剩「全部」，
-        // 列表照常加载。整行固定 34px，不挤占列表。
-        SizedBox(
-          height: 34,
-          child: Row(
-            children: [
-              Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 16),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _categories.length + 1,
-                  separatorBuilder: (_, _) => const SizedBox(width: 6),
-                  itemBuilder: (context, index) {
-                    if (index == 0) {
-                      return ChoiceChip(
-                        label: const Text('全部', style: TextStyle(fontSize: 12)),
-                        selected: _categoryKey.isEmpty,
-                        visualDensity: VisualDensity.compact,
-                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                        padding: const EdgeInsets.symmetric(horizontal: 8),
-                        onSelected: (_) => _selectCategory(null),
-                      );
-                    }
-                    final category = _categories[index - 1];
-                    // 「全部站源」下分类可能来自多个站，带上站名避免同名混淆。
-                    final label =
-                        _siteId == null && category.siteName.isNotEmpty
-                        ? '${category.siteName}·${category.name}'
-                        : category.name;
-                    return ChoiceChip(
-                      label: Text(label, style: const TextStyle(fontSize: 12)),
-                      selected: _categoryKey == category.key,
-                      visualDensity: VisualDensity.compact,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      onSelected: (_) => _selectCategory(category),
-                    );
-                  },
-                ),
-              ),
-              SizedBox(
-                width: 30,
-                height: 30,
-                child: IconButton(
-                  padding: EdgeInsets.zero,
-                  tooltip: '刷新分类',
-                  iconSize: 17,
-                  icon: _categoryLoading
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.category_outlined),
-                  onPressed: _categoryLoading
-                      ? null
-                      : () => _loadCategories(refresh: true),
-                ),
-              ),
-              const SizedBox(width: 8),
-            ],
-          ),
-        ),
-        const SizedBox(height: 4),
-        // 磁力站分类：按当前可用站源动态生成，第一个是「全部」。
-        SizedBox(
-          height: 38,
-          child: Row(
-            children: [
-              Expanded(
-                child: ListView.separated(
-                  padding: const EdgeInsets.symmetric(horizontal: 12),
-                  scrollDirection: Axis.horizontal,
-                  itemCount: _sites.length + 1,
-                  separatorBuilder: (_, _) => const SizedBox(width: 6),
-                  itemBuilder: (context, index) {
-                    final id = index == 0 ? null : _sites[index - 1].id;
-                    final label = index == 0 ? '全部' : _sites[index - 1].name;
-                    final selected = _siteId == id;
-                    return FilterChip(
-                      label: Text(label, style: const TextStyle(fontSize: 12)),
-                      selected: selected,
-                      visualDensity: VisualDensity.compact,
-                      materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      onSelected: (_) => _selectSite(id),
-                    );
-                  },
-                ),
-              ),
-              // 分隔线：右边是筛选与刷新，不会被当成站源标签。
-              Container(
-                width: 1,
-                height: 16,
-                margin: const EdgeInsets.symmetric(horizontal: 6),
-                color: theme.dividerColor,
-              ),
-              FilterChip(
-                label: const Text('仅可达', style: TextStyle(fontSize: 12)),
-                selected: _onlyReachable,
-                visualDensity: VisualDensity.compact,
-                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
-                labelPadding: const EdgeInsets.symmetric(horizontal: 2),
-                padding: const EdgeInsets.symmetric(horizontal: 6),
-                onSelected: (value) {
-                  setState(() => _onlyReachable = value);
-                  // 打开筛选时若还有条目没探过，立刻补一次，别让列表一开就空。
-                  if (value) unawaited(_probeDht());
-                },
-              ),
-              SizedBox(
-                width: 30,
-                height: 30,
-                child: IconButton(
-                  padding: EdgeInsets.zero,
-                  tooltip: '刷新节点数与可达性',
-                  iconSize: 17,
-                  icon: _dhtLoading
-                      ? const SizedBox(
-                          width: 14,
-                          height: 14,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Icon(Icons.hub_outlined),
-                  onPressed: _dhtLoading ? null : () => _probeDht(force: true),
-                ),
-              ),
-              SizedBox(
-                width: 30,
-                height: 30,
-                child: IconButton(
-                  padding: EdgeInsets.zero,
-                  tooltip: '刷新列表',
-                  iconSize: 17,
-                  icon: const Icon(Icons.refresh_rounded),
-                  onPressed: _loading ? null : () => _browse(),
-                ),
-              ),
-              const SizedBox(width: 4),
-            ],
-          ),
-        ),
-        if (_warning.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
-            child: Text(_warning, style: theme.textTheme.bodySmall),
-          ),
-        // 只在探测中或确实有死链时占一行，平时不挤列表。
-        if (_items.isNotEmpty && (_dhtLoading || unreachableCount > 0))
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
-            child: Text(
-              _dhtLoading
-                  ? '正在探测可连接节点…'
-                  : 'DHT 已连接 $_dhtNodes 个节点 · $unreachableCount 条不可达（红色）',
-              style: theme.textTheme.bodySmall,
-            ),
-          ),
-        const Divider(height: 1),
-        Expanded(
-          child: _loading && _items.isEmpty
-              ? const Center(child: CircularProgressIndicator())
-              : visible.isEmpty
-              ? Center(
-                  child: Text(
-                    _items.isEmpty
-                        ? '暂无资源，可切换分类或点刷新重试'
-                        : _onlyReachable
-                        ? '当前没有探测到可达的资源，可关掉「仅可达」看看'
-                        : '当前没有符合条件的结果',
-                    style: theme.textTheme.bodyMedium,
-                    textAlign: TextAlign.center,
+                  const SizedBox(width: 8),
+                  FilledButton.icon(
+                    // 解析中再点一次即停止，不必等 40 秒超时。
+                    onPressed: _playInput,
+                    icon: _preparing == null
+                        ? const Icon(Icons.play_arrow_rounded, size: 20)
+                        : const Icon(Icons.stop_rounded, size: 20),
+                    label: Text(_preparing == null ? '播放' : '停止解析'),
+                    style: FilledButton.styleFrom(
+                      minimumSize: const Size(88, 48),
+                    ),
                   ),
-                )
-              : ListView.separated(
-                  padding: const EdgeInsets.only(bottom: 12),
-                  itemCount: visible.length,
-                  separatorBuilder: (_, _) => const Divider(height: 1),
-                  itemBuilder: (context, index) {
-                    final item = visible[index];
-                    final preparing =
-                        _preparing != null && _preparing == item.magnet;
-                    return ListTile(
-                      // 按需求不设封面：整行只给文字与操作按钮。
-                      title: Text(
-                        item.title,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                      ),
-                      subtitle: Text(
-                        [
-                          item.site,
-                          if (item.size.isNotEmpty) item.size,
-                          if (item.date.isNotEmpty) item.date,
-                          if (item.dhtProbed) 'DHT ${item.dht}',
-                          if (item.reachability ==
-                              MagnetReachability.unreachable)
-                            '不可达',
-                        ].join(' · '),
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style:
-                            item.reachability == MagnetReachability.unreachable
-                            ? TextStyle(
-                                color: theme.colorScheme.error,
-                                fontSize: 12,
-                              )
-                            : null,
-                      ),
-                      trailing: preparing
+                ],
+              ),
+            ),
+            if (_error.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 6),
+                child: Text(
+                  _error,
+                  style: TextStyle(
+                    color: theme.colorScheme.error,
+                    fontSize: 12,
+                  ),
+                ),
+              ),
+            // 内容分类：首项「全部」按站点默认地址浏览，其余全部来自站点首页
+            // 实际抓到的导航分类（每个源各不相同）；站点没分类时这一行只剩「全部」，
+            // 列表照常加载。整行固定 34px，不挤占列表。
+            SizedBox(
+              height: 34,
+              child: Row(
+                children: [
+                  Expanded(
+                    child: ListView.separated(
+                      padding: const EdgeInsets.symmetric(horizontal: 16),
+                      scrollDirection: Axis.horizontal,
+                      itemCount: _categories.length + 1,
+                      separatorBuilder: (_, _) => const SizedBox(width: 6),
+                      itemBuilder: (context, index) {
+                        if (index == 0) {
+                          return ChoiceChip(
+                            label: const Text(
+                              '全部',
+                              style: TextStyle(fontSize: 12),
+                            ),
+                            selected: _categoryKey.isEmpty,
+                            visualDensity: VisualDensity.compact,
+                            materialTapTargetSize:
+                                MaterialTapTargetSize.shrinkWrap,
+                            padding: const EdgeInsets.symmetric(horizontal: 8),
+                            onSelected: (_) => _selectCategory(null),
+                          );
+                        }
+                        final category = _categories[index - 1];
+                        // 「全部站源」下分类可能来自多个站，带上站名避免同名混淆。
+                        final label =
+                            _siteId == null && category.siteName.isNotEmpty
+                            ? '${category.siteName}·${category.name}'
+                            : category.name;
+                        return ChoiceChip(
+                          label: Text(
+                            label,
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                          selected: _categoryKey == category.key,
+                          visualDensity: VisualDensity.compact,
+                          materialTapTargetSize:
+                              MaterialTapTargetSize.shrinkWrap,
+                          padding: const EdgeInsets.symmetric(horizontal: 8),
+                          onSelected: (_) => _selectCategory(category),
+                        );
+                      },
+                    ),
+                  ),
+                  SizedBox(
+                    width: 30,
+                    height: 30,
+                    child: IconButton(
+                      padding: EdgeInsets.zero,
+                      tooltip: '刷新分类',
+                      iconSize: 17,
+                      icon: _categoryLoading
                           ? const SizedBox(
-                              width: 20,
-                              height: 20,
+                              width: 14,
+                              height: 14,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                IconButton(
-                                  tooltip: '复制磁力链接',
-                                  icon: const Icon(
-                                    Icons.copy_all_outlined,
-                                    size: 20,
-                                  ),
-                                  onPressed: () => copyMagnetLink(
-                                    context,
-                                    item.magnet.isNotEmpty
-                                        ? item.magnet
-                                        : item.detail,
-                                  ),
-                                ),
-                                IconButton(
-                                  tooltip: item.playable ? '播放' : '未解析出磁力链接',
-                                  icon: Icon(
-                                    item.playable
-                                        ? Icons.play_circle_fill
-                                        : Icons.link_off_outlined,
-                                  ),
-                                  onPressed: item.playable
-                                      ? () => _playResult(item)
-                                      : null,
-                                ),
-                              ],
-                            ),
-                      onTap: item.playable ? () => _playResult(item) : null,
-                    );
-                  },
-                ),
-        ),
-        if (_hasMore && _items.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-            child: OutlinedButton(
-              onPressed: _loadingMore ? null : () => _browse(more: true),
-              child: Text(_loadingMore ? '加载中…' : '加载更多'),
+                          : const Icon(Icons.category_outlined),
+                      onPressed: _categoryLoading
+                          ? null
+                          : () => _loadCategories(refresh: true),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                ],
+              ),
             ),
-          ),
-      ],
+            const SizedBox(height: 4),
+            // 磁力站源：按当前可用站源动态生成，第一个是「全部」。按窗口宽度
+            // 换行（最多两行），放不下的收进「更多」——之前是横向滚动，窄窗口
+            // 只能看到前几个站。
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 2, 8, 2),
+              child: MagnetChipFlow(
+                maxLines: tight ? 1 : 2,
+                items: [
+                  MagnetChipItem(
+                    label: '全部',
+                    selected: _siteId == null,
+                    onTap: () => _selectSite(null),
+                  ),
+                  for (final site in _sites)
+                    MagnetChipItem(
+                      label: site.name,
+                      selected: _siteId == site.id,
+                      onTap: () => _selectSite(site.id),
+                    ),
+                ],
+                // 筛选与刷新作为一组跟在标签流末尾，不会被拆散。
+                trailing: [
+                  Row(
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Container(
+                        width: 1,
+                        height: 16,
+                        margin: const EdgeInsets.symmetric(horizontal: 4),
+                        color: theme.dividerColor,
+                      ),
+                      FilterChip(
+                        label: const Text(
+                          '仅可达',
+                          style: TextStyle(fontSize: 12),
+                        ),
+                        selected: _onlyReachable,
+                        visualDensity: VisualDensity.compact,
+                        materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                        labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                        padding: const EdgeInsets.symmetric(horizontal: 6),
+                        onSelected: (value) {
+                          setState(() => _onlyReachable = value);
+                          // 打开筛选时若还有条目没探过，立刻补一次，别让列表一开就空。
+                          if (value) unawaited(_probeDht());
+                        },
+                      ),
+                      SizedBox(
+                        width: 30,
+                        height: 30,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          tooltip: '刷新节点数与可达性',
+                          iconSize: 17,
+                          icon: _dhtLoading
+                              ? const SizedBox(
+                                  width: 14,
+                                  height: 14,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : const Icon(Icons.hub_outlined),
+                          onPressed: _dhtLoading
+                              ? null
+                              : () => _probeDht(force: true),
+                        ),
+                      ),
+                      SizedBox(
+                        width: 30,
+                        height: 30,
+                        child: IconButton(
+                          padding: EdgeInsets.zero,
+                          tooltip: '刷新列表',
+                          iconSize: 17,
+                          icon: const Icon(Icons.refresh_rounded),
+                          onPressed: _loading ? null : () => _browse(),
+                        ),
+                      ),
+                    ],
+                  ),
+                ],
+              ),
+            ),
+            if (_warning.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+                child: Text(_warning, style: theme.textTheme.bodySmall),
+              ),
+            // 只在探测中或确实有死链时占一行，平时不挤列表。
+            if (_items.isNotEmpty && (_dhtLoading || unreachableCount > 0))
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+                child: Text(
+                  _dhtLoading
+                      ? '正在探测可连接节点…'
+                      : 'DHT 已连接 $_dhtNodes 个节点 · $unreachableCount 条不可达（红色）',
+                  style: theme.textTheme.bodySmall,
+                ),
+              ),
+            const Divider(height: 1),
+            Expanded(
+              child: _loading && _items.isEmpty
+                  ? const Center(child: CircularProgressIndicator())
+                  : visible.isEmpty
+                  ? Center(
+                      child: Text(
+                        _items.isEmpty
+                            ? '暂无资源，可切换分类或点刷新重试'
+                            : _onlyReachable
+                            ? '当前没有探测到可达的资源，可关掉「仅可达」看看'
+                            : '当前没有符合条件的结果',
+                        style: theme.textTheme.bodyMedium,
+                        textAlign: TextAlign.center,
+                      ),
+                    )
+                  : ListView.separated(
+                      padding: const EdgeInsets.only(bottom: 12),
+                      itemCount: visible.length,
+                      separatorBuilder: (_, _) => const Divider(height: 1),
+                      itemBuilder: (context, index) {
+                        final item = visible[index];
+                        final preparing =
+                            _preparing != null && _preparing == item.magnet;
+                        return ListTile(
+                          // 按需求不设封面：整行只给文字与操作按钮。
+                          title: Text(
+                            item.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            [
+                              item.site,
+                              if (item.size.isNotEmpty) item.size,
+                              if (item.date.isNotEmpty) item.date,
+                              if (item.dhtProbed) 'DHT ${item.dht}',
+                              if (item.reachability ==
+                                  MagnetReachability.unreachable)
+                                '不可达',
+                            ].join(' · '),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style:
+                                item.reachability ==
+                                    MagnetReachability.unreachable
+                                ? TextStyle(
+                                    color: theme.colorScheme.error,
+                                    fontSize: 12,
+                                  )
+                                : null,
+                          ),
+                          trailing: preparing
+                              ? const SizedBox(
+                                  width: 20,
+                                  height: 20,
+                                  child: CircularProgressIndicator(
+                                    strokeWidth: 2,
+                                  ),
+                                )
+                              : Row(
+                                  mainAxisSize: MainAxisSize.min,
+                                  children: [
+                                    IconButton(
+                                      tooltip: '复制磁力链接',
+                                      icon: const Icon(
+                                        Icons.copy_all_outlined,
+                                        size: 20,
+                                      ),
+                                      onPressed: () => copyMagnetLink(
+                                        context,
+                                        item.magnet.isNotEmpty
+                                            ? item.magnet
+                                            : item.detail,
+                                      ),
+                                    ),
+                                    IconButton(
+                                      tooltip: item.playable
+                                          ? '播放'
+                                          : '未解析出磁力链接',
+                                      icon: Icon(
+                                        item.playable
+                                            ? Icons.play_circle_fill
+                                            : Icons.link_off_outlined,
+                                      ),
+                                      onPressed: item.playable
+                                          ? () => _playResult(item)
+                                          : null,
+                                    ),
+                                  ],
+                                ),
+                          onTap: item.playable ? () => _playResult(item) : null,
+                        );
+                      },
+                    ),
+            ),
+            if (_hasMore && _items.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: OutlinedButton(
+                  onPressed: _loadingMore ? null : () => _browse(more: true),
+                  child: Text(_loadingMore ? '加载中…' : '加载更多'),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }

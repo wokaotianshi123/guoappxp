@@ -3,7 +3,6 @@ import 'package:flutter/material.dart';
 import '../app_scope.dart';
 import 'bar_button.dart';
 import 'page_header.dart';
-import 'search_field.dart';
 
 class SourceBar extends StatelessWidget {
   const SourceBar({
@@ -11,8 +10,6 @@ class SourceBar extends StatelessWidget {
     required this.source,
     required this.onSwitchSource,
     required this.onOpenSearch,
-    required this.onSearchSubmitted,
-    this.searchController,
     this.televisionLeading,
     this.sourceFocusNode,
     this.searchFocusNode,
@@ -21,9 +18,8 @@ class SourceBar extends StatelessWidget {
   final String source;
   final void Function(BuildContext anchor) onSwitchSource;
   final VoidCallback onOpenSearch;
-  final ValueChanged<String> onSearchSubmitted;
-  final TextEditingController? searchController;
   final Widget? televisionLeading;
+
   /// 电视端顶栏两个按钮的焦点节点；宿主按顺序串起整行遥控器导航。
   final FocusNode? sourceFocusNode;
   final FocusNode? searchFocusNode;
@@ -47,29 +43,8 @@ class SourceBar extends StatelessWidget {
       focusNode: searchFocusNode,
       onPressed: onOpenSearch,
     );
-    return switch (form) {
-      FormFactor.phone => PageHeader(
-        title: source,
-        actions: [switcher, search, ...actions],
-      ),
-      FormFactor.pad || FormFactor.window => PageHeader(
-        title: source,
-        actions: [
-          switcher,
-          const SizedBox(width: 4),
-          SizedBox(
-            width: MediaQuery.sizeOf(context).width >= 900 ? 320 : 240,
-            child: SearchField(
-              hint: hint,
-              controller: searchController,
-              onSubmitted: onSearchSubmitted,
-            ),
-          ),
-          const SizedBox(width: 4),
-          ...actions,
-        ],
-      ),
-      FormFactor.television => SizedBox(
+    if (form == FormFactor.television) {
+      return SizedBox(
         height: 48,
         child: Row(
           spacing: 10,
@@ -85,7 +60,11 @@ class SourceBar extends StatelessWidget {
             ...actions,
           ],
         ),
-      ),
-    };
+      );
+    }
+    // 手机 / 平板 / Windows 窗口统一成同一套顶栏：标题 + 切换站源 + 搜索按钮。
+    // 以前平板和窗口塞了一个常驻输入框，占宽又和两端不一致；现在点按钮才进搜索页，
+    // 搜索页里再专注输入。
+    return PageHeader(title: source, actions: [switcher, search, ...actions]);
   }
 }

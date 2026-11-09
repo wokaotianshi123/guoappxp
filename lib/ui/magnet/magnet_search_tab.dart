@@ -8,6 +8,7 @@ import '../app_scope.dart';
 import '../../core_bridge.dart';
 import '../../local_store.dart';
 import '../../magnet_models.dart';
+import 'magnet_chip_flow.dart';
 import 'magnet_playback.dart';
 
 /// 三个一级标签里的「磁力搜索」：移植 cisou.apk 的多站源聚合搜索。
@@ -37,8 +38,7 @@ class MagnetSearchTab extends StatefulWidget {
   State<MagnetSearchTab> createState() => _MagnetSearchTabState();
 }
 
-class _MagnetSearchTabState extends State<MagnetSearchTab>
-    with TickerProviderStateMixin {
+class _MagnetSearchTabState extends State<MagnetSearchTab> {
   final _controller = TextEditingController();
 
   AppRepository get _repository =>
@@ -74,7 +74,6 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
   List<String> _hotWords = const [];
   bool _hotLoading = false;
 
-  TabController? _tabs;
   int _activeTab = 0;
   final Map<String, MagnetSort> _sorts = {};
   final Map<String, bool> _onlyMagnet = {};
@@ -138,8 +137,6 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
       unawaited(repository.magnetSearchStop(session));
     }
     _controller.dispose();
-    _tabs?.removeListener(_onTabChanged);
-    _tabs?.dispose();
     super.dispose();
   }
 
@@ -248,37 +245,13 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
   String _tabKey(int index, List<MagnetSiteGroup> groups) =>
       index == 0 ? '*' : groups[index - 1].key;
 
-  void _syncTabs(int length) {
-    if (_tabs != null && _tabs!.length == length) return;
-    final previous = _tabs?.index ?? 0;
-    _tabs?.removeListener(_onTabChanged);
-    _tabs?.dispose();
-    _tabs = TabController(
-      length: length,
-      vsync: this,
-      initialIndex: previous.clamp(0, length - 1),
-    );
-    _activeTab = _tabs!.index;
-    _tabs!.addListener(_onTabChanged);
-  }
-
-  void _onTabChanged() {
-    final controller = _tabs;
-    if (controller == null ||
-        controller.indexIsChanging ||
-        controller.index == _activeTab) {
-      return;
-    }
-    setState(() => _activeTab = controller.index);
-    _probeDht();
-  }
-
+  /// 切换结果标签。标签改成可换行的 chip 后不再有 TabController，
+  /// 直接改索引并补探当前标签的节点数即可。
   void _switchTab(int index) {
-    final controller = _tabs;
-    if (controller == null) return;
-    final target = index.clamp(0, controller.length - 1);
-    if (target == controller.index) return;
-    controller.animateTo(target, duration: const Duration(milliseconds: 220));
+    final target = index.clamp(0, _groups.length);
+    if (target == _activeTab) return;
+    setState(() => _activeTab = target);
+    _probeDht();
   }
 
   List<MagnetResult> _visibleItems(String key, List<MagnetSiteGroup> groups) {
@@ -565,7 +538,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
   @override
   Widget build(BuildContext context) {
     final groups = _groups;
-    _syncTabs(groups.length + 1);
+    // 标签数量随结果变化（各站逐个返回），越界的索引在这里按最新数量收敛。
     final activeTab = _activeTab.clamp(0, groups.length);
     final key = _tabKey(activeTab, groups);
     final sort = _sorts[key] ?? MagnetSort.defaultOrder;
@@ -576,278 +549,306 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
         .where((item) => item.reachability == MagnetReachability.unreachable)
         .length;
 
-    return Column(
-      children: [
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
-          child: Row(
-            children: [
-              Expanded(
-                child: TextField(
-                  controller: _controller,
-                  textInputAction: TextInputAction.search,
-                  decoration: const InputDecoration(
-                    hintText: '搜索磁力资源',
-                    prefixIcon: Icon(Icons.search),
-                    border: OutlineInputBorder(),
-                    isDense: true,
-                  ),
-                  onSubmitted: (_) => _search(),
-                ),
-              ),
-              const SizedBox(width: 8),
-              if (_streaming)
-                FilledButton.icon(
-                  onPressed: _stopStreaming,
-                  icon: const Icon(Icons.stop_rounded, size: 18),
-                  label: const Text('停止'),
-                )
-              else
-                FilledButton(
-                  onPressed: _loading ? null : () => _search(),
-                  child: _loading
-                      ? const SizedBox(
-                          width: 18,
-                          height: 18,
-                          child: CircularProgressIndicator(strokeWidth: 2),
-                        )
-                      : const Text('搜索'),
-                ),
-            ],
-          ),
-        ),
-        // 20 个磁力热词：固定 34px 单行横滑，点一下即搜索；「换一批」重新从
-        // 磁力站首页随机抓取。热词为空时整行不渲染，不占任何空间。
-        if (_hotWords.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 8, 6),
-            child: SizedBox(
-              height: 34,
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        // 矮窗口（横屏手机、小窗）里热词和站源标签各只放一行，避免把结果区挤没；
+        // 高窗口才给两行。
+        final tight = constraints.maxHeight < 560;
+        return Column(
+          children: [
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 12, 16, 8),
               child: Row(
                 children: [
                   Expanded(
-                    child: ListView.separated(
-                      scrollDirection: Axis.horizontal,
-                      itemCount: _hotWords.length,
-                      separatorBuilder: (_, _) => const SizedBox(width: 6),
-                      itemBuilder: (context, index) => _HotWordChip(
-                        label: _hotWords[index],
-                        onTap: () => _useHotWord(_hotWords[index]),
+                    child: TextField(
+                      controller: _controller,
+                      textInputAction: TextInputAction.search,
+                      decoration: const InputDecoration(
+                        hintText: '搜索磁力资源',
+                        prefixIcon: Icon(Icons.search),
+                        border: OutlineInputBorder(),
+                        isDense: true,
                       ),
+                      onSubmitted: (_) => _search(),
                     ),
                   ),
-                  SizedBox(
-                    width: 30,
-                    height: 30,
-                    child: IconButton(
-                      padding: EdgeInsets.zero,
-                      tooltip: '换一批热词',
-                      iconSize: 17,
-                      icon: _hotLoading
+                  const SizedBox(width: 8),
+                  if (_streaming)
+                    FilledButton.icon(
+                      onPressed: _stopStreaming,
+                      icon: const Icon(Icons.stop_rounded, size: 18),
+                      label: const Text('停止'),
+                    )
+                  else
+                    FilledButton(
+                      onPressed: _loading ? null : () => _search(),
+                      child: _loading
                           ? const SizedBox(
-                              width: 14,
-                              height: 14,
+                              width: 18,
+                              height: 18,
                               child: CircularProgressIndicator(strokeWidth: 2),
                             )
-                          : const Icon(Icons.refresh_rounded),
-                      onPressed: _hotLoading
-                          ? null
-                          : () => _loadHotWords(refresh: true),
+                          : const Text('搜索'),
                     ),
-                  ),
                 ],
               ),
             ),
-          ),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: Row(
-            children: [
-              OutlinedButton.icon(
-                onPressed: _sites.isEmpty ? null : _pickSites,
-                icon: const Icon(Icons.tune, size: 18),
-                label: Text('站源 ${_selected.length}/${_sites.length}'),
-              ),
-              const SizedBox(width: 12),
-              if (_query.isNotEmpty)
-                Expanded(
-                  child: Text(
-                    _streaming
-                        ? '「$_query」已找到 ${_items.length} 条 · 搜索中…'
-                        : '「$_query」共 ${_items.length} 条',
-                    style: Theme.of(context).textTheme.bodySmall,
-                    overflow: TextOverflow.ellipsis,
-                  ),
-                ),
-            ],
-          ),
-        ),
-        if (_error.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
-            child: Text(_error, style: const TextStyle(color: Colors.red)),
-          ),
-        if (_warning.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Text(_warning, style: Theme.of(context).textTheme.bodySmall),
-          ),
-        const SizedBox(height: 8),
-        TabBar(
-          controller: _tabs,
-          isScrollable: true,
-          tabAlignment: TabAlignment.start,
-          labelPadding: const EdgeInsets.symmetric(horizontal: 12),
-          tabs: [
-            Tab(text: '全部 ${_items.length}'),
-            for (final group in groups) Tab(text: _tabLabel(group)),
-          ],
-        ),
-        Padding(
-          padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
-          child: Row(
-            children: [
-              PopupMenuButton<MagnetSort>(
-                onSelected: (value) {
-                  setState(() => _sorts[key] = value);
-                  _probeDht();
-                },
-                itemBuilder: (context) => [
-                  for (final value in MagnetSort.values)
-                    PopupMenuItem<MagnetSort>(
-                      value: value,
-                      child: Text(value.label),
-                    ),
-                ],
+            // 磁力热词：按窗口宽度换行（最多两行），放不下的收进「更多」——
+            // 原来是单行横滑，窄窗口要一直横滑才看得到后半截。点一下即搜索；
+            // 「换一批」重新从磁力站首页随机抓取。热词为空时整块不渲染。
+            if (_hotWords.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 8, 6),
                 child: Row(
-                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    const Icon(Icons.sort, size: 18),
-                    const SizedBox(width: 4),
-                    Text(sort.label),
-                    const Icon(Icons.arrow_drop_down, size: 18),
+                    Expanded(
+                      child: MagnetChipFlow(
+                        style: MagnetChipStyle.pill,
+                        maxLines: tight ? 1 : 2,
+                        items: [
+                          for (final word in _hotWords)
+                            MagnetChipItem(
+                              label: word,
+                              onTap: () => _useHotWord(word),
+                            ),
+                        ],
+                      ),
+                    ),
+                    SizedBox(
+                      width: 30,
+                      height: 30,
+                      child: IconButton(
+                        padding: EdgeInsets.zero,
+                        tooltip: '换一批热词',
+                        iconSize: 17,
+                        icon: _hotLoading
+                            ? const SizedBox(
+                                width: 14,
+                                height: 14,
+                                child: CircularProgressIndicator(
+                                  strokeWidth: 2,
+                                ),
+                              )
+                            : const Icon(Icons.refresh_rounded),
+                        onPressed: _hotLoading
+                            ? null
+                            : () => _loadHotWords(refresh: true),
+                      ),
+                    ),
                   ],
                 ),
               ),
-              const SizedBox(width: 6),
-              FilterChip(
-                label: const Text('仅含磁力'),
-                selected: onlyMagnet,
-                visualDensity: VisualDensity.compact,
-                onSelected: (value) => setState(() => _onlyMagnet[key] = value),
-              ),
-              const SizedBox(width: 6),
-              FilterChip(
-                label: const Text('仅可达'),
-                selected: onlyReachable,
-                visualDensity: VisualDensity.compact,
-                onSelected: (value) =>
-                    setState(() => _onlyReachable[key] = value),
-              ),
-              const Spacer(),
-              if (_dhtLoading)
-                const SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                )
-              else
-                IconButton(
-                  tooltip: '刷新节点数与可达性',
-                  icon: const Icon(Icons.hub_outlined, size: 20),
-                  onPressed: _items.isEmpty
-                      ? null
-                      : () => _probeDht(force: true),
-                ),
-            ],
-          ),
-        ),
-        if (_items.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
-            child: Align(
-              alignment: Alignment.centerLeft,
-              child: Text(
-                _dhtLoading
-                    ? '正在探测可连接节点…'
-                    : _dhtNodes > 0
-                    ? 'DHT 已连接 $_dhtNodes 个节点'
-                          '${unreachableCount > 0 ? ' · $unreachableCount 条不可达（红色）' : ''}'
-                    : 'DHT 网络暂未连上节点 · 可达性会随探测自动更新',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-          ),
-        Expanded(
-          child: Focus(
-            onKeyEvent: (node, event) {
-              if (event is KeyDownEvent) {
-                if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
-                  _switchTab(activeTab - 1);
-                  return KeyEventResult.handled;
-                }
-                if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
-                  _switchTab(activeTab + 1);
-                  return KeyEventResult.handled;
-                }
-              }
-              return KeyEventResult.ignored;
-            },
-            child: GestureDetector(
-              behavior: HitTestBehavior.translucent,
-              onHorizontalDragEnd: (details) {
-                final velocity = details.primaryVelocity ?? 0;
-                if (velocity < -250) _switchTab(activeTab + 1);
-                if (velocity > 250) _switchTab(activeTab - 1);
-              },
-              child: visible.isEmpty
-                  ? Center(
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16),
+              child: Row(
+                children: [
+                  OutlinedButton.icon(
+                    onPressed: _sites.isEmpty ? null : _pickSites,
+                    icon: const Icon(Icons.tune, size: 18),
+                    label: Text('站源 ${_selected.length}/${_sites.length}'),
+                  ),
+                  const SizedBox(width: 12),
+                  if (_query.isNotEmpty)
+                    Expanded(
                       child: Text(
-                        _loading
-                            ? '正在搜索…'
-                            : _items.isEmpty
-                            ? '输入关键词，搜索 ${_sites.length} 个磁力站源'
-                            : onlyReachable
-                            ? '当前标签没有可达的结果，可关掉「仅可达」看看'
-                            : '当前标签没有符合条件的结果',
-                        style: Theme.of(context).textTheme.bodyMedium,
-                        textAlign: TextAlign.center,
+                        _streaming
+                            ? '「$_query」已找到 ${_items.length} 条 · 搜索中…'
+                            : '「$_query」共 ${_items.length} 条',
+                        style: Theme.of(context).textTheme.bodySmall,
+                        overflow: TextOverflow.ellipsis,
                       ),
-                    )
-                  : ListView.separated(
-                      padding: const EdgeInsets.only(bottom: 12),
-                      itemCount: visible.length,
-                      separatorBuilder: (_, _) => const Divider(height: 1),
-                      itemBuilder: (context, index) {
-                        final item = visible[index];
-                        final preparing =
-                            _preparing != null && _preparing == item.magnet;
-                        return _MagnetResultTile(
-                          item: item,
-                          preparing: preparing,
-                          onPlay: () => _play(item),
-                          onCopy: () => copyMagnetLink(
-                            context,
-                            item.magnet.isNotEmpty ? item.magnet : item.detail,
-                          ),
-                        );
-                      },
                     ),
-            ),
-          ),
-        ),
-        if (_hasMore && _items.isNotEmpty && !_streaming)
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
-            child: SizedBox(
-              width: double.infinity,
-              child: OutlinedButton(
-                onPressed: _loadingMore ? null : () => _search(more: true),
-                child: Text(_loadingMore ? '加载中…' : '加载更多'),
+                ],
               ),
             ),
-          ),
-      ],
+            if (_error.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                child: Text(_error, style: const TextStyle(color: Colors.red)),
+              ),
+            if (_warning.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+                child: Text(
+                  _warning,
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+              ),
+            const SizedBox(height: 8),
+            // 结果标签按窗口宽度换行：宽屏一行放更多，窄屏自动多行，不再靠横滑。
+            // 两行仍放不下时折叠成「更多」，点开直接切换。
+            if (_items.isNotEmpty || _streaming)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 2),
+                child: MagnetChipFlow(
+                  items: [
+                    MagnetChipItem(
+                      label: '全部 ${_items.length}',
+                      selected: activeTab == 0,
+                      onTap: () => _switchTab(0),
+                    ),
+                    for (var index = 0; index < groups.length; index++)
+                      MagnetChipItem(
+                        label: _tabLabel(groups[index]),
+                        selected: activeTab == index + 1,
+                        onTap: () => _switchTab(index + 1),
+                      ),
+                  ],
+                  maxLines: tight ? 1 : 2,
+                ),
+              ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 8, 8, 4),
+              child: Row(
+                children: [
+                  PopupMenuButton<MagnetSort>(
+                    onSelected: (value) {
+                      setState(() => _sorts[key] = value);
+                      _probeDht();
+                    },
+                    itemBuilder: (context) => [
+                      for (final value in MagnetSort.values)
+                        PopupMenuItem<MagnetSort>(
+                          value: value,
+                          child: Text(value.label),
+                        ),
+                    ],
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        const Icon(Icons.sort, size: 18),
+                        const SizedBox(width: 4),
+                        Text(sort.label),
+                        const Icon(Icons.arrow_drop_down, size: 18),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                  FilterChip(
+                    label: const Text('仅含磁力'),
+                    selected: onlyMagnet,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (value) =>
+                        setState(() => _onlyMagnet[key] = value),
+                  ),
+                  const SizedBox(width: 6),
+                  FilterChip(
+                    label: const Text('仅可达'),
+                    selected: onlyReachable,
+                    visualDensity: VisualDensity.compact,
+                    onSelected: (value) =>
+                        setState(() => _onlyReachable[key] = value),
+                  ),
+                  const Spacer(),
+                  if (_dhtLoading)
+                    const SizedBox(
+                      width: 18,
+                      height: 18,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    )
+                  else
+                    IconButton(
+                      tooltip: '刷新节点数与可达性',
+                      icon: const Icon(Icons.hub_outlined, size: 20),
+                      onPressed: _items.isEmpty
+                          ? null
+                          : () => _probeDht(force: true),
+                    ),
+                ],
+              ),
+            ),
+            if (_items.isNotEmpty)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Text(
+                    _dhtLoading
+                        ? '正在探测可连接节点…'
+                        : _dhtNodes > 0
+                        ? 'DHT 已连接 $_dhtNodes 个节点'
+                              '${unreachableCount > 0 ? ' · $unreachableCount 条不可达（红色）' : ''}'
+                        : 'DHT 网络暂未连上节点 · 可达性会随探测自动更新',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ),
+            Expanded(
+              child: Focus(
+                onKeyEvent: (node, event) {
+                  if (event is KeyDownEvent) {
+                    if (event.logicalKey == LogicalKeyboardKey.arrowLeft) {
+                      _switchTab(activeTab - 1);
+                      return KeyEventResult.handled;
+                    }
+                    if (event.logicalKey == LogicalKeyboardKey.arrowRight) {
+                      _switchTab(activeTab + 1);
+                      return KeyEventResult.handled;
+                    }
+                  }
+                  return KeyEventResult.ignored;
+                },
+                child: GestureDetector(
+                  behavior: HitTestBehavior.translucent,
+                  onHorizontalDragEnd: (details) {
+                    final velocity = details.primaryVelocity ?? 0;
+                    if (velocity < -250) _switchTab(activeTab + 1);
+                    if (velocity > 250) _switchTab(activeTab - 1);
+                  },
+                  child: visible.isEmpty
+                      ? Center(
+                          child: Text(
+                            _loading
+                                ? '正在搜索…'
+                                : _items.isEmpty
+                                ? '输入关键词，搜索 ${_sites.length} 个磁力站源'
+                                : onlyReachable
+                                ? '当前标签没有可达的结果，可关掉「仅可达」看看'
+                                : '当前标签没有符合条件的结果',
+                            style: Theme.of(context).textTheme.bodyMedium,
+                            textAlign: TextAlign.center,
+                          ),
+                        )
+                      : ListView.separated(
+                          padding: const EdgeInsets.only(bottom: 12),
+                          itemCount: visible.length,
+                          separatorBuilder: (_, _) => const Divider(height: 1),
+                          itemBuilder: (context, index) {
+                            final item = visible[index];
+                            final preparing =
+                                _preparing != null && _preparing == item.magnet;
+                            return _MagnetResultTile(
+                              item: item,
+                              preparing: preparing,
+                              onPlay: () => _play(item),
+                              onCopy: () => copyMagnetLink(
+                                context,
+                                item.magnet.isNotEmpty
+                                    ? item.magnet
+                                    : item.detail,
+                              ),
+                            );
+                          },
+                        ),
+                ),
+              ),
+            ),
+            if (_hasMore && _items.isNotEmpty && !_streaming)
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
+                child: SizedBox(
+                  width: double.infinity,
+                  child: OutlinedButton(
+                    onPressed: _loadingMore ? null : () => _search(more: true),
+                    child: Text(_loadingMore ? '加载中…' : '加载更多'),
+                  ),
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 
@@ -968,37 +969,6 @@ class _MagnetResultTile extends StatelessWidget {
 }
 
 /// 热词胶囊：自定义高度 28，避免 ActionChip 默认的最小点击区把整行撑高。
-class _HotWordChip extends StatelessWidget {
-  const _HotWordChip({required this.label, required this.onTap});
-
-  final String label;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final scheme = Theme.of(context).colorScheme;
-    return Material(
-      color: scheme.surfaceContainerHighest,
-      borderRadius: BorderRadius.circular(14),
-      child: InkWell(
-        borderRadius: BorderRadius.circular(14),
-        onTap: onTap,
-        child: Container(
-          height: 28,
-          padding: const EdgeInsets.symmetric(horizontal: 10),
-          alignment: Alignment.center,
-          child: Text(
-            label,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(fontSize: 12, color: scheme.onSurfaceVariant),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
 class _SitePicker extends StatefulWidget {
   const _SitePicker({required this.sites, required this.selected});
 

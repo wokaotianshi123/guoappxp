@@ -813,17 +813,16 @@ void main() {
     expect(second.dy, equals(third.dy));
   });
 
-  testWidgets('磁力搜索标签展示热词，行高受限且点击即搜索', (tester) async {
+  testWidgets('磁力搜索标签展示热词，高度受限且点击即搜索', (tester) async {
     final repository = _MagnetRepository();
     await _pumpMagnetPage(tester, repository);
     expect(find.text('热词0'), findsOneWidget);
-    // 热词整行固定 34px，不会把结果区挤掉。
-    expect(
-      find.byWidgetPredicate(
-        (widget) => widget is SizedBox && widget.height == 34,
-      ),
-      findsOneWidget,
-    );
+    // 热词改成按窗口宽度换行（最多两行，矮窗口一行）后，不再是最初的固定
+    // 34px 单行横滑；这里只约束整块高度，确保不会把结果区挤没。
+    final wrap = find
+        .ancestor(of: find.text('热词0'), matching: find.byType(Wrap))
+        .first;
+    expect(tester.getSize(wrap).height, lessThanOrEqualTo(80));
     await tester.tap(find.text('热词0'));
     await tester.pumpAndSettle();
     expect(repository.searches.first, startsWith('热词0|1|'));
