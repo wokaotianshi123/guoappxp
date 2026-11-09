@@ -95,6 +95,84 @@ class _MagnetRepository extends FakeRepository {
     return peersInfo;
   }
 
+  final browseRequests = <String>[];
+  final removedSites = <int>[];
+  final savedRules = <String>[];
+  int resetCalls = 0;
+  List<String> hotWords = [
+    for (var i = 0; i < 20; i++) '热词$i',
+  ];
+
+  @override
+  Future<List<String>> magnetHotWords({bool refresh = false}) async => hotWords;
+
+  @override
+  Future<MagnetSearchPage> magnetBrowse(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+  }) async {
+    browseRequests.add('$query|$page|${sites.join(',')}');
+    return MagnetSearchPage(
+      items: const [
+        MagnetResult(
+          id: _hash,
+          title: '分类列表影片',
+          magnet: _magnet,
+          size: '2.1 GB',
+          date: '2026-11-09',
+          site: 'SOBT',
+          siteId: 10001,
+          playable: true,
+        ),
+      ],
+      page: page,
+    );
+  }
+
+  @override
+  Future<MagnetSiteAnalysis> analyzeMagnetSite(String base) async =>
+      MagnetSiteAnalysis(
+        rule:
+            '{"name":"识别站点","mainUrl":"https://a.test",'
+            '"searchUrl":"https://a.test/s?keyword=[keyword]&page=[page]",'
+            '"expressionModel":{"group":"//li[contains(@class,\'item\')]",'
+            '"title":".//a[1]"}}',
+        name: '识别站点',
+        base: 'https://a.test',
+        notes: const ['已从搜索表单识别出关键词参数 keyword'],
+      );
+
+  @override
+  Future<MagnetSite> addMagnetSite({
+    required String name,
+    required String base,
+    required String rule,
+  }) async {
+    savedRules.add(rule);
+    return MagnetSite(id: 900001, name: name, mainUrl: base, custom: true);
+  }
+
+  @override
+  Future<MagnetSite> updateMagnetSite(
+    int id, {
+    required String name,
+    required String rule,
+    bool? state,
+  }) async {
+    savedRules.add(rule);
+    return MagnetSite(id: id, name: name, custom: true);
+  }
+
+  @override
+  Future<void> removeMagnetSite(int id) async => removedSites.add(id);
+
+  @override
+  Future<int> resetMagnetSites() async {
+    resetCalls++;
+    return 0;
+  }
+
   @override
   Future<PlaybackPlan> resolve(
     Drama drama,
@@ -458,5 +536,119 @@ void main() {
     // 切回「全部」后它自己的筛选仍是默认，两条结果都还在。
     expect(find.text('三体 第一季'), findsOneWidget);
     expect(find.text('未解析出链接'), findsOneWidget);
+  });
+
+  testWidgets('磁力页顶部横向排列三个标签', (tester) async {
+    await _pumpMagnetPage(tester, _MagnetRepository());
+    expect(find.text('磁力搜索'), findsOneWidget);
+    expect(find.text('磁力播放'), findsOneWidget);
+    expect(find.text('磁力源管理'), findsOneWidget);
+    final first = tester.getTopLeft(find.text('磁力搜索'));
+    final second = tester.getTopLeft(find.text('磁力播放'));
+    final third = tester.getTopLeft(find.text('磁力源管理'));
+    expect(first.dx, lessThan(second.dx));
+    expect(second.dx, lessThan(third.dx));
+    // 三个标签同一行，纵向不堆叠。
+    expect(first.dy, equals(second.dy));
+    expect(second.dy, equals(third.dy));
+  });
+
+  testWidgets('磁力搜索标签展示热词，行高受限且点击即搜索', (tester) async {
+    final repository = _MagnetRepository();
+    await _pumpMagnetPage(tester, repository);
+    expect(find.text('热词0'), findsOneWidget);
+    // 热词整行固定 34px，不会把结果区挤掉。
+    expect(
+      find.byWidgetPredicate(
+        (widget) => widget is SizedBox && widget.height == 34,
+      ),
+      findsOneWidget,
+    );
+    await tester.tap(find.text('热词0'));
+    await tester.pumpAndSettle();
+    expect(repository.searches.first, startsWith('热词0|1|'));
+    expect(find.textContaining('「热词0」共'), findsOneWidget);
+  });
+
+  testWidgets('磁力播放标签：分类列表无封面、链接校验', (tester) async {
+    final repository = _MagnetRepository();
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力播放'));
+    await tester.pumpAndSettle();
+
+    expect(find.widgetWithText(FilledButton, '播放'), findsOneWidget);
+    // 分类按实际可用磁力站动态生成（全部 + 两个站源）。
+    expect(find.text('全部'), findsOneWidget);
+    expect(find.text('SOBT'), findsOneWidget);
+    expect(repository.browseRequests, isNotEmpty);
+    expect(find.text('分类列表影片'), findsOneWidget);
+    final tile = tester.widget<ListTile>(
+      find
+          .ancestor(
+            of: find.text('分类列表影片'),
+            matching: find.byType(ListTile),
+          )
+          .first,
+    );
+    expect(tile.leading, isNull, reason: '按需求列表项不设封面');
+
+    final input = find.byWidgetPredicate(
+      (widget) =>
+          widget is TextField &&
+          (widget.decoration?.hintText ?? '').contains('magnet:'),
+    );
+    expect(input, findsOneWidget);
+    await tester.enterText(input, 'not-a-magnet');
+    await tester.tap(find.widgetWithText(FilledButton, '播放'));
+    await tester.pumpAndSettle();
+    expect(find.text('请粘贴以 magnet: 开头的磁力链接'), findsOneWidget);
+  });
+
+  testWidgets('磁力源管理：自动识别回填规则后保存，并支持删除', (tester) async {
+    final repository = _MagnetRepository();
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力源管理'));
+    await tester.pumpAndSettle();
+
+    expect(find.textContaining('共 2 个磁力源'), findsOneWidget);
+    await tester.tap(find.widgetWithText(FilledButton, '新增'));
+    await tester.pumpAndSettle();
+
+    TextField field(String label) => tester.widget<TextField>(
+      find
+          .byWidgetPredicate(
+            (widget) =>
+                widget is TextField && widget.decoration?.labelText == label,
+          )
+          .first,
+    );
+    await tester.enterText(
+      find.byWidgetPredicate(
+        (widget) =>
+            widget is TextField && widget.decoration?.labelText == '源网址',
+      ),
+      'https://a.test',
+    );
+    await tester.pump();
+    await tester.tap(find.widgetWithText(FilledButton, '自动识别磁力源'));
+    await tester.pumpAndSettle();
+
+    expect(
+      find.textContaining('已按站点 HTML 生成磁力源规则'),
+      findsOneWidget,
+    );
+    expect(field('磁力源规则 JSON').controller?.text, contains('mainUrl'));
+    expect(field('源名称').controller?.text, '识别站点');
+
+    await tester.tap(find.widgetWithText(FilledButton, '保存'));
+    await tester.pumpAndSettle();
+    expect(repository.savedRules, hasLength(1));
+    expect(repository.savedRules.single, contains('expressionModel'));
+
+    await tester.tap(find.byTooltip('删除').first);
+    await tester.pumpAndSettle();
+    await tester.tap(find.widgetWithText(FilledButton, '删除'));
+    await tester.pumpAndSettle();
+    expect(repository.removedSites, contains(10001));
   });
 }

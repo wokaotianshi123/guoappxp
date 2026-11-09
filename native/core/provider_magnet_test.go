@@ -295,7 +295,11 @@ func TestMagnetWithTrackers(t *testing.T) {
 
 func TestMagnetActionsBypassSourceWhitelist(t *testing.T) {
 	// 磁力不属于任何站源，两个构建变体都要能用；防止以后往白名单里加分支时误拦。
-	for _, action := range []string{"magnetSites", "magnetSearch", "magnetFiles", "magnetPlay", "magnetPeers", "magnetCancel"} {
+	for _, action := range []string{
+		"magnetSites", "magnetSearch", "magnetBrowse", "magnetFiles", "magnetPlay",
+		"magnetPeers", "magnetCancel", "magnetHotWords", "magnetAnalyzeSite",
+		"magnetAddSite", "magnetUpdateSite", "magnetRemoveSite", "magnetResetSites",
+	} {
 		if err := nativeAuthorizeInput(nativeInput{Action: action}); err != nil {
 			t.Errorf("%s 被站源白名单拦下: %v", action, err)
 		}

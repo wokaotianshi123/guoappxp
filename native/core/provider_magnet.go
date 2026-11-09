@@ -30,6 +30,9 @@ type magnetSiteRequest struct {
 	Method    string            `json:"method"`
 	MainURL   string            `json:"mainUrl"`
 	SearchURL string            `json:"searchUrl"`
+	// ListURL 是可选的「站内列表页」模板，供磁力播放页按分类直接拉取最新资源。
+	// 留空时退回 searchUrl（用热门词填充 [keyword]）。
+	ListURL   string            `json:"listUrl,omitempty"`
 	Header    map[string]string `json:"header"`
 }
 
@@ -47,15 +50,22 @@ type magnetSite struct {
 	Name       string               `json:"name"`
 	Info       string               `json:"info"`
 	State      bool                 `json:"state"`
+	// Custom 标记用户自行新增/编辑的站源；内置 35 站导出为 false。
+	Custom     bool                 `json:"custom,omitempty"`
 	Request    magnetSiteRequest    `json:"request"`
 	Expression magnetSiteExpression `json:"expressionModel"`
 }
 
+// magnetSiteItem 是给 UI 的精简视图。Rule 只回填自定义源，便于「编辑」弹窗
+// 直接把原始规则 JSON 塞回输入框；内置站不暴露规则文本，避免界面太重。
 type magnetSiteItem struct {
-	ID    int    `json:"id"`
-	Name  string `json:"name"`
-	Info  string `json:"info"`
-	State bool   `json:"state"`
+	ID      int    `json:"id"`
+	Name    string `json:"name"`
+	Info    string `json:"info"`
+	State   bool   `json:"state"`
+	Custom  bool   `json:"custom,omitempty"`
+	MainURL string `json:"mainUrl,omitempty"`
+	Rule    string `json:"rule,omitempty"`
 }
 
 // magnetResult 是归一化后的搜索结果。ID 用 infohash，方便跨站去重。
@@ -92,9 +102,11 @@ const (
 )
 
 var (
-	magnetSitesOnce sync.Once
-	magnetSitesData []magnetSite
-	magnetSitesErr  error
+	// 内置的 35 条规则只解析一次；用户自定义源运行时可变，每次 loadMagnetSites
+	// 都重新合并，保证新增/删除/启停立即生效。
+	magnetBuiltinOnce sync.Once
+	magnetBuiltinData []magnetSite
+	magnetBuiltinErr  error
 
 	magnetHTTP = &http.Client{Timeout: magnetFetchTimeout}
 
@@ -106,10 +118,25 @@ var (
 )
 
 func loadMagnetSites() ([]magnetSite, error) {
-	magnetSitesOnce.Do(func() {
-		magnetSitesErr = json.Unmarshal(magnetSitesJSON, &magnetSitesData)
+	magnetBuiltinOnce.Do(func() {
+		magnetBuiltinErr = json.Unmarshal(magnetSitesJSON, &magnetBuiltinData)
 	})
-	return magnetSitesData, magnetSitesErr
+	if magnetBuiltinErr != nil {
+		return nil, magnetBuiltinErr
+	}
+	custom, disabled := magnetSourceSnapshot()
+	all := make([]magnetSite, 0, len(magnetBuiltinData)+len(custom))
+	for _, site := range magnetBuiltinData {
+		if disabled[site.ID] {
+			continue // 用户删掉的内置站不再参与搜索与列表
+		}
+		all = append(all, site)
+	}
+	for _, site := range custom {
+		site.Custom = true
+		all = append(all, site)
+	}
+	return all, nil
 }
 
 func magnetSiteList() (map[string]any, error) {
@@ -119,11 +146,32 @@ func magnetSiteList() (map[string]any, error) {
 	}
 	items := make([]magnetSiteItem, 0, len(sites))
 	for _, site := range sites {
-		items = append(items, magnetSiteItem{
-			ID: site.ID, Name: site.Name, Info: site.Info, State: site.State,
-		})
+		item := magnetSiteItem{
+			ID: site.ID, Name: site.Name, Info: site.Info,
+			State: site.State, Custom: site.Custom,
+			MainURL: site.Request.MainURL,
+		}
+		if site.Custom {
+			if body, err := json.Marshal(site); err == nil {
+				item.Rule = string(body)
+			}
+		}
+		items = append(items, item)
 	}
 	return map[string]any{"items": items}, nil
+}
+
+// magnetBrowseAddress 给「磁力播放」页的分类列表用：站点配了 listUrl 就直接分页，
+// 否则退回搜索地址、用默认热词填掉 [keyword]，拿到站内最新一批资源。
+func magnetBrowseAddress(site magnetSite, query string, page int) string {
+	template := strings.TrimSpace(site.Request.ListURL)
+	if template == "" {
+		template = site.Request.SearchURL
+	} else {
+		template = strings.ReplaceAll(template, "[page]", strconv.Itoa(page))
+		return template
+	}
+	return magnetSearchAddress(site, query, page)
 }
 
 // magnetFetch 带规则里的请求头抓 HTML。站点 header 里带的是 cisou 快照里的
@@ -351,9 +399,22 @@ func magnetParseList(site magnetSite, body string) []magnetResult {
 
 // magnetSearch 并发跑选中的站源，按 infohash 去重；单个站失败只记账，不影响其它站。
 func magnetSearch(ctx context.Context, query string, page int, selected []int) (magnetSearchResult, error) {
+	return magnetRunSearch(ctx, query, page, selected, false)
+}
+
+// magnetBrowse 给「磁力播放」页的分类列表用：不要求关键词，按站点的 listUrl
+// （没有则用默认热词走搜索地址）拉站内最新一批资源，结果结构与搜索完全一致。
+func magnetBrowse(ctx context.Context, query string, page int, selected []int) (magnetSearchResult, error) {
+	return magnetRunSearch(ctx, query, page, selected, true)
+}
+
+func magnetRunSearch(ctx context.Context, query string, page int, selected []int, browse bool) (magnetSearchResult, error) {
 	query = strings.TrimSpace(query)
 	if query == "" {
-		return magnetSearchResult{}, errors.New("请输入搜索关键词")
+		if !browse {
+			return magnetSearchResult{}, errors.New("请输入搜索关键词")
+		}
+		query = magnetDefaultBrowseWord()
 	}
 	if page < 1 {
 		page = 1
@@ -412,7 +473,11 @@ func magnetSearch(ctx context.Context, query string, page int, selected []int) (
 			}
 			defer func() { <-limit }()
 			site := targets[index]
-			body, err := magnetFetch(budget, magnetSearchAddress(site, query, page), site.Request.Header)
+			address := magnetSearchAddress(site, query, page)
+			if browse {
+				address = magnetBrowseAddress(site, query, page)
+			}
+			body, err := magnetFetch(budget, address, site.Request.Header)
 			if err != nil {
 				outcomes[index] = siteOutcome{err: err}
 				return

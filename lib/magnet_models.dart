@@ -8,19 +8,58 @@ class MagnetSite {
     required this.name,
     this.info = '',
     this.state = true,
+    this.custom = false,
+    this.mainUrl = '',
+    this.rule = '',
   });
 
   final int id;
   final String name;
   final String info;
   final bool state;
+  // custom 为 true 表示用户在「磁力源管理」里新增的站源，可编辑/删除；
+  // 内置站源只允许删除（Go 侧记进 disabled 表）与一键恢复默认。
+  final bool custom;
+  final String mainUrl;
+  final String rule;
 
   factory MagnetSite.fromJson(Map<String, dynamic> json) => MagnetSite(
     id: json['id'] as int? ?? 0,
     name: json['name'] as String? ?? '未命名站源',
     info: json['info'] as String? ?? '',
     state: json['state'] == true,
+    custom: json['custom'] == true,
+    mainUrl: json['mainUrl'] as String? ?? '',
+    rule: json['rule'] as String? ?? '',
   );
+}
+
+/// 「磁力源管理 → 自动识别」的返回：规则文本只回填表单，不写盘。
+class MagnetSiteAnalysis {
+  const MagnetSiteAnalysis({
+    this.rule = '',
+    this.name = '',
+    this.base = '',
+    this.notes = const [],
+  });
+
+  final String rule;
+  final String name;
+  final String base;
+  final List<String> notes;
+
+  bool get hasRule => rule.trim().isNotEmpty;
+
+  factory MagnetSiteAnalysis.fromJson(Map<String, dynamic> json) =>
+      MagnetSiteAnalysis(
+        rule: json['rule'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        base: json['base'] as String? ?? '',
+        notes: [
+          for (final row in json['notes'] as List? ?? const [])
+            if (row is String && row.trim().isNotEmpty) row,
+        ],
+      );
 }
 
 /// 每个站源标签独立记忆的排序 / 筛选方式。

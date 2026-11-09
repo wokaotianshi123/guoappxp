@@ -313,6 +313,44 @@ abstract class AppRepository {
 
   /// 立即终止上一条磁力的元数据加载与分片下载，方便快速切换到新磁力。
   Future<void> magnetCancel() async {}
+
+  // ---- 磁力热词 / 分类浏览 / 磁力源管理 ----
+  // 下面三个方法给「磁力搜索」与「磁力播放」页的首屏用，测试替身不实现时
+  // 返回空结果而不是抛错，避免老测试的桩仓库一进页面就炸。
+
+  /// 搜索框下方的 20 个热词；[refresh] 为真时重新从磁力站首页随机抓取。
+  Future<List<String>> magnetHotWords({bool refresh = false}) async =>
+      const <String>[];
+
+  /// 按分类浏览站内列表（可不带关键词），结果与 magnetSearch 同结构。
+  Future<MagnetSearchPage> magnetBrowse(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+  }) async => const MagnetSearchPage();
+
+  /// 输入网址自动反推磁力源规则，只回填表单、不写盘。
+  Future<MagnetSiteAnalysis> analyzeMagnetSite(String base) async =>
+      const MagnetSiteAnalysis();
+
+  Future<MagnetSite> addMagnetSite({
+    required String name,
+    required String base,
+    required String rule,
+  }) async => throw AppFailure('当前环境不支持磁力源管理');
+
+  Future<MagnetSite> updateMagnetSite(
+    int id, {
+    required String name,
+    required String rule,
+    bool? state,
+  }) async => throw AppFailure('当前环境不支持磁力源管理');
+
+  Future<void> removeMagnetSite(int id) async =>
+      throw AppFailure('当前环境不支持磁力源管理');
+
+  Future<int> resetMagnetSites() async =>
+      throw AppFailure('当前环境不支持磁力源管理');
 }
 
 class NativeRepository extends AppRepository {
@@ -730,9 +768,14 @@ class NativeRepository extends AppRepository {
                   : action == 'analyzeCustomSourceSite'
                   ? 100
                   : action == 'magnetSearch' ||
+                        action == 'magnetBrowse' ||
                         action == 'magnetFiles' ||
                         action == 'magnetPlay'
                   ? 100
+                  : action == 'magnetAnalyzeSite'
+                  ? 50
+                  : action == 'magnetHotWords'
+                  ? 25
                   : action == 'magnetPeers'
                   ? 40
                   : action == 'magnetCancel'
@@ -1323,5 +1366,84 @@ class NativeRepository extends AppRepository {
   @override
   Future<void> magnetCancel() async {
     await _call({'action': 'magnetCancel'});
+  }
+
+  @override
+  Future<List<String>> magnetHotWords({bool refresh = false}) async {
+    final result = await _call({
+      'action': 'magnetHotWords',
+      'force': refresh,
+    });
+    return [
+      for (final row in (result as Map)['items'] as List? ?? const [])
+        if (row is String && row.trim().isNotEmpty) row,
+    ];
+  }
+
+  @override
+  Future<MagnetSearchPage> magnetBrowse(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+  }) async {
+    final result = await _call({
+      'action': 'magnetBrowse',
+      'query': query,
+      'page': page,
+      'sites': sites,
+    });
+    return MagnetSearchPage.fromJson(Map<String, dynamic>.from(result as Map));
+  }
+
+  @override
+  Future<MagnetSiteAnalysis> analyzeMagnetSite(String base) async {
+    final result = await _call({'action': 'magnetAnalyzeSite', 'base': base});
+    return MagnetSiteAnalysis.fromJson(
+      Map<String, dynamic>.from(result as Map),
+    );
+  }
+
+  @override
+  Future<MagnetSite> addMagnetSite({
+    required String name,
+    required String base,
+    required String rule,
+  }) async {
+    final result = await _call({
+      'action': 'magnetAddSite',
+      'name': name,
+      'base': base,
+      'rule': rule,
+    });
+    return MagnetSite.fromJson(Map<String, dynamic>.from(result as Map));
+  }
+
+  @override
+  Future<MagnetSite> updateMagnetSite(
+    int id, {
+    required String name,
+    required String rule,
+    bool? state,
+  }) async {
+    final payload = <String, dynamic>{
+      'action': 'magnetUpdateSite',
+      'siteId': id,
+      'name': name,
+      'rule': rule,
+    };
+    if (state != null) payload['siteState'] = state;
+    final result = await _call(payload);
+    return MagnetSite.fromJson(Map<String, dynamic>.from(result as Map));
+  }
+
+  @override
+  Future<void> removeMagnetSite(int id) async {
+    await _call({'action': 'magnetRemoveSite', 'siteId': id});
+  }
+
+  @override
+  Future<int> resetMagnetSites() async {
+    final result = await _call({'action': 'magnetResetSites'});
+    return (result as Map)['removed'] as int? ?? 0;
   }
 }

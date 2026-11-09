@@ -157,6 +157,9 @@ type nativeInput struct {
 	FileIndex      *int     `json:"fileIndex"`
 	Sites          []int    `json:"sites"`
 	Hashes         []string `json:"hashes"`
+	// 磁力源管理：SiteID 指定要编辑/删除的站源，SiteState 用于启停。
+	SiteID         int      `json:"siteId"`
+	SiteState      *bool    `json:"siteState"`
 	CacheDirectory string   `json:"cacheDirectory"`
 }
 
@@ -337,6 +340,8 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	// registry 为 nil 时那次查询会直接空指针 panic（表现为「本地核心处理失败」）。
 	engine.customRegistry = newCustomMaccmsRegistry(directory)
 	engine.customRegistry.load()
+	// 用户新增/删除的磁力站源也放在应用数据目录，必须在第一次 magnetSites 之前就绪。
+	magnetInitSources(directory)
 	// 已存在的自定义源也要登记进浏览器指纹传输白名单，保证重启后
 	// 其目录/页面请求与运行时新增路径一致。
 	for _, record := range engine.customMaccmsSources() {
@@ -419,10 +424,17 @@ func nativeDispatch(input nativeInput) (any, error) {
 		duration = 10 * time.Second
 	} else if input.Action == "preload" {
 		duration = 15 * time.Second
-	} else if input.Action == "magnetSearch" || input.Action == "magnetFiles" || input.Action == "magnetPlay" {
+	} else if input.Action == "magnetSearch" || input.Action == "magnetBrowse" ||
+		input.Action == "magnetFiles" || input.Action == "magnetPlay" {
 		// 磁力搜索要并发抓多个站源，播放要等 DHT / tracker 返回种子元数据；
 		// 两个实现内部各有 40 秒硬预算，这里留出余量避免外层先超时。
 		duration = 90 * time.Second
+	} else if input.Action == "magnetAnalyzeSite" {
+		// 自动识别只抓一次首页，但要留出站点的响应余量。
+		duration = 45 * time.Second
+	} else if input.Action == "magnetHotWords" {
+		// 内部 6 秒硬预算抓站，外面留一点序列化余量即可。
+		duration = 20 * time.Second
 	} else if input.Action == "magnetPeers" {
 		// 一轮 DHT 探测窗口 6 秒，另留启动 BT 引擎与并发 AddMagnet 的余量。
 		duration = 30 * time.Second
@@ -578,6 +590,26 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return magnetSiteList()
 	case "magnetSearch":
 		return magnetSearch(ctx, input.Query, input.Page, input.Sites)
+	// 磁力播放页：热词、按分类浏览站内列表、以及磁力源管理（含自动识别）。
+	// 这些 action 同样与站源白名单无关，nativeAuthorizeInput 不拦截。
+	case "magnetHotWords":
+		return magnetHotWords(ctx, input.Force)
+	case "magnetBrowse":
+		return magnetBrowse(ctx, input.Query, input.Page, input.Sites)
+	case "magnetAnalyzeSite":
+		return magnetAnalyzeSite(ctx, input.Base)
+	case "magnetAddSite":
+		return magnetAddCustomSite(input.Name, input.Base, input.Rule)
+	case "magnetUpdateSite":
+		return magnetUpdateCustomSite(input.SiteID, input.Name, input.Rule, input.SiteState)
+	case "magnetRemoveSite":
+		return true, magnetRemoveSite(input.SiteID)
+	case "magnetResetSites":
+		removed, err := magnetResetSites()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"removed": removed}, nil
 	case "magnetFiles":
 		return magnetFileList(ctx, input.Magnet, engine.directory)
 	case "magnetPlay":
