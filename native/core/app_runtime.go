@@ -433,6 +433,14 @@ func nativeDispatch(input nativeInput) (any, error) {
 		// 磁力搜索要并发抓多个站源，播放要等 DHT / tracker 返回种子元数据；
 		// 两个实现内部各有 40 秒硬预算，这里留出余量避免外层先超时。
 		duration = 90 * time.Second
+	} else if input.Action == "magnetSearchStart" {
+		// start 只建会话并立刻返回，真正的抓取在会话内异步跑（自身 45 秒预算）。
+		duration = 20 * time.Second
+	} else if input.Action == "magnetSearchPoll" {
+		// 长轮询最多等 2 秒，留出余量即可。
+		duration = 15 * time.Second
+	} else if input.Action == "magnetWarmup" {
+		duration = 20 * time.Second
 	} else if input.Action == "magnetAnalyzeSite" {
 		// 自动识别只抓一次首页，但要留出站点的响应余量。
 		duration = 45 * time.Second
@@ -622,6 +630,23 @@ func nativeDispatch(input nativeInput) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"removed": removed}, nil
+	// 导入导出：导出给的是当前「生效配置」（含改过的内置源），导入支持 merge / replace。
+	case "magnetExportSites":
+		return magnetExportSites()
+	case "magnetImportSites":
+		return magnetImportSites(input.Content, input.Command)
+	// 搜索会话：start 立刻返回全部站标签，poll 增量取回结果，stop 立即中断。
+	case "magnetSearchStart":
+		return magnetSessionBegin(ctx, input.Query, input.Page, input.Sites,
+			input.Command == "browse", input.CategoryURL, input.CategorySiteID)
+	case "magnetSearchPoll":
+		return magnetSessionPoll(input.Session, input.Force)
+	case "magnetSearchStop":
+		magnetSessionStop(input.Session)
+		return true, nil
+	// 磁力页一打开就预热 BT 引擎与 DHT，点播放时省掉冷启动。
+	case "magnetWarmup":
+		return map[string]any{"ready": magnetWarmup(engine.directory)}, nil
 	case "magnetFiles":
 		return magnetFileList(ctx, input.Magnet, engine.directory)
 	case "magnetPlay":

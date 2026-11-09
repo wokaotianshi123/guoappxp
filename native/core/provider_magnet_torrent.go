@@ -24,7 +24,9 @@ import (
 // 本地服务版的 rewriteLocalMedia 会把这个地址改写成 /api/media/... 反向代理，局域网设备同样可用。
 const (
 	magnetMetadataBudget = 40 * time.Second
-	magnetReadahead      = 16 << 20
+	// readahead 是播放器读位置的预读窗口。原来 16MB 在拖动进度条时经常卡住等分片，
+	// 提到 32MB 让「起播」和「小幅度拖动」更快出画面。
+	magnetReadahead = 32 << 20
 )
 
 type magnetFileItem struct {
@@ -38,9 +40,12 @@ type magnetStreamEngineState struct {
 	client   *torrent.Client
 	listener net.Listener
 	base     string
-	mu       sync.Mutex
-	tasks    map[string]*torrent.Torrent
-	files    map[string]map[int]*torrent.File
+	// metaDir 是种子元数据缓存目录（<dataDir>/magnet-meta）。命中时用 InfoBytes
+	// 直接建任务，跳过 DHT 等待，第二次打开同一个种子基本秒开。
+	metaDir string
+	mu      sync.Mutex
+	tasks   map[string]*torrent.Torrent
+	files   map[string]map[int]*torrent.File
 	// lastHash 记住最近一次 prepare 的种子：即使上一次加载已经结束，
 	// 用户点另一条磁力时也要把它的下载分片停掉，别让旧任务抢带宽。
 	lastHash string
@@ -129,6 +134,7 @@ func magnetEngine(dataDir string) (*magnetStreamEngineState, error) {
 		client:   client,
 		listener: listener,
 		base:     "http://127.0.0.1:" + strconv.Itoa(listener.Addr().(*net.TCPAddr).Port) + "/",
+		metaDir:  dataDir,
 		tasks:    map[string]*torrent.Torrent{},
 		files:    map[string]map[int]*torrent.File{},
 	}
@@ -261,7 +267,7 @@ func (state *magnetStreamEngineState) prepare(ctx context.Context, link string) 
 	state.mu.Lock()
 	task, exists := state.tasks[hash]
 	if !exists {
-		created, err := state.client.AddMagnet(magnetWithTrackers(link))
+		created, err := state.addMagnetFast(link, hash)
 		if err != nil {
 			state.mu.Unlock()
 			return "", nil, fmt.Errorf("添加磁力失败：%w", err)
@@ -287,6 +293,8 @@ func (state *magnetStreamEngineState) prepare(ctx context.Context, link string) 
 	if loadCtx.Err() != nil {
 		return hash, nil, errors.New("已取消上一条磁力的加载")
 	}
+	// 拿到元数据就落盘，下次打开同一个种子不必再等 DHT。
+	state.rememberMeta(hash, task)
 
 	raw := task.Files()
 	items := make([]magnetFileItem, 0, len(raw))

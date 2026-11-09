@@ -142,7 +142,7 @@ func (state *magnetStreamEngineState) probePeers(ctx context.Context, hashes []s
 				return
 			}
 			defer func() { <-limit }()
-			task, err := state.client.AddMagnet(magnetWithTrackers(magnetCanonical(value, "")))
+			task, err := state.addMagnetFast(magnetCanonical(value, ""), value)
 			if err != nil || task == nil {
 				return
 			}

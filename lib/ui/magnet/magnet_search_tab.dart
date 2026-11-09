@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,19 +11,27 @@ import '../../magnet_models.dart';
 import 'magnet_playback.dart';
 
 /// 三个一级标签里的「磁力搜索」：移植 cisou.apk 的多站源聚合搜索。
-/// 结果按站源拆成可左右切换的标签，每个标签独立记忆排序与「仅含磁力」筛选；
-/// 每条结果会异步探测当前能连上的 DHT 节点数并支持按它排序。
+///
+/// 搜索走「会话 + 轮询」：点搜索后立刻拿到全部站源标签，各站并发去抓，
+/// 每抓完一个站就增量填充结果，不必等最慢的站——这就是「边搜边显」。
+/// 结果按站源拆成可左右切换的标签，每个标签独立记忆排序与筛选；
+/// 每条结果会异步探测可连接节点数，不可达的标红，并支持「仅可达」筛选。
 class MagnetSearchTab extends StatefulWidget {
   const MagnetSearchTab({
     super.key,
     required this.store,
     required this.sitesVersion,
+    this.active = true,
   });
 
   final LocalStore store;
 
   /// 磁力源管理里新增/删除站源后 +1，触发这里重新拉站源清单。
   final ValueListenable<int> sitesVersion;
+
+  /// 是否是当前显示的子页。父页用 Visibility 保活三个子页，未显示时不加载数据，
+  /// 第一次被切到时才开始拉站源与热词。
+  final bool active;
 
   @override
   State<MagnetSearchTab> createState() => _MagnetSearchTabState();
@@ -31,11 +41,25 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
     with TickerProviderStateMixin {
   final _controller = TextEditingController();
 
-  AppRepository get _repository => AppScope.of(context).repository;
+  AppRepository get _repository =>
+      _cachedRepository ?? AppScope.of(context).repository;
 
   List<MagnetSite> _sites = const [];
   final Set<int> _selected = {};
   List<MagnetResult> _items = const [];
+
+  /// 在 didChangeDependencies 里抓住 repository：dispose() 时不能再查
+  /// InheritedWidget（元素已 deactivate，会抛「Looking up a deactivated
+  /// widget's ancestor is unsafe」）。
+  AppRepository? _cachedRepository;
+
+  /// 会话里全部目标站的状态：标签先按它画出来，再随结果填充计数。
+  List<MagnetSessionSite> _sessionSites = const [];
+  String _session = '';
+  bool _streaming = false;
+  Timer? _pollTimer;
+  int _pollGeneration = 0;
+
   bool _loading = false;
   bool _loadingMore = false;
   bool _hasMore = false;
@@ -54,6 +78,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
   int _activeTab = 0;
   final Map<String, MagnetSort> _sorts = {};
   final Map<String, bool> _onlyMagnet = {};
+  final Map<String, bool> _onlyReachable = {};
   int _dhtGeneration = 0;
   int _playGeneration = 0;
   bool _dhtLoading = false;
@@ -62,10 +87,34 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_sitesLoaded) {
+    _cachedRepository = AppScope.of(context).repository;
+    // 只在「第一次被显示」时加载：父页保活三个子页，未显示的不该发请求。
+    if (!_sitesLoaded && widget.active) {
       _sitesLoaded = true;
       _loadSites();
       _loadHotWords();
+      // 磁力页一打开就预热 BT 引擎与 DHT：用户真正点播放时省掉冷启动。
+      _warmup();
+    }
+  }
+
+  @override
+  void didUpdateWidget(MagnetSearchTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 从别的标签切回来时才补加载（正常情况下早就在 didChangeDependencies 里做过了）。
+    if (!_sitesLoaded && widget.active) {
+      _sitesLoaded = true;
+      _loadSites();
+      _loadHotWords();
+      _warmup();
+    }
+  }
+
+  Future<void> _warmup() async {
+    try {
+      await _repository.magnetWarmup();
+    } catch (_) {
+      // 预热失败不影响搜索；点播放时会再懒启动一次。
     }
   }
 
@@ -80,6 +129,14 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
   @override
   void dispose() {
     widget.sitesVersion.removeListener(_onSitesChanged);
+    _pollTimer?.cancel();
+    // 页面销毁时把会话停掉，别让后台还在抓站。用缓存的 repository，
+    // dispose 阶段不能再查 InheritedWidget。
+    final session = _session;
+    final repository = _cachedRepository;
+    if (session.isNotEmpty && repository != null) {
+      unawaited(repository.magnetSearchStop(session));
+    }
     _controller.dispose();
     _tabs?.removeListener(_onTabChanged);
     _tabs?.dispose();
@@ -118,7 +175,75 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
     }
   }
 
-  List<MagnetSiteGroup> get _groups => magnetSiteGroups(_items);
+  /// 标签分组：会话里登记的全部站（即使还没出结果）都要有标签；
+  /// 结果里出现但会话没登记的站也要补一个标签，否则那些结果只能出现在「全部」。
+  ///
+  /// 站源 id 缺失（Go 侧没解析出 infohash 的条目常常 siteId=0）时退回按站名匹配，
+  /// 否则「磁力猫」这类标签会永远显示 0 条，把结果藏起来。
+  List<MagnetSiteGroup> get _groups {
+    if (_sessionSites.isEmpty) return magnetSiteGroups(_items);
+
+    bool belongs(MagnetResult item, int siteId, String name) => item.siteId > 0
+        ? item.siteId == siteId
+        : (name.isNotEmpty && item.site == name);
+
+    final groups = <MagnetSiteGroup>[
+      for (final site in _sessionSites)
+        MagnetSiteGroup(
+          key: 'id:${site.siteId}',
+          name: site.name,
+          items: _items
+              .where((item) => belongs(item, site.siteId, site.name))
+              .toList(growable: false),
+        ),
+    ];
+
+    // 会话没登记、但结果里出现过的站：按 id（优先）或站名补标签。
+    final knownIds = {for (final site in _sessionSites) site.siteId};
+    final knownNames = {
+      for (final site in _sessionSites)
+        if (site.name.isNotEmpty) site.name,
+    };
+    final extraIds = <int>[];
+    final extraNames = <String>[];
+    final namesById = <int, String>{};
+    for (final item in _items) {
+      if (item.siteId > 0) {
+        if (knownIds.contains(item.siteId) ||
+            namesById.containsKey(item.siteId)) {
+          continue;
+        }
+        namesById[item.siteId] = item.site.isEmpty ? '其它站源' : item.site;
+        extraIds.add(item.siteId);
+      } else if (item.site.isNotEmpty && !knownNames.contains(item.site)) {
+        if (extraNames.contains(item.site)) continue;
+        extraNames.add(item.site);
+      }
+    }
+    for (final id in extraIds) {
+      groups.add(
+        MagnetSiteGroup(
+          key: 'id:$id',
+          name: namesById[id]!,
+          items: _items
+              .where((item) => item.siteId == id)
+              .toList(growable: false),
+        ),
+      );
+    }
+    for (final name in extraNames) {
+      groups.add(
+        MagnetSiteGroup(
+          key: 'name:$name',
+          name: name,
+          items: _items
+              .where((item) => item.siteId == 0 && item.site == name)
+              .toList(growable: false),
+        ),
+      );
+    }
+    return groups;
+  }
 
   String _tabKey(int index, List<MagnetSiteGroup> groups) =>
       index == 0 ? '*' : groups[index - 1].key;
@@ -170,7 +295,40 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
       base,
       sort: _sorts[key] ?? MagnetSort.defaultOrder,
       onlyMagnet: _onlyMagnet[key] ?? false,
+      onlyReachable: _onlyReachable[key] ?? false,
     );
+  }
+
+  /// 停掉当前会话（用户点「停止」或发起新搜索时）。
+  Future<void> _stopStreaming() async {
+    _pollTimer?.cancel();
+    _pollTimer = null;
+    final session = _session;
+    if (session.isEmpty) return;
+    _session = '';
+    if (mounted) {
+      setState(() {
+        _streaming = false;
+        _loading = false;
+        // 停止后把还在跑的站标成已停止，标签不再转圈。
+        _sessionSites = [
+          for (final site in _sessionSites)
+            site.running
+                ? MagnetSessionSite(
+                    siteId: site.siteId,
+                    name: site.name,
+                    state: 'done',
+                    count: site.count,
+                  )
+                : site,
+        ];
+      });
+    }
+    try {
+      await _repository.magnetSearchStop(session);
+    } catch (_) {
+      // 停止失败不阻断界面。
+    }
   }
 
   Future<void> _search({bool more = false}) async {
@@ -179,49 +337,142 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
       setState(() => _error = '请输入搜索关键词');
       return;
     }
-    if (_loading || _loadingMore) return;
+    if (more && (_loading || _loadingMore || _streaming)) return;
+    // 新搜索先中断上一次会话，避免两轮结果混在一起。
+    await _stopStreaming();
     final page = more ? _page + 1 : 1;
+    final generation = ++_pollGeneration;
     setState(() {
       if (more) {
         _loadingMore = true;
       } else {
         _loading = true;
         _items = const [];
+        _sessionSites = const [];
       }
       _error = '';
       _warning = '';
+      _streaming = true;
     });
     try {
-      final result = await _repository.magnetSearch(
+      final snapshot = await _repository.magnetSearchStart(
         more ? _query : query,
         page: page,
         sites: _selected.toList(),
       );
-      if (!mounted) return;
-      setState(() {
-        _query = more ? _query : query;
-        _page = result.page;
-        _hasMore = result.hasMore;
-        _warning = result.warning;
-        _items = more ? [..._items, ...result.items] : result.items;
-        if (result.sites.isNotEmpty && _sites.isEmpty) _sites = result.sites;
-      });
-      _probeDht();
-    } catch (error) {
-      if (mounted) setState(() => _error = '$error');
-    } finally {
-      if (mounted) {
+      if (!mounted || generation != _pollGeneration) return;
+      _session = snapshot.id;
+      _applySnapshot(snapshot, more: more);
+      // 会话在 start 阶段就已经跑完（例如没有可用站源）时不必再轮询，
+      // 否则空快照会把 hasMore / 计数覆盖掉。
+      if (snapshot.running) {
+        _schedulePoll(generation);
+      } else {
         setState(() {
+          _streaming = false;
           _loading = false;
           _loadingMore = false;
+        });
+        _probeDht();
+      }
+    } catch (error) {
+      if (mounted && generation == _pollGeneration) {
+        setState(() {
+          _error = '$error';
+          _loading = false;
+          _loadingMore = false;
+          _streaming = false;
         });
       }
     }
   }
 
-  /// 后台补 DHT 节点数：先出结果、再增量回填数字，不阻塞搜索。
+  void _schedulePoll(int generation) {
+    _pollTimer?.cancel();
+    _pollTimer = Timer(const Duration(milliseconds: 120), () {
+      unawaited(_pollOnce(generation));
+    });
+  }
+
+  Future<void> _pollOnce(int generation) async {
+    if (!mounted || generation != _pollGeneration || _session.isEmpty) return;
+    try {
+      final snapshot = await _repository.magnetSearchPoll(_session);
+      if (!mounted || generation != _pollGeneration) return;
+      _applySnapshot(snapshot);
+      if (snapshot.running) {
+        _schedulePoll(generation);
+      } else {
+        setState(() {
+          _streaming = false;
+          _loading = false;
+          _loadingMore = false;
+        });
+        _probeDht();
+      }
+    } catch (error) {
+      if (!mounted || generation != _pollGeneration) return;
+      setState(() {
+        _error = '$error';
+        _streaming = false;
+        _loading = false;
+        _loadingMore = false;
+      });
+    }
+  }
+
+  void _applySnapshot(MagnetSessionSnapshot snapshot, {bool more = false}) {
+    setState(() {
+      _session = snapshot.id.isNotEmpty ? snapshot.id : _session;
+      _query = snapshot.query.isNotEmpty ? snapshot.query : _query;
+      _page = snapshot.page;
+      // hasMore 只在会话结束时才是权威值：轮询的增量快照里它是默认 false，
+      // 直接赋值会把「还有下一页」清掉。
+      if (!snapshot.running) _hasMore = snapshot.hasMore;
+      if (snapshot.warning.isNotEmpty) _warning = snapshot.warning;
+      if (snapshot.sites.isNotEmpty) _sessionSites = snapshot.sites;
+      if (snapshot.items.isNotEmpty) {
+        final byId = <String, MagnetResult>{
+          for (final item in _items)
+            if (item.id.isNotEmpty) item.id: item,
+        };
+        final appended = <MagnetResult>[];
+        for (final item in snapshot.items) {
+          if (item.id.isEmpty) {
+            appended.add(item);
+            continue;
+          }
+          final existing = byId[item.id];
+          if (existing == null) {
+            byId[item.id] = item;
+            appended.add(item);
+          } else if (existing.magnet.isEmpty && item.magnet.isNotEmpty) {
+            // 详情页补到了磁力：替换成可播放版本。
+            byId[item.id] = existing.copyWith(
+              magnet: item.magnet,
+              playable: true,
+            );
+          }
+        }
+        final merged = <MagnetResult>[
+          for (final item in _items)
+            if (item.id.isNotEmpty && byId.containsKey(item.id))
+              byId[item.id]!
+            else
+              item,
+          ...appended,
+        ];
+        _items = merged;
+      }
+    });
+    // 这里不主动探测：边搜边显期间每来一批就探一次会把同一个 hash 反复
+    // 塞进 BT 客户端（旧条目也还在列表里）。统一在会话结束时探一次。
+  }
+
+  /// 后台补节点数：先出结果、再增量回填数字与可达性，不阻塞搜索。
   Future<void> _probeDht({bool force = false}) async {
     final groups = _groups;
+    if (groups.isEmpty) return;
     final index = _activeTab.clamp(0, groups.length);
     final key = _tabKey(index, groups);
     final hashes = _visibleItems(key, groups)
@@ -319,7 +570,11 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
     final key = _tabKey(activeTab, groups);
     final sort = _sorts[key] ?? MagnetSort.defaultOrder;
     final onlyMagnet = _onlyMagnet[key] ?? false;
+    final onlyReachable = _onlyReachable[key] ?? false;
     final visible = _visibleItems(key, groups);
+    final unreachableCount = _items
+        .where((item) => item.reachability == MagnetReachability.unreachable)
+        .length;
 
     return Column(
       children: [
@@ -341,16 +596,23 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                 ),
               ),
               const SizedBox(width: 8),
-              FilledButton(
-                onPressed: _loading ? null : () => _search(),
-                child: _loading
-                    ? const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      )
-                    : const Text('搜索'),
-              ),
+              if (_streaming)
+                FilledButton.icon(
+                  onPressed: _stopStreaming,
+                  icon: const Icon(Icons.stop_rounded, size: 18),
+                  label: const Text('停止'),
+                )
+              else
+                FilledButton(
+                  onPressed: _loading ? null : () => _search(),
+                  child: _loading
+                      ? const SizedBox(
+                          width: 18,
+                          height: 18,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Text('搜索'),
+                ),
             ],
           ),
         ),
@@ -410,7 +672,9 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
               if (_query.isNotEmpty)
                 Expanded(
                   child: Text(
-                    '「$_query」共 ${_items.length} 条',
+                    _streaming
+                        ? '「$_query」已找到 ${_items.length} 条 · 搜索中…'
+                        : '「$_query」共 ${_items.length} 条',
                     style: Theme.of(context).textTheme.bodySmall,
                     overflow: TextOverflow.ellipsis,
                   ),
@@ -436,8 +700,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
           labelPadding: const EdgeInsets.symmetric(horizontal: 12),
           tabs: [
             Tab(text: '全部 ${_items.length}'),
-            for (final group in groups)
-              Tab(text: '${group.name} ${group.items.length}'),
+            for (final group in groups) Tab(text: _tabLabel(group)),
           ],
         ),
         Padding(
@@ -466,12 +729,20 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                   ],
                 ),
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 6),
               FilterChip(
                 label: const Text('仅含磁力'),
                 selected: onlyMagnet,
                 visualDensity: VisualDensity.compact,
                 onSelected: (value) => setState(() => _onlyMagnet[key] = value),
+              ),
+              const SizedBox(width: 6),
+              FilterChip(
+                label: const Text('仅可达'),
+                selected: onlyReachable,
+                visualDensity: VisualDensity.compact,
+                onSelected: (value) =>
+                    setState(() => _onlyReachable[key] = value),
               ),
               const Spacer(),
               if (_dhtLoading)
@@ -482,7 +753,7 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                 )
               else
                 IconButton(
-                  tooltip: '刷新 DHT 节点数',
+                  tooltip: '刷新节点数与可达性',
                   icon: const Icon(Icons.hub_outlined, size: 20),
                   onPressed: _items.isEmpty
                       ? null
@@ -498,10 +769,11 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
               alignment: Alignment.centerLeft,
               child: Text(
                 _dhtLoading
-                    ? '正在探测可连接的 DHT 节点…'
+                    ? '正在探测可连接节点…'
                     : _dhtNodes > 0
-                    ? 'DHT 网络已连接 $_dhtNodes 个节点 · 可按 DHT 数量排序'
-                    : 'DHT 网络暂未连上节点 · 节点数会随探测自动更新',
+                    ? 'DHT 已连接 $_dhtNodes 个节点'
+                          '${unreachableCount > 0 ? ' · $unreachableCount 条不可达（红色）' : ''}'
+                    : 'DHT 网络暂未连上节点 · 可达性会随探测自动更新',
                 style: Theme.of(context).textTheme.bodySmall,
               ),
             ),
@@ -534,9 +806,12 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                         _loading
                             ? '正在搜索…'
                             : _items.isEmpty
-                            ? '输入关键词，搜索 35 个磁力站源'
+                            ? '输入关键词，搜索 ${_sites.length} 个磁力站源'
+                            : onlyReachable
+                            ? '当前标签没有可达的结果，可关掉「仅可达」看看'
                             : '当前标签没有符合条件的结果',
                         style: Theme.of(context).textTheme.bodyMedium,
+                        textAlign: TextAlign.center,
                       ),
                     )
                   : ListView.separated(
@@ -547,68 +822,21 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
                         final item = visible[index];
                         final preparing =
                             _preparing != null && _preparing == item.magnet;
-                        return ListTile(
-                          title: Text(
-                            item.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
+                        return _MagnetResultTile(
+                          item: item,
+                          preparing: preparing,
+                          onPlay: () => _play(item),
+                          onCopy: () => copyMagnetLink(
+                            context,
+                            item.magnet.isNotEmpty ? item.magnet : item.detail,
                           ),
-                          subtitle: Text(
-                            [
-                              item.site,
-                              if (item.size.isNotEmpty) item.size,
-                              if (item.date.isNotEmpty) item.date,
-                              if (item.dhtProbed) 'DHT ${item.dht}',
-                              if (item.dhtProbed && item.peers > item.dht)
-                                '节点 ${item.peers}',
-                            ].join(' · '),
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          trailing: preparing
-                              ? const SizedBox(
-                                  width: 20,
-                                  height: 20,
-                                  child: CircularProgressIndicator(
-                                    strokeWidth: 2,
-                                  ),
-                                )
-                              : Row(
-                                  mainAxisSize: MainAxisSize.min,
-                                  children: [
-                                    IconButton(
-                                      tooltip: '复制磁力链接',
-                                      icon: const Icon(Icons.copy_all_outlined),
-                                      onPressed: () => copyMagnetLink(
-                                        context,
-                                        item.magnet.isNotEmpty
-                                            ? item.magnet
-                                            : item.detail,
-                                      ),
-                                    ),
-                                    IconButton(
-                                      tooltip: item.playable
-                                          ? '播放'
-                                          : '未解析出磁力链接',
-                                      icon: Icon(
-                                        item.playable
-                                            ? Icons.play_circle_fill
-                                            : Icons.link_off_outlined,
-                                      ),
-                                      onPressed: item.playable
-                                          ? () => _play(item)
-                                          : null,
-                                    ),
-                                  ],
-                                ),
-                          onTap: item.playable ? () => _play(item) : null,
                         );
                       },
                     ),
             ),
           ),
         ),
-        if (_hasMore && _items.isNotEmpty)
+        if (_hasMore && _items.isNotEmpty && !_streaming)
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
             child: SizedBox(
@@ -620,6 +848,121 @@ class _MagnetSearchTabState extends State<MagnetSearchTab>
             ),
           ),
       ],
+    );
+  }
+
+  /// 标签文案带上抓取状态：还在跑的显示转圈小标，失败的不显示 0 条误导用户。
+  String _tabLabel(MagnetSiteGroup group) {
+    final site = _sessionSites.firstWhere(
+      (row) => 'id:${row.siteId}' == group.key,
+      orElse: () => const MagnetSessionSite(siteId: 0, name: ''),
+    );
+    if (site.siteId == 0) return '${group.name} ${group.items.length}';
+    if (site.running) return '${group.name} …';
+    if (site.failed) return '${group.name} ✕';
+    return '${group.name} ${group.items.length}';
+  }
+}
+
+/// 结果行：不可达的整行标红，并显示节点数。
+class _MagnetResultTile extends StatelessWidget {
+  const _MagnetResultTile({
+    required this.item,
+    required this.preparing,
+    required this.onPlay,
+    required this.onCopy,
+  });
+
+  final MagnetResult item;
+  final bool preparing;
+  final VoidCallback onPlay;
+  final VoidCallback onCopy;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final reachability = item.reachability;
+    final unreachable = reachability == MagnetReachability.unreachable;
+    final accent = unreachable ? theme.colorScheme.error : null;
+
+    final meta = <String>[
+      item.site,
+      if (item.size.isNotEmpty) item.size,
+      if (item.date.isNotEmpty) item.date,
+      if (item.dhtProbed) 'DHT ${item.dht}',
+      if (item.dhtProbed && item.peers > item.dht) '节点 ${item.peers}',
+    ];
+
+    return ListTile(
+      title: Text(
+        item.title,
+        maxLines: 2,
+        overflow: TextOverflow.ellipsis,
+        style: accent == null ? null : TextStyle(color: accent),
+      ),
+      subtitle: Row(
+        children: [
+          if (unreachable)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Icon(
+                Icons.error_outline,
+                size: 14,
+                color: theme.colorScheme.error,
+              ),
+            )
+          else if (reachability == MagnetReachability.reachable)
+            Padding(
+              padding: const EdgeInsets.only(right: 6),
+              child: Icon(
+                Icons.check_circle_outline,
+                size: 14,
+                color: theme.colorScheme.primary,
+              ),
+            ),
+          Expanded(
+            child: Text(
+              meta.join(' · '),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                color: accent ?? theme.textTheme.bodySmall?.color,
+              ),
+            ),
+          ),
+          if (unreachable)
+            Text(
+              '不可达',
+              style: TextStyle(fontSize: 11, color: theme.colorScheme.error),
+            ),
+        ],
+      ),
+      trailing: preparing
+          ? const SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            )
+          : Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: '复制磁力链接',
+                  icon: const Icon(Icons.copy_all_outlined),
+                  onPressed: onCopy,
+                ),
+                IconButton(
+                  tooltip: item.playable ? '播放' : '未解析出磁力链接',
+                  icon: Icon(
+                    item.playable
+                        ? Icons.play_circle_fill
+                        : Icons.link_off_outlined,
+                  ),
+                  onPressed: item.playable ? onPlay : null,
+                ),
+              ],
+            ),
+      onTap: item.playable ? onPlay : null,
     );
   }
 }

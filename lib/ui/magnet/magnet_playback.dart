@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -87,6 +89,9 @@ Future<void> openMagnetPlayback(
 /// [isCurrent] 由调用方提供，用来在每次异步等待后丢弃过期任务（例如用户连续
 /// 点了两条资源）；[onPreparing]/[onError] 用于回显解析中状态与错误提示。
 /// [fileIndex] 可强制指定文件，跳过选集弹窗。
+///
+/// [cancelSignal] 非空时，解析期间如果它被 complete（用户点了「停止解析」），
+/// 这里会立即调 magnetCancel 中断 Go 侧的元数据等待并放弃本次播放。
 Future<void> resolveAndPlayMagnet(
   BuildContext context, {
   required AppRepository repository,
@@ -98,6 +103,7 @@ Future<void> resolveAndPlayMagnet(
   bool Function()? isCurrent,
   void Function(bool preparing)? onPreparing,
   void Function(String message)? onError,
+  Future<void>? cancelSignal,
 }) async {
   final link = magnet.trim();
   if (!link.startsWith('magnet:')) {
@@ -126,20 +132,37 @@ Future<void> resolveAndPlayMagnet(
   }
 
   onPreparing?.call(true);
+  // 解析期间监听「停止」信号：一旦触发就取消 Go 侧加载，并把取消原因回传，
+  // 让界面把状态复位（而不是一直转圈）。
+  var cancelled = false;
+  final watcher = cancelSignal?.then((_) {
+    cancelled = true;
+    unawaited(repository.magnetCancel());
+  });
+
   final List<MagnetFile> files;
   try {
     // 每次点播先取消上一个还在 DHT 上挂着的解析任务，避免抢占 BT 客户端。
     await repository.magnetCancel();
+    if (cancelled) {
+      onPreparing?.call(false);
+      return;
+    }
     files = await repository.magnetFiles(link);
   } catch (error) {
-    if (context.mounted && stillActive()) {
+    if (context.mounted && stillActive() && !cancelled) {
       onPreparing?.call(false);
       onError?.call('磁力解析失败：$error');
+    } else {
+      onPreparing?.call(false);
     }
     return;
   }
+  // watcher 只是挂上去等信号，不需要 await 它的返回值。
+  unawaited(watcher ?? Future<void>.value());
   if (!context.mounted || !stillActive()) return;
   onPreparing?.call(false);
+  if (cancelled) return;
 
   if (files.isEmpty) {
     // 元数据还没回来也不必卡死：解析已尝试过，这里让 Go 侧自动挑最大视频文件。

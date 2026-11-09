@@ -1,3 +1,5 @@
+import 'dart:async';
+
 import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -17,10 +19,14 @@ class MagnetPlayTab extends StatefulWidget {
     super.key,
     required this.store,
     required this.sitesVersion,
+    this.active = true,
   });
 
   final LocalStore store;
   final ValueListenable<int> sitesVersion;
+
+  /// 是否是当前显示的子页；未显示时不加载分类与列表，第一次切到才开始拉。
+  final bool active;
 
   @override
   State<MagnetPlayTab> createState() => _MagnetPlayTabState();
@@ -54,11 +60,23 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   // 覆盖新任务的自增序号——行为对齐「磁力搜索」标签。
   String? _preparing;
   int _playGeneration = 0;
+  // 解析中的「停止」信号：用户再点一次按钮就 complete，解析链路会立即取消。
+  Completer<void>? _cancelSignal;
 
   @override
   void initState() {
     super.initState();
     widget.sitesVersion.addListener(_onSitesChanged);
+    // 首屏就预热 BT 引擎，点播放时 DHT 已有节点。
+    _warmup();
+  }
+
+  Future<void> _warmup() async {
+    try {
+      await _repository.magnetWarmup();
+    } catch (_) {
+      // 预热失败不影响后续播放。
+    }
   }
 
   void _onSitesChanged() {
@@ -71,7 +89,19 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
-    if (!_booted) {
+    if (!_booted && widget.active) {
+      _booted = true;
+      _loadSites();
+      _loadCategories();
+      _browse();
+    }
+  }
+
+  @override
+  void didUpdateWidget(MagnetPlayTab oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    // 第一次被切到这个标签时才加载；之后靠保活不再重复请求。
+    if (!_booted && widget.active) {
       _booted = true;
       _loadSites();
       _loadCategories();
@@ -219,6 +249,11 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   }
 
   Future<void> _playInput() async {
+    // 正在解析时按钮变成「停止解析」，再点一次立即中断。
+    if (_preparing != null) {
+      _stopParsing();
+      return;
+    }
     final link = _link.text.trim();
     if (!link.startsWith('magnet:')) {
       setState(() => _error = '请粘贴以 magnet: 开头的磁力链接');
@@ -229,6 +264,14 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
       title: '磁力链接播放',
       subtitle: link.length > 80 ? '${link.substring(0, 80)}…' : link,
     );
+  }
+
+  /// 用户点「停止解析」：complete 取消信号，解析链路会调 magnetCancel 中断
+  /// Go 侧的元数据等待，界面立刻复位。
+  void _stopParsing() {
+    final signal = _cancelSignal;
+    if (signal != null && !signal.isCompleted) signal.complete();
+    setState(() => _preparing = null);
   }
 
   /// 输入框与分类列表共用的播放入口：先取消旧任务、解析种子文件列表、
@@ -242,6 +285,8 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
     final generation = ++_playGeneration;
     bool isCurrent() => mounted && generation == _playGeneration;
     if (!isCurrent()) return;
+    final signal = Completer<void>();
+    _cancelSignal = signal;
     setState(() => _error = '');
     await resolveAndPlayMagnet(
       context,
@@ -251,6 +296,7 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
       title: title,
       subtitle: subtitle,
       isCurrent: isCurrent,
+      cancelSignal: signal.future,
       onPreparing: (preparing) {
         if (!isCurrent()) return;
         setState(() => _preparing = preparing ? magnet : null);
@@ -260,6 +306,7 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
         setState(() => _error = message);
       },
     );
+    if (_cancelSignal == signal) _cancelSignal = null;
   }
 
   void _playResult(MagnetResult item) {
@@ -316,15 +363,12 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
               ),
               const SizedBox(width: 8),
               FilledButton.icon(
-                onPressed: _preparing == null ? _playInput : null,
+                // 解析中再点一次即停止，不必等 40 秒超时。
+                onPressed: _playInput,
                 icon: _preparing == null
                     ? const Icon(Icons.play_arrow_rounded, size: 20)
-                    : const SizedBox(
-                        width: 18,
-                        height: 18,
-                        child: CircularProgressIndicator(strokeWidth: 2),
-                      ),
-                label: Text(_preparing == null ? '播放' : '解析中…'),
+                    : const Icon(Icons.stop_rounded, size: 20),
+                label: Text(_preparing == null ? '播放' : '停止解析'),
                 style: FilledButton.styleFrom(minimumSize: const Size(88, 48)),
               ),
             ],
@@ -474,9 +518,20 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
                           item.site,
                           if (item.size.isNotEmpty) item.size,
                           if (item.date.isNotEmpty) item.date,
+                          if (item.dhtProbed) 'DHT ${item.dht}',
+                          if (item.reachability ==
+                              MagnetReachability.unreachable)
+                            '不可达',
                         ].join(' · '),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
+                        style:
+                            item.reachability == MagnetReachability.unreachable
+                            ? TextStyle(
+                                color: theme.colorScheme.error,
+                                fontSize: 12,
+                              )
+                            : null,
                       ),
                       trailing: preparing
                           ? const SizedBox(

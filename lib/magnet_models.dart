@@ -9,6 +9,7 @@ class MagnetSite {
     this.info = '',
     this.state = true,
     this.custom = false,
+    this.edited = false,
     this.mainUrl = '',
     this.rule = '',
   });
@@ -17,10 +18,16 @@ class MagnetSite {
   final String name;
   final String info;
   final bool state;
-  // custom 为 true 表示用户在「磁力源管理」里新增的站源，可编辑/删除；
-  // 内置站源只允许删除（Go 侧记进 disabled 表）与一键恢复默认。
+  // custom 为 true 表示用户在「磁力源管理」里新增的站源；
+  // 内置站源（custom=false）现在也能编辑，改过的会带 edited=true。
   final bool custom;
+
+  /// 内置源被用户改过（Go 侧有覆盖层），界面上要能看出与出厂规则的差别。
+  final bool edited;
   final String mainUrl;
+
+  /// 这条源当前生效的完整规则 JSON。内置源与自定义源都返回，
+  /// 「编辑」弹窗与「导出配置」都依赖它。
   final String rule;
 
   factory MagnetSite.fromJson(Map<String, dynamic> json) => MagnetSite(
@@ -29,6 +36,7 @@ class MagnetSite {
     info: json['info'] as String? ?? '',
     state: json['state'] == true,
     custom: json['custom'] == true,
+    edited: json['edited'] == true,
     mainUrl: json['mainUrl'] as String? ?? '',
     rule: json['rule'] as String? ?? '',
   );
@@ -101,6 +109,27 @@ extension MagnetSortLabel on MagnetSort {
   };
 }
 
+/// 一条结果的可达性。三态是必须的：国内网络下 DHT 探测经常拿不到节点，
+/// 把「还没探测」当成「不可达」会让整页结果看起来全坏。
+enum MagnetReachability {
+  /// 还没探测到，显示为中性。
+  unknown,
+
+  /// 探测到有可连接节点，可播。
+  reachable,
+
+  /// 探测过但 0 节点，标记为红色（冷门种子或已失效）。
+  unreachable,
+}
+
+extension MagnetReachabilityLabel on MagnetReachability {
+  String get label => switch (this) {
+    MagnetReachability.unknown => '未探测',
+    MagnetReachability.reachable => '可达',
+    MagnetReachability.unreachable => '不可达',
+  };
+}
+
 class MagnetResult {
   const MagnetResult({
     required this.id,
@@ -142,23 +171,38 @@ class MagnetResult {
 
   bool get hasMagnet => playable && magnet.startsWith('magnet:');
 
-  MagnetResult copyWith({int? dht, int? peers, bool? dhtProbed}) =>
-      MagnetResult(
-        id: id,
-        title: title,
-        magnet: magnet,
-        size: size,
-        sizeBytes: sizeBytes,
-        date: date,
-        timestamp: timestamp,
-        site: site,
-        siteId: siteId,
-        detail: detail,
-        playable: playable,
-        dht: dht ?? this.dht,
-        peers: peers ?? this.peers,
-        dhtProbed: dhtProbed ?? this.dhtProbed,
-      );
+  /// 可达性：探测过且有节点 = 可达；探测过但 0 节点 = 不可达；没探测 = 未知。
+  MagnetReachability get reachability {
+    if (!dhtProbed) return MagnetReachability.unknown;
+    return dht > 0 || peers > 0
+        ? MagnetReachability.reachable
+        : MagnetReachability.unreachable;
+  }
+
+  MagnetResult copyWith({
+    int? dht,
+    int? peers,
+    bool? dhtProbed,
+    String? magnet,
+    String? title,
+    int? siteId,
+    bool? playable,
+  }) => MagnetResult(
+    id: id,
+    title: title ?? this.title,
+    magnet: magnet ?? this.magnet,
+    size: size,
+    sizeBytes: sizeBytes,
+    date: date,
+    timestamp: timestamp,
+    site: site,
+    siteId: siteId ?? this.siteId,
+    detail: detail,
+    playable: playable ?? this.playable,
+    dht: dht ?? this.dht,
+    peers: peers ?? this.peers,
+    dhtProbed: dhtProbed ?? this.dhtProbed,
+  );
 
   factory MagnetResult.fromJson(Map<String, dynamic> json) {
     final magnet = json['magnet'] as String? ?? '';
@@ -287,6 +331,114 @@ class MagnetSiteGroup {
   final List<MagnetResult> items;
 }
 
+/// 搜索会话里某个站源标签的状态。会话 start 时就会带回全部站，界面先把标签
+/// 画出来，再随 poll 的增量逐站填充——这就是「边搜边显」。
+class MagnetSessionSite {
+  const MagnetSessionSite({
+    required this.siteId,
+    required this.name,
+    this.state = 'pending',
+    this.count = 0,
+    this.error = '',
+  });
+
+  final int siteId;
+  final String name;
+
+  /// pending / fetching / done / failed。
+  final String state;
+  final int count;
+  final String error;
+
+  bool get running => state == 'pending' || state == 'fetching';
+  bool get failed => state == 'failed';
+
+  factory MagnetSessionSite.fromJson(Map<String, dynamic> json) =>
+      MagnetSessionSite(
+        siteId: json['siteId'] as int? ?? 0,
+        name: json['name'] as String? ?? '',
+        state: json['state'] as String? ?? 'pending',
+        count: (json['count'] as num?)?.toInt() ?? 0,
+        error: json['error'] as String? ?? '',
+      );
+}
+
+/// 一次 poll 拿到的增量快照。[items] 只含本轮新产出的条目，[total] 是会话累计数。
+class MagnetSessionSnapshot {
+  const MagnetSessionSnapshot({
+    this.id = '',
+    this.phase = 'running',
+    this.page = 1,
+    this.query = '',
+    this.sites = const [],
+    this.items = const [],
+    this.total = 0,
+    this.hasMore = false,
+    this.warning = '',
+  });
+
+  final String id;
+
+  /// running（还有站在跑）/ done（全部结束）。
+  final String phase;
+  final int page;
+  final String query;
+  final List<MagnetSessionSite> sites;
+  final List<MagnetResult> items;
+  final int total;
+  final bool hasMore;
+  final String warning;
+
+  bool get running => phase == 'running';
+
+  factory MagnetSessionSnapshot.fromJson(Map<String, dynamic> json) =>
+      MagnetSessionSnapshot(
+        id: json['id'] as String? ?? '',
+        phase: json['phase'] as String? ?? 'running',
+        page: json['page'] as int? ?? 1,
+        query: json['query'] as String? ?? '',
+        sites: [
+          for (final row in json['sites'] as List? ?? const [])
+            MagnetSessionSite.fromJson(Map<String, dynamic>.from(row as Map)),
+        ],
+        items: [
+          for (final row in json['items'] as List? ?? const [])
+            MagnetResult.fromJson(Map<String, dynamic>.from(row as Map)),
+        ],
+        total: (json['total'] as num?)?.toInt() ?? 0,
+        hasMore: json['hasMore'] == true,
+        warning: json['warning'] as String? ?? '',
+      );
+}
+
+/// 导入站源配置的结果统计。
+class MagnetImportResult {
+  const MagnetImportResult({
+    this.added = 0,
+    this.updated = 0,
+    this.skipped = 0,
+  });
+
+  final int added;
+  final int updated;
+  final int skipped;
+
+  String get summary {
+    final parts = <String>[];
+    if (added > 0) parts.add('新增 $added');
+    if (updated > 0) parts.add('更新 $updated');
+    if (skipped > 0) parts.add('跳过 $skipped');
+    return parts.isEmpty ? '没有可导入的站源' : parts.join(' · ');
+  }
+
+  factory MagnetImportResult.fromJson(Map<String, dynamic> json) =>
+      MagnetImportResult(
+        added: (json['added'] as num?)?.toInt() ?? 0,
+        updated: (json['updated'] as num?)?.toInt() ?? 0,
+        skipped: (json['skipped'] as num?)?.toInt() ?? 0,
+      );
+}
+
 List<MagnetSiteGroup> magnetSiteGroups(List<MagnetResult> items) {
   final order = <String>[];
   final grouped = <String, List<MagnetResult>>{};
@@ -306,15 +458,23 @@ List<MagnetSiteGroup> magnetSiteGroups(List<MagnetResult> items) {
   ];
 }
 
-/// 单个站源标签内的排序 / 「仅含磁力」筛选。排序是稳定的：数值相同时保持站源原始顺序。
+/// 单个站源标签内的排序 / 筛选。排序是稳定的：数值相同时保持站源原始顺序。
+/// [onlyReachable] 只保留「探测过且有节点」的条目——未探测的不算可达，
+/// 也不会被误判成死链（不可达只在确实探测过 0 节点时成立）。
 List<MagnetResult> magnetFilterResults(
   List<MagnetResult> items, {
   MagnetSort sort = MagnetSort.defaultOrder,
   bool onlyMagnet = false,
+  bool onlyReachable = false,
 }) {
-  final source = onlyMagnet
+  var source = onlyMagnet
       ? items.where((item) => item.hasMagnet).toList()
       : List<MagnetResult>.of(items);
+  if (onlyReachable) {
+    source = source
+        .where((item) => item.reachability == MagnetReachability.reachable)
+        .toList();
+  }
   if (sort == MagnetSort.defaultOrder) return source;
   final order = List<int>.generate(source.length, (index) => index);
   int compare(MagnetResult a, MagnetResult b) => switch (sort) {

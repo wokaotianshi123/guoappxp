@@ -360,6 +360,43 @@ abstract class AppRepository {
       throw AppFailure('当前环境不支持磁力源管理');
 
   Future<int> resetMagnetSites() async => throw AppFailure('当前环境不支持磁力源管理');
+
+  // ---- 磁力搜索会话（边搜边显）----
+  // start 立刻返回全部站标签，poll 增量取回结果，stop 立即中断。测试替身默认
+  // 退化成一次性返回空会话，老测试的桩仓库不会因此炸掉。
+
+  /// 开始一次搜索会话。[browse] 为真时按站内列表浏览（可不带关键词）。
+  Future<MagnetSessionSnapshot> magnetSearchStart(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+    bool browse = false,
+    String categoryUrl = '',
+    int categorySiteId = 0,
+  }) async => const MagnetSessionSnapshot(phase: 'done');
+
+  /// 取回增量结果。[wait] 为真时 Go 侧最多等 2 秒，避免空转轮询。
+  Future<MagnetSessionSnapshot> magnetSearchPoll(
+    String session, {
+    bool wait = true,
+  }) async => const MagnetSessionSnapshot(phase: 'done');
+
+  /// 立即中断会话（用户点「停止」或发起新搜索时）。
+  Future<void> magnetSearchStop(String session) async {}
+
+  /// 预热 BT 引擎与 DHT，磁力页打开时调一次，点播放时省掉冷启动。
+  Future<void> magnetWarmup() async {}
+
+  // ---- 磁力源导入导出 ----
+
+  /// 导出当前生效配置（含被改过的内置源），返回可直接存成文件的 JSON 文本。
+  Future<String> magnetExportSites() async => throw AppFailure('当前环境不支持磁力源管理');
+
+  /// 导入配置。[mode] 为 `merge`（默认，追加/更新）或 `replace`（先清空再导入）。
+  Future<MagnetImportResult> magnetImportSites(
+    String content, {
+    String mode = 'merge',
+  }) async => const MagnetImportResult();
 }
 
 class NativeRepository extends AppRepository {
@@ -791,6 +828,16 @@ class NativeRepository extends AppRepository {
                   ? 40
                   : action == 'magnetCancel'
                   ? 10
+                  : action == 'magnetSearchStart'
+                  ? 30
+                  : action == 'magnetSearchPoll'
+                  ? 25
+                  : action == 'magnetSearchStop'
+                  ? 10
+                  : action == 'magnetWarmup'
+                  ? 30
+                  : action == 'magnetImportSites'
+                  ? 40
                   : action == 'danmaku'
                   ? 15
                   : action == 'preload'
@@ -1473,5 +1520,76 @@ class NativeRepository extends AppRepository {
   Future<int> resetMagnetSites() async {
     final result = await _call({'action': 'magnetResetSites'});
     return (result as Map)['removed'] as int? ?? 0;
+  }
+
+  @override
+  Future<MagnetSessionSnapshot> magnetSearchStart(
+    String query, {
+    int page = 1,
+    List<int> sites = const [],
+    bool browse = false,
+    String categoryUrl = '',
+    int categorySiteId = 0,
+  }) async {
+    final result = await _call({
+      'action': 'magnetSearchStart',
+      'query': query,
+      'page': page,
+      'sites': sites,
+      if (browse) 'command': 'browse',
+      if (categoryUrl.isNotEmpty) 'categoryUrl': categoryUrl,
+      if (categorySiteId > 0) 'categorySiteId': categorySiteId,
+    });
+    return MagnetSessionSnapshot.fromJson(
+      Map<String, dynamic>.from(result as Map),
+    );
+  }
+
+  @override
+  Future<MagnetSessionSnapshot> magnetSearchPoll(
+    String session, {
+    bool wait = true,
+  }) async {
+    if (session.isEmpty) return const MagnetSessionSnapshot(phase: 'done');
+    final result = await _call({
+      'action': 'magnetSearchPoll',
+      'session': session,
+      'force': wait,
+    });
+    return MagnetSessionSnapshot.fromJson(
+      Map<String, dynamic>.from(result as Map),
+    );
+  }
+
+  @override
+  Future<void> magnetSearchStop(String session) async {
+    if (session.isEmpty) return;
+    await _call({'action': 'magnetSearchStop', 'session': session});
+  }
+
+  @override
+  Future<void> magnetWarmup() async {
+    await _call({'action': 'magnetWarmup'});
+  }
+
+  @override
+  Future<String> magnetExportSites() async {
+    final result = await _call({'action': 'magnetExportSites'});
+    return jsonEncode(result);
+  }
+
+  @override
+  Future<MagnetImportResult> magnetImportSites(
+    String content, {
+    String mode = 'merge',
+  }) async {
+    final result = await _call({
+      'action': 'magnetImportSites',
+      'content': content,
+      'command': mode,
+    });
+    return MagnetImportResult.fromJson(
+      Map<String, dynamic>.from(result as Map),
+    );
   }
 }

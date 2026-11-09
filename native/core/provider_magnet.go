@@ -56,14 +56,16 @@ type magnetSite struct {
 	Expression magnetSiteExpression `json:"expressionModel"`
 }
 
-// magnetSiteItem 是给 UI 的精简视图。Rule 只回填自定义源，便于「编辑」弹窗
-// 直接把原始规则 JSON 塞回输入框；内置站不暴露规则文本，避免界面太重。
+// magnetSiteItem 是给 UI 的精简视图。Rule 是这条源当前生效的完整规则 JSON，
+// 内置源与自定义源都给：用户要能「编辑内置源」并导出配置，就必须拿到规则原文。
 type magnetSiteItem struct {
-	ID      int    `json:"id"`
-	Name    string `json:"name"`
-	Info    string `json:"info"`
-	State   bool   `json:"state"`
-	Custom  bool   `json:"custom,omitempty"`
+	ID     int    `json:"id"`
+	Name   string `json:"name"`
+	Info   string `json:"info"`
+	State  bool   `json:"state"`
+	Custom bool   `json:"custom,omitempty"`
+	// Edited 表示这条内置源被用户改过（存在覆盖层），界面上要能看出差别。
+	Edited  bool   `json:"edited,omitempty"`
 	MainURL string `json:"mainUrl,omitempty"`
 	Rule    string `json:"rule,omitempty"`
 }
@@ -124,11 +126,19 @@ func loadMagnetSites() ([]magnetSite, error) {
 	if magnetBuiltinErr != nil {
 		return nil, magnetBuiltinErr
 	}
-	custom, disabled := magnetSourceSnapshot()
+	custom, overrides, disabled := magnetSourceSnapshot()
 	all := make([]magnetSite, 0, len(magnetBuiltinData)+len(custom))
 	for _, site := range magnetBuiltinData {
 		if disabled[site.ID] {
 			continue // 用户删掉的内置站不再参与搜索与列表
+		}
+		// 用户改过内置站的规则时，用覆盖层顶掉内嵌的原始规则；
+		// 没改过的仍走 magnet_sites.json，保证升级后能拿到新版内置规则。
+		if patched, ok := overrides[site.ID]; ok {
+			patched.ID = site.ID
+			patched.Custom = false
+			all = append(all, patched)
+			continue
 		}
 		all = append(all, site)
 	}
@@ -144,6 +154,7 @@ func magnetSiteList() (map[string]any, error) {
 	if err != nil {
 		return nil, err
 	}
+	_, overrides, _ := magnetSourceSnapshot()
 	items := make([]magnetSiteItem, 0, len(sites))
 	for _, site := range sites {
 		item := magnetSiteItem{
@@ -151,10 +162,12 @@ func magnetSiteList() (map[string]any, error) {
 			State: site.State, Custom: site.Custom,
 			MainURL: site.Request.MainURL,
 		}
-		if site.Custom {
-			if body, err := json.Marshal(site); err == nil {
-				item.Rule = string(body)
-			}
+		if !site.Custom {
+			_, item.Edited = overrides[site.ID]
+		}
+		// 规则原文对所有源都返回：编辑内置源、导出配置都依赖它。
+		if body, err := json.Marshal(site); err == nil {
+			item.Rule = string(body)
 		}
 		items = append(items, item)
 	}

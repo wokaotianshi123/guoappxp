@@ -20,6 +20,7 @@ func withFreshMagnetSources(t *testing.T) string {
 	magnetSources.Lock()
 	magnetSources.path = filepath.Join(dir, "magnet_sources.json")
 	magnetSources.custom = nil
+	magnetSources.overrides = map[int]magnetSite{}
 	magnetSources.disabled = map[int]bool{}
 	magnetSources.loaded = true
 	magnetSources.Unlock()
@@ -27,9 +28,18 @@ func withFreshMagnetSources(t *testing.T) string {
 		magnetSources.Lock()
 		magnetSources.path = ""
 		magnetSources.custom = nil
+		magnetSources.overrides = map[int]magnetSite{}
 		magnetSources.disabled = map[int]bool{}
 		magnetSources.loaded = false
 		magnetSources.Unlock()
+		// 会话表也是包级全局，别让上一轮没停的会话漏到下一个用例。
+		magnetSessions.Lock()
+		for id, session := range magnetSessions.items {
+			session.cancel()
+			delete(magnetSessions.items, id)
+		}
+		magnetSessions.order = nil
+		magnetSessions.Unlock()
 		// 热词缓存也可能被下面的用例写过，一并清掉。
 		magnetHotWordCache.Lock()
 		magnetHotWordCache.items = nil
