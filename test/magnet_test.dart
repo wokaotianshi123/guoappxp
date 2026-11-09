@@ -148,6 +148,19 @@ class _MagnetRepository extends FakeRepository {
   final browseRequests = <String>[];
   final categoryBrowseRequests = <String>[];
   final categorySites = <String>[];
+  // 播放页列表内容：默认一条带磁力的影片，测试可替换成多条验证可达性筛选。
+  List<MagnetResult> browseItems = const [
+    MagnetResult(
+      id: _hash,
+      title: '分类列表影片',
+      magnet: _magnet,
+      size: '2.1 GB',
+      date: '2026-11-09',
+      site: 'SOBT',
+      siteId: 10001,
+      playable: true,
+    ),
+  ];
   final removedSites = <int>[];
   final savedRules = <String>[];
   int resetCalls = 0;
@@ -197,21 +210,7 @@ class _MagnetRepository extends FakeRepository {
   }) async {
     browseRequests.add('$query|$page|${sites.join(',')}');
     categoryBrowseRequests.add('$categorySiteId|$categoryUrl');
-    return MagnetSearchPage(
-      items: const [
-        MagnetResult(
-          id: _hash,
-          title: '分类列表影片',
-          magnet: _magnet,
-          size: '2.1 GB',
-          date: '2026-11-09',
-          site: 'SOBT',
-          siteId: 10001,
-          playable: true,
-        ),
-      ],
-      page: page,
-    );
+    return MagnetSearchPage(items: browseItems, page: page);
   }
 
   @override
@@ -861,6 +860,65 @@ void main() {
     await tester.tap(find.widgetWithText(FilledButton, '播放'));
     await tester.pumpAndSettle();
     expect(find.text('请粘贴以 magnet: 开头的磁力链接'), findsOneWidget);
+  });
+
+  testWidgets('磁力播放列表：自动探测节点数、不可达标红、可只看可达', (tester) async {
+    final repository = _MagnetRepository();
+    const alive = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const dead = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    repository.browseItems = const [
+      MagnetResult(
+        id: alive,
+        title: '可达影片',
+        magnet: 'magnet:?xt=urn:btih:$alive',
+        site: 'SOBT',
+        siteId: 10001,
+        playable: true,
+      ),
+      MagnetResult(
+        id: dead,
+        title: '死链影片',
+        magnet: 'magnet:?xt=urn:btih:$dead',
+        site: 'SOBT',
+        siteId: 10001,
+        playable: true,
+      ),
+    ];
+    repository.peersInfo = MagnetPeersInfo.fromJson({
+      'items': [
+        {'hash': alive, 'dht': 9, 'peers': 12, 'connected': 1},
+        {'hash': dead, 'dht': 0, 'peers': 0, 'connected': 0},
+      ],
+      'dhtNodes': 64,
+    });
+    await _pumpMagnetPage(tester, repository);
+    await tester.tap(find.text('磁力播放'));
+    await tester.pumpAndSettle();
+
+    // 列表出来后就自动探一次，DHT 节点数回填到副标题，死链标红。
+    expect(repository.peerRequests, isNotEmpty);
+    expect(find.text('可达影片'), findsOneWidget);
+    expect(find.text('死链影片'), findsOneWidget);
+    expect(find.textContaining('DHT 9'), findsOneWidget);
+    expect(find.textContaining('1 条不可达'), findsOneWidget);
+    final deadTile = tester.widget<ListTile>(
+      find.ancestor(of: find.text('死链影片'), matching: find.byType(ListTile)),
+    );
+    expect(
+      (deadTile.subtitle! as Text).style?.color,
+      Theme.of(tester.element(find.text('死链影片'))).colorScheme.error,
+      reason: '不可达条目要标红',
+    );
+
+    await tester.tap(find.widgetWithText(FilterChip, '仅可达'));
+    await tester.pumpAndSettle();
+    expect(find.text('可达影片'), findsOneWidget);
+    expect(find.text('死链影片'), findsNothing);
+
+    // 关掉筛选恢复全部，列表内容不被破坏。
+    await tester.tap(find.widgetWithText(FilterChip, '仅可达'));
+    await tester.pumpAndSettle();
+    expect(find.text('死链影片'), findsOneWidget);
   });
 
   testWidgets('磁力源管理：自动识别回填规则后保存，并支持删除', (tester) async {

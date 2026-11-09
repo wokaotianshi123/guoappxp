@@ -13,7 +13,8 @@ import 'magnet_playback.dart';
 /// 三个一级标签里的「磁力播放」：
 /// 上方一行「粘贴磁力链接 → 播放」，与磁力搜索一样先解析种子文件列表、
 /// 再选集加载内置播放器；下方是按磁力站动态生成的分类列表（无封面、按行），
-/// 点任一行同样先解析再播放。
+/// 点任一行同样先解析再播放。列表出来后异步探测各条目的可连接节点数，
+/// 不可达的标红，并支持「仅可达」筛选（与磁力搜索页行为一致）。
 class MagnetPlayTab extends StatefulWidget {
   const MagnetPlayTab({
     super.key,
@@ -62,6 +63,11 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   int _playGeneration = 0;
   // 解析中的「停止」信号：用户再点一次按钮就 complete，解析链路会立即取消。
   Completer<void>? _cancelSignal;
+  // 可达性：列表先出来，再异步回填 DHT 节点数；「仅可达」只保留探测到有节点的条目。
+  bool _onlyReachable = false;
+  bool _dhtLoading = false;
+  int _dhtNodes = 0;
+  int _dhtGeneration = 0;
 
   @override
   void initState() {
@@ -199,6 +205,8 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
           _sites = result.sites.where((site) => site.state).toList();
         }
       });
+      // 列表先显示，节点数与可达性后台补；不 await，避免拖慢首屏。
+      unawaited(_probeDht());
     } catch (error) {
       if (mounted && generation == _generation) {
         setState(() => _error = '$error');
@@ -209,6 +217,52 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
           _loading = false;
           _loadingMore = false;
         });
+      }
+    }
+  }
+
+  /// 后台补节点数：列表先显示，再增量回填 DHT 数量与可达性，不阻塞浏览。
+  /// 只探还没探测过的条目（加载更多时前几页已经探过，不重复塞进 BT 客户端）；
+  /// 手动点「刷新可达性」时 force，忽略后端缓存重新探。
+  Future<void> _probeDht({bool force = false}) async {
+    final hashes = _items
+        .where(
+          (item) =>
+              item.hasMagnet &&
+              item.id.isNotEmpty &&
+              (force || !item.dhtProbed),
+        )
+        .map((item) => item.id)
+        .take(24)
+        .toList();
+    if (hashes.isEmpty) return;
+    final generation = ++_dhtGeneration;
+    final repository = _repository;
+    if (mounted) setState(() => _dhtLoading = true);
+    try {
+      final info = await repository.magnetPeers(hashes, force: force);
+      if (!mounted || generation != _dhtGeneration) return;
+      final byHash = <String, MagnetPeerItem>{
+        for (final row in info.items) row.hash.toLowerCase(): row,
+      };
+      setState(() {
+        _dhtNodes = info.dhtNodes;
+        _dhtLoading = false;
+        _items = [
+          for (final item in _items)
+            byHash.containsKey(item.id.toLowerCase())
+                ? item.copyWith(
+                    dht: byHash[item.id.toLowerCase()]!.dht,
+                    peers: byHash[item.id.toLowerCase()]!.peers,
+                    dhtProbed: true,
+                  )
+                : item,
+        ];
+      });
+    } catch (_) {
+      // 探测失败不改列表：条目保持「未探测」，不会被误标成不可达。
+      if (mounted && generation == _dhtGeneration) {
+        setState(() => _dhtLoading = false);
       }
     }
   }
@@ -328,6 +382,10 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
+    final visible = magnetFilterResults(_items, onlyReachable: _onlyReachable);
+    final unreachableCount = _items
+        .where((item) => item.reachability == MagnetReachability.unreachable)
+        .length;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
@@ -473,12 +531,55 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
                   },
                 ),
               ),
-              IconButton(
-                tooltip: '刷新列表',
-                iconSize: 19,
-                icon: const Icon(Icons.refresh_rounded),
-                onPressed: _loading ? null : () => _browse(),
+              // 分隔线：右边是筛选与刷新，不会被当成站源标签。
+              Container(
+                width: 1,
+                height: 16,
+                margin: const EdgeInsets.symmetric(horizontal: 6),
+                color: theme.dividerColor,
               ),
+              FilterChip(
+                label: const Text('仅可达', style: TextStyle(fontSize: 12)),
+                selected: _onlyReachable,
+                visualDensity: VisualDensity.compact,
+                materialTapTargetSize: MaterialTapTargetSize.shrinkWrap,
+                labelPadding: const EdgeInsets.symmetric(horizontal: 2),
+                padding: const EdgeInsets.symmetric(horizontal: 6),
+                onSelected: (value) {
+                  setState(() => _onlyReachable = value);
+                  // 打开筛选时若还有条目没探过，立刻补一次，别让列表一开就空。
+                  if (value) unawaited(_probeDht());
+                },
+              ),
+              SizedBox(
+                width: 30,
+                height: 30,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  tooltip: '刷新节点数与可达性',
+                  iconSize: 17,
+                  icon: _dhtLoading
+                      ? const SizedBox(
+                          width: 14,
+                          height: 14,
+                          child: CircularProgressIndicator(strokeWidth: 2),
+                        )
+                      : const Icon(Icons.hub_outlined),
+                  onPressed: _dhtLoading ? null : () => _probeDht(force: true),
+                ),
+              ),
+              SizedBox(
+                width: 30,
+                height: 30,
+                child: IconButton(
+                  padding: EdgeInsets.zero,
+                  tooltip: '刷新列表',
+                  iconSize: 17,
+                  icon: const Icon(Icons.refresh_rounded),
+                  onPressed: _loading ? null : () => _browse(),
+                ),
+              ),
+              const SizedBox(width: 4),
             ],
           ),
         ),
@@ -487,23 +588,39 @@ class _MagnetPlayTabState extends State<MagnetPlayTab> {
             padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
             child: Text(_warning, style: theme.textTheme.bodySmall),
           ),
+        // 只在探测中或确实有死链时占一行，平时不挤列表。
+        if (_items.isNotEmpty && (_dhtLoading || unreachableCount > 0))
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 2, 16, 2),
+            child: Text(
+              _dhtLoading
+                  ? '正在探测可连接节点…'
+                  : 'DHT 已连接 $_dhtNodes 个节点 · $unreachableCount 条不可达（红色）',
+              style: theme.textTheme.bodySmall,
+            ),
+          ),
         const Divider(height: 1),
         Expanded(
           child: _loading && _items.isEmpty
               ? const Center(child: CircularProgressIndicator())
-              : _items.isEmpty
+              : visible.isEmpty
               ? Center(
                   child: Text(
-                    '暂无资源，可切换分类或点刷新重试',
+                    _items.isEmpty
+                        ? '暂无资源，可切换分类或点刷新重试'
+                        : _onlyReachable
+                        ? '当前没有探测到可达的资源，可关掉「仅可达」看看'
+                        : '当前没有符合条件的结果',
                     style: theme.textTheme.bodyMedium,
+                    textAlign: TextAlign.center,
                   ),
                 )
               : ListView.separated(
                   padding: const EdgeInsets.only(bottom: 12),
-                  itemCount: _items.length,
+                  itemCount: visible.length,
                   separatorBuilder: (_, _) => const Divider(height: 1),
                   itemBuilder: (context, index) {
-                    final item = _items[index];
+                    final item = visible[index];
                     final preparing =
                         _preparing != null && _preparing == item.magnet;
                     return ListTile(
