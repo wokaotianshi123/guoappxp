@@ -214,6 +214,17 @@ jobs:
           java-version: '17'
       - *setup-go
       - *setup-flutter
+      # Gradle wrapper 首次构建要联网下载分发包（约 225MB）以及 Android Gradle
+      # Plugin 等依赖，命中缓存后可以完全跳过这段网络请求。
+      - name: Cache Gradle
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/wrapper
+            ~/.gradle/caches
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle.properties', 'android/**/*.gradle.kts') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -258,7 +269,23 @@ jobs:
           python scripts/build_fanqie_engine.py --android \
             --out android/app/src/main/jniLibs --android-skip-existing
           ls -l android/app/src/main/jniLibs/*/libfanqie_shim.so || true
-      - run: python scripts/build_android.py ${{ matrix.arguments }}
+      # 分发包下载属外部依赖，网络抖动（GitHub Releases 504、镜像超时）会让整条
+      # 流水线白跑；原生库有 Go 构建缓存，重试成本很低，因此做一次有限重试。
+      - name: 构建并打包 APK
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2; do
+            if python scripts/build_android.py ${{ matrix.arguments }}; then
+              exit 0
+            fi
+            if [ "$attempt" -ge 2 ]; then
+              echo "::error::APK 构建连续 2 次失败"
+              exit 1
+            fi
+            echo "::warning::APK 构建第 ${attempt} 次失败，10 秒后重试"
+            sleep 10
+          done
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
