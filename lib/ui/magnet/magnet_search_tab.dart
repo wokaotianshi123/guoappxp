@@ -245,10 +245,29 @@ class _MagnetSearchTabState extends State<MagnetSearchTab> {
   String _tabKey(int index, List<MagnetSiteGroup> groups) =>
       index == 0 ? '*' : groups[index - 1].key;
 
+  /// 结果标签实际显示的分组：某个站源已经抓完却一条都没搜到时先不显示它的标签，
+  /// 免得一排「0 条 / ✕」把真正有结果的标签挤到第二行甚至「更多」里。
+  ///
+  /// 还在抓取的站源必须保留：用户要靠标签上的「…」看到哪些站还在跑。
+  /// 下次搜索或翻页时分组会重新计算，标签自然又会出现（所以是「暂时」隐藏）。
+  List<MagnetSiteGroup> get _visibleGroups => [
+    for (final group in _groups)
+      if (group.items.isNotEmpty || _groupRunning(group.key)) group,
+  ];
+
+  bool _groupRunning(String key) =>
+      _sessionSites.any((site) => 'id:${site.siteId}' == key && site.running);
+
+  /// 当前选中项按最新可见标签收敛：正在看的站源刚被抓完且没结果、标签被隐藏时，
+  /// 索引会越过可见范围，这时回落到「全部」而不是停到某个不相干的站。
+  int _activeIndex(List<MagnetSiteGroup> groups) =>
+      _activeTab <= groups.length ? _activeTab : 0;
+
   /// 切换结果标签。标签改成可换行的 chip 后不再有 TabController，
   /// 直接改索引并补探当前标签的节点数即可。
   void _switchTab(int index) {
-    final target = index.clamp(0, _groups.length);
+    // 只用可见标签的数量收敛：被隐藏的站源不在标签行里，键位切换不能跳进去。
+    final target = index.clamp(0, _visibleGroups.length);
     if (target == _activeTab) return;
     setState(() => _activeTab = target);
     _probeDht();
@@ -444,9 +463,9 @@ class _MagnetSearchTabState extends State<MagnetSearchTab> {
 
   /// 后台补节点数：先出结果、再增量回填数字与可达性，不阻塞搜索。
   Future<void> _probeDht({bool force = false}) async {
-    final groups = _groups;
+    final groups = _visibleGroups;
     if (groups.isEmpty) return;
-    final index = _activeTab.clamp(0, groups.length);
+    final index = _activeIndex(groups);
     final key = _tabKey(index, groups);
     final hashes = _visibleItems(key, groups)
         .where((item) => item.hasMagnet && item.id.isNotEmpty)
@@ -537,9 +556,12 @@ class _MagnetSearchTabState extends State<MagnetSearchTab> {
 
   @override
   Widget build(BuildContext context) {
-    final groups = _groups;
+    // 标签只用「有结果 / 还在抓」的站源；正在看的站如果刚好没结果被隐藏，
+    // 下面的 clamp 会把选中项收敛回「全部」，不会出现空白标签页。
+    final groups = _visibleGroups;
+    final emptySites = _groups.length - groups.length;
     // 标签数量随结果变化（各站逐个返回），越界的索引在这里按最新数量收敛。
-    final activeTab = _activeTab.clamp(0, groups.length);
+    final activeTab = _activeIndex(groups);
     final key = _tabKey(activeTab, groups);
     final sort = _sorts[key] ?? MagnetSort.defaultOrder;
     final onlyMagnet = _onlyMagnet[key] ?? false;
@@ -655,6 +677,9 @@ class _MagnetSearchTabState extends State<MagnetSearchTab> {
                       child: Text(
                         _streaming
                             ? '「$_query」已找到 ${_items.length} 条 · 搜索中…'
+                            : emptySites > 0
+                            ? '「$_query」共 ${_items.length} 条'
+                                  ' · $emptySites 个站源没有结果（标签已收起）'
                             : '「$_query」共 ${_items.length} 条',
                         style: Theme.of(context).textTheme.bodySmall,
                         overflow: TextOverflow.ellipsis,

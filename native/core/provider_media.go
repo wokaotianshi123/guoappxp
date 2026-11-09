@@ -62,6 +62,8 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.ThepornyURL, thepornyHosts[0]
 	case sourceHeitao:
 		configured, fallback = d.cfg.HeitaoURL, heitaoBaseURL
+	case sourceBeabox:
+		configured, fallback = d.cfg.BeaboxURL, beaboxBaseURL
 	default:
 		fallback = "https://d2pypzndaqisk.cloudfront.net"
 	}
@@ -178,6 +180,9 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	}
 	if chapter.Source == sourceHeitao {
 		return d.resolveHeitaoMedia(ctx, task)
+	}
+	if chapter.Source == sourceBeabox {
+		return d.resolveBeaboxMedia(ctx, task)
 	}
 	if chapter.Source == sourceDSD {
 		return d.resolveDSDMedia(ctx, task)

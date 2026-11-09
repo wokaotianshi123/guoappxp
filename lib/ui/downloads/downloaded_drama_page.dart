@@ -405,6 +405,10 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
                     onTap: selection == null
                         ? () => _play(item, index)
                         : () => _toggle(job.id),
+                    // 长按 / 右键：直接进多选并选中这一集。
+                    onMore: selection == null
+                        ? () => setState(() => _selection = {job.id})
+                        : null,
                   );
                 },
               ),
@@ -498,11 +502,13 @@ class _EpisodeCard extends StatelessWidget {
     required this.watching,
     required this.selected,
     required this.onTap,
+    this.onMore,
   });
   final DownloadJob job;
   final bool watching;
   final bool? selected;
   final VoidCallback onTap;
+  final VoidCallback? onMore;
 
   @override
   Widget build(BuildContext context) {
@@ -531,6 +537,8 @@ class _EpisodeCard extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
+            onLongPress: onMore,
+            onSecondaryTap: onMore,
             child: Padding(
               padding: EdgeInsets.fromLTRB(selected == null ? 16 : 8, 8, 12, 8),
               child: Row(

@@ -185,7 +185,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         keyboard.isShiftPressed) {
       return KeyEventResult.ignored;
     }
-    if (key == LogicalKeyboardKey.escape || key == LogicalKeyboardKey.goBack) {
+    // 只处理 Esc：Android 返回键的 goBack 还会走系统 popRoute / PopScope，
+    // 两边都退会一次退两级。
+    if (key == LogicalKeyboardKey.escape) {
       if (down) _back();
       return KeyEventResult.handled;
     }

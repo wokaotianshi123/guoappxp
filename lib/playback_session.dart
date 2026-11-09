@@ -66,7 +66,7 @@ class PlaybackSession extends ChangeNotifier {
     _bind();
     _saveTimer = Timer.periodic(
       const Duration(seconds: 5),
-      (_) => saveProgress(),
+      (_) => saveProgress(quiet: true),
     );
     _healthTimer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (_closed || !_acceptErrors || _loading || _error != null) return;
@@ -168,6 +168,7 @@ class PlaybackSession extends ChangeNotifier {
   String? _error;
   String? _saveWarning;
   String? _savedProgressKey;
+  bool _savedQuietly = false;
   PlaybackPlan? _plan;
   PlaybackPlan? _standbyPlan;
   int _standbyIndex = -1;
@@ -1118,13 +1119,20 @@ class PlaybackSession extends ChangeNotifier {
     }
   }
 
-  Future<void> saveProgress() async {
+  /// 保存当前进度。[quiet] 是播放中的定时保存：只写记录、不通知界面，
+  /// 避免被播放页盖住的首页 / 详情 / 历史每 5 秒整体重绘一次。
+  /// 下一次非 quiet 保存（换集、暂停、退出）照常刷新。
+  Future<void> saveProgress({bool quiet = false}) async {
     if (!_engaged || _openedIndex < 0 || store.profileEpoch != _epoch) return;
     final position = player.state.position.inMilliseconds / 1000;
     final duration = player.state.duration.inMilliseconds / 1000;
     if (position < .1) return;
     final key = '${detail.drama.id}:$_openedIndex:$position:$duration';
-    if (_savedProgressKey == key && _saveWarning == null) return;
+    if (_savedProgressKey == key &&
+        _saveWarning == null &&
+        (quiet || !_savedQuietly)) {
+      return;
+    }
     final entry = WatchEntry(
       drama: repository.catalogUpdates.current(detail.drama),
       episode: detail.episodes[_openedIndex].number,
@@ -1133,8 +1141,9 @@ class PlaybackSession extends ChangeNotifier {
       updatedAt: DateTime.now(),
     );
     try {
-      await store.saveWatch(entry);
+      await store.saveWatch(entry, quiet: quiet);
       _savedProgressKey = key;
+      _savedQuietly = quiet;
       if (_saveWarning != null) {
         _saveWarning = null;
         _notify();

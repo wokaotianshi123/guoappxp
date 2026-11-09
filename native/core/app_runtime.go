@@ -28,16 +28,18 @@ type Config struct {
 	HuangdouURL      string
 	JinguoDuanjuURL  string
 	HeitaoURL        string
-	HongguoURL       string
-	HuangjuURL       string
-	HuangjuAPIURL    string
-	YeguoURL         string
-	YeguoAPIURL      string
-	DSDURL           string
-	SoraniURL        string
-	SoraniAPIURL     string
-	GuipianURL       string
-	HanxiaoquanURL   string
+	// BeaboxURL 是笔盒的固定线路；留空时按「上次可用线路 → 内置线路 → 发布页发现」顺序取。
+	BeaboxURL      string
+	HongguoURL     string
+	HuangjuURL     string
+	HuangjuAPIURL  string
+	YeguoURL       string
+	YeguoAPIURL    string
+	DSDURL         string
+	SoraniURL      string
+	SoraniAPIURL   string
+	GuipianURL     string
+	HanxiaoquanURL string
 	// FanqieURL 是番茄内容引擎（本机 loopback REST）地址，留空用默认 127.0.0.1:18921。
 	FanqieURL    string
 	XChinaURL    string
@@ -61,6 +63,12 @@ type Downloader struct {
 	ikanbotLinePending    map[string]*ikanbotLineCall
 	providerMu            sync.Mutex
 	providerHosts         map[string]string
+	beaboxMu              sync.Mutex
+	beaboxLoaded          bool
+	beaboxSite            string
+	beaboxPool            []string
+	beaboxPoolNext        time.Time
+	beaboxDiscoverMu      sync.Mutex
 	limiter               *requestLimiter
 	proxyRouter           *proxyRouter
 	browserTransport      *huangguoBrowserTransport
@@ -165,6 +173,8 @@ type nativeInput struct {
 	CategoryURL    string `json:"categoryUrl"`
 	CategorySiteID int    `json:"categorySiteId"`
 	CacheDirectory string `json:"cacheDirectory"`
+	// 下载列表增量：Since 是上次拿到的列表指纹，列表没变化时核心只回指纹。
+	Since string `json:"since"`
 }
 
 type nativeCatalogResult struct {
@@ -514,8 +524,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 		count, err := engine.workLease(input.JobID, input.Command)
 		return map[string]int{"count": count}, err
 	case "downloads":
-		jobs, err := engine.downloads.snapshot()
-		return map[string]any{"jobs": jobs}, err
+		return engine.downloads.snapshotSince(input.Since)
 	case "enqueueDownloads":
 		added, err := engine.downloads.enqueueContext(ctx, input)
 		return map[string]int{"added": added}, err
@@ -831,6 +840,8 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		items, result.HasMore, err = d.fetchJinguoCatalogPage(ctx, page, category, "")
 	case sourceHeitao:
 		items, result.HasMore, err = d.fetchHeitaoCatalogPage(ctx, page, category, "")
+	case sourceBeabox:
+		items, result.HasMore, err = d.fetchBeaboxCatalogPage(ctx, page, category, "")
 	case sourceDSD:
 		items, result.HasMore, err = d.fetchDSDCatalogPage(ctx, page, category, "")
 	case sourceSorani:
@@ -869,7 +880,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceJinguo && source != sourceHeitao && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && source != sourceFanqie {
+	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceJinguo && source != sourceHeitao && source != sourceBeabox && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && source != sourceFanqie {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {

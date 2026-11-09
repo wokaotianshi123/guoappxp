@@ -51,7 +51,7 @@ type nativeSearchAcrossResult struct {
 func nativeSourceSupportsSearch(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo,
-		sourceHeitao, sourceDSD, sourceSorani,
+		sourceHeitao, sourceBeabox, sourceDSD, sourceSorani,
 		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie,
 		sourceXChina, sourceTheporny, sourceHuangguoAI:
 		return true
@@ -132,6 +132,8 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 		items, more, err = d.fetchJinguoCatalogPage(ctx, page, "", query)
 	case sourceHeitao:
 		items, more, err = d.fetchHeitaoCatalogPage(ctx, page, "", query)
+	case sourceBeabox:
+		items, more, err = d.fetchBeaboxCatalogPage(ctx, page, "", query)
 	case sourceDSD:
 		items, more, err = d.fetchDSDCatalogPage(ctx, page, "", query)
 	case sourceSorani:

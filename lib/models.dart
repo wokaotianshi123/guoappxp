@@ -20,6 +20,7 @@ class SourceSite {
       id == 'jinguoduanju' ||
       id == 'jinguo' ||
       id == 'heitao' ||
+      id == 'beabox' ||
       id == 'huangguoai' ||
       id == 'dsd' ||
       id == 'sorani' ||
@@ -128,6 +129,8 @@ class SourceSite {
     SourceSite('jinguoduanju', '禁果短剧', '推荐 · 分类短剧 · 在线搜索'),
     SourceSite('jinguo', '禁果', '精选 · 最新 · 分类短剧 · 在线搜索'),
     SourceSite('heitao', '黑桃', '分类短剧 · 在线搜索'),
+    // 笔盒：站点域名常换，默认关闭，在站源管理里打开。
+    SourceSite('beabox', '笔盒', '分类视频 · 在线搜索'),
     SourceSite('xchina', 'XChina', '分类视频 · 在线搜索'),
     SourceSite('theporny', 'Theporny', '分类视频 · 在线搜索'),
     SourceSite('huangguo-video', '黄果视频', '视频剧集'),

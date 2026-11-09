@@ -1,11 +1,11 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/foundation.dart';
 import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../app_device.dart';
 import '../../local_store.dart';
@@ -20,6 +20,7 @@ import 'danmaku_overlay.dart';
 import 'playback_details_sheet.dart';
 import 'playback_sheets.dart';
 import 'playback_handle.dart';
+import 'player_video.dart';
 import 'player_gestures.dart';
 import 'player_surface.dart';
 
@@ -62,6 +63,15 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   double? _seekValue;
   double? _seekTarget;
   Timer? _seekTimer;
+
+  // 双指缩放：0 = 完整画面（有黑边），1 = 铺满屏幕（两侧略有裁切）。
+  final _pointers = <int, Offset>{};
+  double? _pinchFrom;
+  double _pinchBase = 0;
+  double _zoom = 0;
+  int _zoomedIndex = -1;
+  bool _pinching = false;
+  DateTime _pinchTapGuard = DateTime.fromMillisecondsSinceEpoch(0);
 
   /// 竖屏的滑动调亮度/快进快退，行为与横屏播放器一致；
   /// 但竖屏短促的上下滑是切集，所以亮度要「长按后」才接管，
@@ -129,6 +139,13 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
 
   void _changed() {
     _bind();
+    // 换集后回到完整画面，别把上一集的放大状态带过去。
+    if (_zoomedIndex != _session.index) {
+      _zoomedIndex = _session.index;
+      _zoom = 0;
+      _pinching = false;
+      _pointers.clear();
+    }
     if (_holding && _session.index != _heldIndex) _pressEnd();
     if (!_scrolling &&
         _pages.hasClients &&
@@ -140,6 +157,61 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
 
   void _refresh() {
     if (mounted) setState(() {});
+  }
+
+  double get _pinchSpan {
+    if (_pointers.length < 2) return 0;
+    final points = _pointers.values.take(2).toList();
+    return (points[0] - points[1]).distance;
+  }
+
+  void _beginPinch() {
+    if (_pinching) return;
+    _pinchFrom = _pinchSpan;
+    _pinchBase = _zoom;
+    setState(() => _pinching = true);
+  }
+
+  void _updatePinch() {
+    final from = _pinchFrom;
+    if (!_pinching || from == null || from <= 0) return;
+    final span = _pinchSpan;
+    if (span <= 0) return;
+    // 手指张开 100% 左右就铺满；捏合回 1 倍以下就回到完整画面。
+    final next = (_pinchBase + (span / from - 1) * 1.6).clamp(0.0, 1.0);
+    if ((next - _zoom).abs() < .001) return;
+    setState(() => _zoom = next);
+  }
+
+  void _endPinch() {
+    _pinchFrom = null;
+    // 过半就吸附到「铺满」，否则退回完整画面，不要停在半路上。
+    setState(() {
+      _pinching = false;
+      _zoom = _zoom >= .4 ? 1 : 0;
+    });
+    // 捏合结束后短时间内不响应单击，避免误触暂停。
+    _pinchTapGuard = DateTime.now().add(const Duration(milliseconds: 300));
+  }
+
+  /// 把「完整画面」放大到刚好铺满容器所需的倍数。
+  /// 短剧是 9:16，长屏手机上按 contain 显示会上下留黑边，放大后只裁掉两侧一点。
+  double _coverScale(
+    double width,
+    double height,
+    double aspectRatio,
+    double zoom,
+  ) {
+    if (!width.isFinite || !height.isFinite || width <= 0 || height <= 0) {
+      return 1;
+    }
+    final aspect = aspectRatio.isFinite && aspectRatio > 0
+        ? aspectRatio
+        : 9 / 16;
+    final videoWidth = math.min(width, height * aspect);
+    final videoHeight = videoWidth / aspect;
+    final cover = math.max(width / videoWidth, height / videoHeight);
+    return 1 + (cover - 1) * zoom;
   }
 
   void _endSeek() {
@@ -297,7 +369,9 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                 child: PageView.builder(
                   controller: _pages,
                   scrollDirection: Axis.vertical,
-                  physics: const _PagePhysics(),
+                  physics: _pinching
+                      ? const NeverScrollableScrollPhysics()
+                      : const _PagePhysics(),
                   itemCount: _session.detail.episodes.length,
                   itemBuilder: _page,
                 ),
@@ -325,12 +399,28 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
         fit: StackFit.expand,
         children: [
           if (!waiting)
-            Video(
-              key: ValueKey(player),
-              controller: widget.handle.video(player),
-              controls: NoVideoControls,
-              fill: Colors.black,
-              pauseUponEnteringBackgroundMode: false,
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final video = PlayerVideo(
+                  key: ValueKey(player),
+                  handle: widget.handle,
+                  player: player,
+                );
+                // 只有当前这一集跟随双指缩放的进度。
+                final zoom = current ? _zoom : 0.0;
+                if (zoom <= 0) return video;
+                return ClipRect(
+                  child: Transform.scale(
+                    scale: _coverScale(
+                      constraints.maxWidth,
+                      constraints.maxHeight,
+                      session.aspectRatio,
+                      zoom,
+                    ),
+                    child: video,
+                  ),
+                );
+              },
             ),
           if (waiting)
             Center(
@@ -362,19 +452,46 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
               builder: (context, constraints) {
                 final width = constraints.maxWidth;
                 return Listener(
-                  onPointerDown: (event) => _gestures.pointerDown(
-                    event,
-                    width: width,
-                    height: constraints.maxHeight,
-                  ),
-                  onPointerMove: _gestures.pointerMove,
-                  onPointerUp: _gestures.pointerUp,
-                  onPointerCancel: _gestures.pointerCancel,
+                  onPointerDown: (event) {
+                    _pointers[event.pointer] = event.position;
+                    if (_pointers.length > 1) return _beginPinch();
+                    _gestures.pointerDown(
+                      event,
+                      width: width,
+                      height: constraints.maxHeight,
+                    );
+                  },
+                  onPointerMove: (event) {
+                    if (_pointers.containsKey(event.pointer)) {
+                      _pointers[event.pointer] = event.position;
+                    }
+                    if (_pointers.length > 1) return _updatePinch();
+                    _gestures.pointerMove(event);
+                  },
+                  onPointerUp: (event) {
+                    _pointers.remove(event.pointer);
+                    if (_pinching) {
+                      if (_pointers.isEmpty) _endPinch();
+                      return;
+                    }
+                    _gestures.pointerUp(event);
+                  },
+                  onPointerCancel: (event) {
+                    _pointers.remove(event.pointer);
+                    if (_pinching) {
+                      if (_pointers.isEmpty) _endPinch();
+                      return;
+                    }
+                    _gestures.pointerCancel(event);
+                  },
                   child: GestureDetector(
                     behavior: HitTestBehavior.opaque,
                     onTapUp: (_) {
-                      // 刚做完滑动/亮度手势时抬手的事件不应再被当成「点按」。
-                      if (_gestures.suppressTap) return;
+                      // 刚做完滑动/亮度/捏合手势时抬手的事件不应被当成「点按」。
+                      if (_gestures.suppressTap ||
+                          DateTime.now().isBefore(_pinchTapGuard)) {
+                        return;
+                      }
                       session.togglePlayback();
                     },
                     onLongPressStart: (details) => _pressStart(details, width),

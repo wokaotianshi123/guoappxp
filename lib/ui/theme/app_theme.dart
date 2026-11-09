@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
+import 'motion.dart';
+
 abstract final class AppTheme {
   static ThemeMode mode(String preference) => switch (preference) {
     'light' => ThemeMode.light,
@@ -37,6 +39,9 @@ abstract final class AppTheme {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
+      // 手机 / 平板 / 桌面统一「淡出 + 轻微缩放」，电视只淡入淡出；
+      // Android 上这套转场同时承载侧滑返回的跟手预览（见 motion.dart）。
+      pageTransitionsTheme: pageTransitions(television: television),
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
         foregroundColor: scheme.onSurface,

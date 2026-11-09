@@ -598,6 +598,10 @@ class _FollowPageState extends State<FollowPage> {
           : null,
       selected: selection?.contains(drama.id),
       onTap: selection == null ? () => _open(drama) : () => _toggle(drama.id),
+      // 长按（桌面上右键）直接进入多选并选中这一部，不用先点「编辑」。
+      onMore: selection == null
+          ? () => setState(() => _selection = {drama.id})
+          : null,
     );
   }
 

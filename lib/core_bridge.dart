@@ -409,6 +409,10 @@ class NativeRepository extends AppRepository {
   int _readSequence = 0;
   final _activeReads = <String, int>{};
 
+  /// 下载列表的上一份结果：指纹 + 解析好的任务。轮询时把指纹带回去，
+  /// 列表没变时核心只回指纹，省掉整份列表的序列化 / 传输 / 解析。
+  (String, List<DownloadJob>) _downloadCache = ('', const []);
+
   void _adminPermission() {
     if (access != null && (access!.locked || !access!.profile.admin)) {
       throw AppFailure('仅管理员可修改本机资源设置');
@@ -1089,10 +1093,22 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<List<DownloadJob>> downloads() async {
-    final result = await _call({'action': 'downloads'});
-    return (result['jobs'] as List? ?? [])
-        .whereType<Map>()
-        .map((value) => DownloadJob.fromJson(Map<String, dynamic>.from(value)))
+    final result = await _call({
+      'action': 'downloads',
+      'since': _downloadCache.$1,
+    });
+    if (result['jobs'] case final List jobs) {
+      _downloadCache = (
+        result['fingerprint'] as String? ?? '',
+        jobs
+            .whereType<Map>()
+            .map(
+              (value) => DownloadJob.fromJson(Map<String, dynamic>.from(value)),
+            )
+            .toList(),
+      );
+    }
+    return _downloadCache.$2
         .where(
           (job) =>
               SourceSite.isAvailable(job.drama.source) &&

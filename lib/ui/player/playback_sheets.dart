@@ -7,15 +7,23 @@ import '../../playback_session.dart';
 import '../theme/app_theme.dart';
 import 'danmaku_settings.dart';
 
+/// 播放页弹层用的深色主题缓存。
+///
+/// 亮色主题下，播放页每次刷新（进度、缓冲、播控显隐都会触发）都要一份深色
+/// 配色；`AppTheme.build` 会重新构造整套 ColorScheme 与组件主题，很贵。这里
+/// 按主题色（seed）缓存一份，同一次播放里始终复用同一个 ThemeData。
+(Color, ThemeData)? _darkPlayerTheme;
+
 ThemeData playerTheme(BuildContext context) {
   final theme = Theme.of(context);
-  return theme.brightness == Brightness.dark
-      ? theme
-      : AppTheme.build(
-          theme.colorScheme.primary,
-          Brightness.dark,
-          television: false,
-        );
+  if (theme.brightness == Brightness.dark) return theme;
+  final seed = theme.colorScheme.primary;
+  if (_darkPlayerTheme case (final cached, final dark) when cached == seed) {
+    return dark;
+  }
+  final dark = AppTheme.build(seed, Brightness.dark, television: false);
+  _darkPlayerTheme = (seed, dark);
+  return dark;
 }
 
 Future<void> showPlayerSheet(

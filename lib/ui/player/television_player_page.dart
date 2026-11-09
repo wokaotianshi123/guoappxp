@@ -4,7 +4,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 
 import '../../playback_preferences.dart';
 import '../../playback_session.dart';
@@ -14,6 +13,7 @@ import '../widgets/cover_image.dart';
 import 'danmaku_overlay.dart';
 import 'playback_handle.dart';
 import 'player_surface.dart';
+import 'player_video.dart';
 
 enum _Menu { speed, quality, route }
 
@@ -159,7 +159,14 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       unawaited(_playing?.cancel());
       _playing = player.stream.playing.listen((playing) {
         if (!mounted) return;
-        playing ? _scheduleHide() : _reveal();
+        // 自动连播下一集时播放器会先停后播：换集瞬间的 playing=false 不是
+        // 用户暂停，不该把已经隐藏的播控重新弹出来（#83）。只有手动暂停，
+        // 或最后一集播完（没有下一集）才显示播控。
+        if (playing) {
+          _scheduleHide();
+        } else if (_session.paused || !_session.hasNext) {
+          _reveal();
+        }
         setState(() {});
       });
     }
@@ -582,12 +589,10 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                     if (widget.videoSurface case final surface?)
                       surface(_session.player)
                     else
-                      Video(
+                      PlayerVideo(
                         key: ValueKey(_session.player),
-                        controller: widget.handle.video(_session.player),
-                        controls: NoVideoControls,
-                        fill: Colors.black,
-                        pauseUponEnteringBackgroundMode: false,
+                        handle: widget.handle,
+                        player: _session.player,
                       ),
                     DanmakuOverlay(
                       controller: _session.danmaku,

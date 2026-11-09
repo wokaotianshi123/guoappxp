@@ -549,6 +549,10 @@ class _HistoryPageState extends State<HistoryPage> {
               (_) => DetailPage(store: widget.store, drama: drama),
             )
           : () => _toggle(drama.id),
+      // 长按 / 右键直接进入多选并选中这一条。
+      onMore: selection == null
+          ? () => setState(() => _selection = {drama.id})
+          : null,
     );
   }
 

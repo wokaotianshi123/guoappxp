@@ -8,14 +8,17 @@ import '../../local_store.dart';
 import '../../models.dart';
 import '../app_scope.dart';
 import '../shell/app_shell.dart';
+import '../theme/motion.dart';
 import '../detail/detail_page.dart';
 import '../widgets/bar_button.dart';
 import '../widgets/category_tabs.dart';
 import '../widgets/choice_panel.dart';
 import '../widgets/drama_grid.dart';
+import '../widgets/follow_button.dart';
 import '../widgets/page_header.dart';
 import '../widgets/source_bar.dart';
 import '../widgets/status_view.dart';
+import '../widgets/swipe_switch.dart';
 import 'explore_hero.dart';
 import 'source_actions.dart';
 
@@ -31,6 +34,7 @@ class ExplorePageState extends State<ExplorePage> {
   ExploreFeed? _explore;
   final _scroll = ScrollController();
   final _tabsKey = GlobalKey();
+  final _refreshKey = GlobalKey<RefreshIndicatorState>();
   String _shown = '';
 
   @override
@@ -51,6 +55,22 @@ class ExplorePageState extends State<ExplorePage> {
     await _explore?.refresh();
   }
 
+  /// 再点一次「发现」标签：不在顶部先回到顶部，已经在顶部就刷新。
+  void reselect() {
+    if (!_scroll.hasClients) return;
+    if (_scroll.offset <= 0) {
+      unawaited(_refreshKey.currentState?.show());
+      return;
+    }
+    unawaited(
+      _scroll.animateTo(
+        0,
+        duration: Motion.of(context, Motion.long),
+        curve: Motion.enter,
+      ),
+    );
+  }
+
   void _open(Drama drama) => openPage<void>(
     context,
     (_) => DetailPage(store: widget.store, drama: drama),
@@ -68,13 +88,20 @@ class ExplorePageState extends State<ExplorePage> {
     if (value != null) explore.select(value);
   }
 
-  void _resetScroll(ExploreFeed explore) {
-    final shown = '${explore.source?.id}|${explore.tab.id}';
+  void _resetScroll(ExploreFeed explore, {required bool deferred}) {
+    final source = '${explore.source?.id}|';
+    final shown = '$source${explore.tab.id}';
     if (shown == _shown) return;
+    final switched = _shown.startsWith(source);
     _shown = shown;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (_scroll.hasClients) _scroll.jumpTo(0);
-    });
+    // 滑动切换时由 SwipeSwitch 在切换动画的中段调 _toTop，这里不再抢着跳，
+    // 否则旧内容会先「闪」一下到顶部。
+    if (deferred && switched) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _toTop());
+  }
+
+  void _toTop() {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
   }
 
   @override
@@ -86,7 +113,7 @@ class ExplorePageState extends State<ExplorePage> {
       final form = AppScope.formFactorOf(context);
       final television = form == FormFactor.television;
       final desktop = form == FormFactor.window;
-      _resetScroll(explore);
+      _resetScroll(explore, deferred: _swipes(form));
       if (source == null) {
         return Scaffold(
           body: SafeArea(
@@ -151,13 +178,42 @@ class ExplorePageState extends State<ExplorePage> {
                   ],
                 ),
               if (!television || explore.feed!.items.isEmpty) tabs,
-              Expanded(child: _content(explore, inset, television, tabs)),
+              Expanded(
+                child: _swipeTabs(
+                  explore,
+                  form,
+                  _content(explore, inset, television, tabs),
+                ),
+              ),
             ],
           ),
         ),
       );
     },
   );
+
+  /// 手机 / 平板可以左右滑切换分类；电视用遥控器、桌面用鼠标点标签。
+  bool _swipes(FormFactor form) =>
+      form == FormFactor.phone || form == FormFactor.pad;
+
+  Widget _swipeTabs(ExploreFeed explore, FormFactor form, Widget child) {
+    final tabs = explore.tabs;
+    final index = tabs.indexWhere((tab) => tab.id == explore.tab.id);
+    if (!_swipes(form) || index < 0) return child;
+    return SwipeSwitch(
+      key: ValueKey(explore.source?.id),
+      index: index,
+      count: tabs.length,
+      // 新分类还没加载出来时先让旧内容变暗停留，加载好再换，避免闪一下空白。
+      ready: switch (explore.feed) {
+        final feed? => feed.items.isNotEmpty || !feed.loading,
+        null => true,
+      },
+      onSwitch: (index) => explore.select(tabs[index].id),
+      onEnter: _toTop,
+      child: child,
+    );
+  }
 
   Widget _content(
     ExploreFeed explore,
@@ -213,6 +269,7 @@ class ExplorePageState extends State<ExplorePage> {
                 rankOf: explore.rankOf,
                 autofocus: television && hero == null,
                 onOpen: _open,
+                onMore: (drama) => quickFollow(context, widget.store, drama),
               ),
             ),
             SliverPadding(
@@ -232,7 +289,11 @@ class ExplorePageState extends State<ExplorePage> {
               feed: feed,
               child: television
                   ? scroll
-                  : RefreshIndicator(onRefresh: explore.refresh, child: scroll),
+                  : RefreshIndicator(
+                      key: _refreshKey,
+                      onRefresh: explore.refresh,
+                      child: scroll,
+                    ),
             ),
             if (feed.loading)
               const Positioned(

@@ -35,8 +35,10 @@ const (
 	sourceGuipian       = "guipian"
 	sourceHanxiaoquan   = "hanxiaoquan"
 	sourceHeitao        = "heitao"
-	sourceA123          = "a123"
-	sourceIkanbot       = "ikanbot"
+	// sourceBeabox 笔盒：站点域名常换，取流前会从发布页发现可用线路。
+	sourceBeabox  = "beabox"
+	sourceA123    = "a123"
+	sourceIkanbot = "ikanbot"
 	// sourceFanqie 番茄：目录/搜索/详情/取流转发给本机番茄内容引擎（127.0.0.1:18921）。
 	sourceFanqie   = "fanqie"
 	sourceXChina   = "xchina"
@@ -118,7 +120,7 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceHeitao, sourceIkanbot, sourceA123, sourceFanqie, sourceXChina, sourceTheporny:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceHeitao, sourceBeabox, sourceIkanbot, sourceA123, sourceFanqie, sourceXChina, sourceTheporny:
 		return true
 	}
 	return isDuanjuProviderSource(source)
@@ -148,6 +150,8 @@ func canonicalProviderSource(source string) string {
 		return sourceJinguo
 	case "heitao", "heitaodj.com", "www.heitaodj.com":
 		return sourceHeitao
+	case "beabox", "beabox.cc", "beabox.live", "笔盒":
+		return sourceBeabox
 	case "dsd", "dsd.com.se", "www.dsd.com.se":
 		return sourceDSD
 	case "cloudfront":
@@ -286,6 +290,8 @@ func (d *Downloader) GetHuangguoDetail(ctx context.Context, source, sourceID str
 		return d.fetchJinguoDetail(ctx, sourceID)
 	case sourceHeitao:
 		return d.fetchHeitaoDetail(ctx, sourceID)
+	case sourceBeabox:
+		return d.fetchBeaboxDetail(ctx, sourceID)
 	case sourceDSD:
 		return d.fetchDSDDetail(ctx, sourceID)
 	case sourceSorani:

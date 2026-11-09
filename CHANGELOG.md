@@ -2,6 +2,38 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.3.0+115
+
+把 `guoappxpx` 里的 15 项体验与性能改进移植进本项目，并新增站源「笔盒」。Android / Windows / macOS / iOS / 本地服务版同步生效。
+
+### 改进
+- **发现页 / 下载页支持左右滑切换**：新增 `ui/widgets/swipe_switch.dart` 的 `SwipeSwitch`——内容跟手平移，松手按位移 + 速度判定翻页，未过阈值回弹；翻页后旧内容变暗停留 1.5 秒再换新内容，切换动画走统一曲线。发现页用它切换分类（分类栏跟着滚到选中项），下载页用它切换「下载中 / 已下载」（多选状态下手势关闭，避免和拖选抢事件）。看过的分类回来时仍是原来的列表与滚动位置。
+- **详情页选集区支持左右滑切分组**：`detail_page.dart` 给分组内容套同一个 `SwipeSwitch`，切到下一组时把对应的分组按钮 `ensureVisible` 滚到可见；手机详情页另加下拉刷新（`RefreshIndicator` + `AlwaysScrollableScrollPhysics`）。
+- **再点一次底部当前标签回到顶部 / 刷新**：`AppShell._tap` 不再只看「是否同标签」——同标签时先 `popUntil(isFirst)` 回到该标签首页，发现页交给 `ExplorePageState.reselect()`（不在顶部就回到顶部，已顶部则触发一次下拉刷新），其它标签用每标签独立的 `PrimaryScrollController` 回到 `minScrollExtent`。平板 / 桌面侧栏走同一条 `_tap`，电视顶栏行为不变。
+- **长按 / 右键快速进入多选**：追剧、观看记录、已下载的剧、下载任务、剧集列表的每一集都支持长按直接进多选并选中该项（桌面右键等效，`onSecondaryTap`）。发现页与搜索结果的海报长按改成「快速追剧 / 取消追剧」，用 `SnackBar` 的「撤销」兜底；最近搜索的长按 / 右键删除单条（新增 `LocalStore.forgetSearch()`，按归一化文本去重删除）。
+- **竖屏播放双指缩放铺满**：手机竖屏播放页支持双指张开把画面放大到去掉上下黑边（cover 比例线性插值，过半吸附到铺满），捏合还原，退出播放自动还原；换集会重置缩放。捏合期间 `PageView` 的滑动关掉、并加 300ms 的防误触窗口，不会顺手暂停或切集。
+- **动画体系统一**：新增 `ui/theme/motion.dart`（`Motion.short / medium / long`、`enter / exit / standard`、`reduced()` 读系统「减弱动态效果」、`pageTransitions()`、`fadeRoute()`）与 `ui/widgets/motion/motion_widgets.dart`（`FadeSwitcher`、`ToggleIconSwitcher`、`fadeInFrameBuilder`、`EnterOnce`、`coverHeroTag`）；`AppTheme` 的 `pageTransitionsTheme` 改用这套：Android 上是「缩放 0.92 + 淡入」，电视端纯淡入。
+- **新增站源「笔盒」（beabox.cc）**：默认关闭，可在站源管理里打开。站点域名经常更换，当前线路失效时会从发布页自动发现可用域名并记住上次可用的线路（落盘 `beabox-sites.json`，重启直接使用）；「全部」列出最新视频，分类取站点热门标签，支持翻页、详情、分集与在线搜索，`needParse` 的线路会自动向站点接口换取播放地址。
+- **磁力搜索页：没有结果的站源标签暂时隐藏**：抓完却一条都没搜到的站源不再占一行标签（还在抓的站仍显示「…」保留进度），免得一排「0 条 / ✕」把有结果的标签挤进「更多」。计数行补一句「N 个站源没有结果（标签已收起）」，下次搜索 / 翻页时标签会重新出现。
+
+### 修复
+- **修复 Android 返回键一次退两级**：`ui/app.dart` 的 `_escape` 原来同时处理 `LogicalKeyboardKey.goBack` 与系统 `popRoute`（`PopScope` → `Navigator.maybePop`），Android 手机上物理返回键、三键导航、侧滑手势、电视遥控器返回都会两路同时触发，一次退两层页面。现在键盘只处理 `Esc`，返回键统一交给系统路由；桌面 Esc 行为不变。`player_page.dart` 的同类分支一并收敛，`AndroidManifest.xml` 打开 `enableOnBackInvokedCallback` 以走预测返回。
+- **修复电视连播换集时已隐藏的播控重新弹出（#83）**：播放状态监听改成「换集只重新计时隐藏，手动暂停或最后一集播完才显示」，自动连播不再每隔一集闪一次播控。#83
+- **降低 Windows 播放显存占用（#81）**：新增 `ui/player/player_video.dart` 的 `PlayerVideo`，用 `LayoutBuilder` 量出画面实际显示的像素尺寸（不超过视频原始分辨率），窗口尺寸变化约 0.3 秒后重新 `setSize()`，不再按原始 4K 分辨率申请纹理。#81
+- **消除播放时每 5 秒一次的卡顿**：定时保存进度只写记录、不通知监听者（`LocalStore.saveWatch(quiet: true)` / `PlaybackSession.saveProgress(quiet: true)`），被盖住的首页、详情、历史不再每次保存都整体重绘；换集、暂停、退出时照常刷新（`_savedQuietly` 标志保证 quiet 之后必定补刷一次）。
+- **播控隐藏后进度条与时间不再刷新**：`player_surface.dart` 只在播控可见（或暂停 / 缓冲 / 未就绪）时监听 position / buffer 流，手机竖屏、横屏、平板、桌面与电视播放页共用这一层，隐藏后不再逐帧重建进度条。
+- **降低弹幕耗电**：`danmaku_overlay.dart` 从「每帧重建整棵 widget 树」改成共用一个 `Ticker` 驱动 `ValueNotifier<double>`，由 `RenderProxyBox` 在 paint 阶段平移并裁剪窗口，界面树不再每帧重建。
+- **下载记录多时降低后台开销**：核心侧新增 `snapshotSince(since)`，用 `sha256(任务 JSON)[:8]` 做指纹，列表没变化时只回一个指纹；Dart 侧 `NativeRepository.downloads()` 缓存上次解析结果，指纹未变直接复用，不再每 2 秒重新传输并解析全部记录。
+- **亮色主题下播放页不再反复生成深色配色**：`playback_sheets.dart` 的 `playerTheme` 按源主题缓存生成的深色 `ThemeData`，主题没变就复用。
+- **修复 Android 侧滑返回没有预览**：`motion.dart` 里的 `_FadeScalePageTransitionsBuilder` 在 Android 上接 `WidgetsBindingObserver.handleStartBackGesture`，拖动手势时页面跟手缩小 / 平移 / 露出上一页，松手淡出缩小完成返回，拖回则回弹；打开动画没播完也能侧滑。页面通过 `PageRoute.popGestureEnabled` / `isCurrent` 判断能不能接手势，不可返回时框架照常处理。
+
+### 实现与约束
+- **笔盒站源的取数与线路发现**：新增 `provider_beabox.go`。发布页的 `__ENC_DOMAINS` 是异或过的 base64 域名池、`__KEY` 是异或密钥，解析后按主机名白名单校验（https、无端口无路径）；接口返回的信封 `data` 是 `AES-128-CBC` 十六进制密文（固定 key + 前置 IV + PKCS#7），解码后才是业务 JSON。线路尝试顺序是「上次可用 → 内置线路 → 发布页发现」，发现结果 30 分钟内复用、失败 1 分钟后重试；站点状态写在 `<dataDir>/beabox-sites.json`，只接受 `https://host` 形式的地址，最多 256 条。
+- **笔盒接入点**：`sourceBeabox` 常量与 `canonicalProviderSource` / `isHuangguoProviderSource`、`GetHuangguoDetail` 分发、`providerBaseURL`、`resolveBeaboxMedia`（播放地址解析）、`nativeCategories` / `validNativeCategory`、`app_cover_metadata`、`nativeCatalog`（分类 + 空列表不报错）、`nativeSourceSupportsSearch` / `nativeSearchSource`（在线搜索）逐处接入；Dart 侧只加一条 `SourceSite('beabox', '笔盒', ...)` 到 `restrictedValues`（默认关闭）与 `pagedSearch`。
+- **笔盒封面是文本文件**：部分线路把封面存成 `.txt`，内容是异或 18 的 `data:image/...;base64` 文本。`app_covers.go` 的 `nativeDecodeCover` 增加 `nativeDecodeTextCover` 一步先试这类封面，失败再走原来的 AES / 异或兜底。
+- **跨端一致**：本次改动只动 Flutter 与 Go 核心，本地服务版网页没有新增路由；侧滑返回、双指缩放、标签回顶这些手势只在前端实现，网页端不受影响。
+- **未提交**：本轮改动全部留在工作区，未做 git 提交。
+
 ## 1.2.9+114
 
 把 `cisou.apk`（超强磁力搜索）的磁力搜索与 `cibo.apk`（种子磁力播放器）的磁力播放移植进 guoappxp：Flutter App 主页新增「磁力」标签、本地服务版网页顶栏新增「磁力」入口，搜索结果可直接调用项目原有播放器播放。Android / Windows / macOS / iOS / 本地服务版同步生效。

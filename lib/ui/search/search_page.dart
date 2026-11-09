@@ -1,6 +1,7 @@
 import 'dart:async';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../app_build.dart';
 import '../../catalog_sort.dart';
@@ -13,6 +14,7 @@ import '../app_scope.dart';
 import '../detail/detail_page.dart';
 import '../shell/app_shell.dart';
 import '../widgets/drama_grid.dart';
+import '../widgets/follow_button.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/search_field.dart';
 import '../widgets/status_view.dart';
@@ -97,6 +99,11 @@ class _SearchPageState extends State<SearchPage> {
   /// 来决定能不能显示。
   bool get _allSourceToggle =>
       allSourcesEnabled || widget.store.sources.length > 1;
+
+  void _forget(String query) {
+    unawaited(HapticFeedback.selectionClick());
+    unawaited(widget.store.forgetSearch(query).catchError((Object _) {}));
+  }
 
   void _submit(String text) {
     final query = text.trim();
@@ -479,6 +486,7 @@ class _SearchPageState extends State<SearchPage> {
                 items: results.items,
                 autofocus: television,
                 onOpen: _open,
+                onMore: (drama) => quickFollow(context, widget.store, drama),
               ),
             ),
             SliverPadding(
@@ -564,6 +572,7 @@ class _SearchPageState extends State<SearchPage> {
               items: progress.items,
               autofocus: television,
               onOpen: _open,
+              onMore: (drama) => quickFollow(context, widget.store, drama),
               subtitleOf: (drama) {
                 final name = SourceSite.byId(drama.source).name;
                 return drama.peers.isEmpty
@@ -722,10 +731,15 @@ class _SearchPageState extends State<SearchPage> {
               for (final query in recent)
                 FocusRing(
                   radius: 8,
-                  child: ActionChip(
-                    avatar: const Icon(Icons.history_rounded, size: 16),
-                    label: Text(query),
-                    onPressed: () => _submit(query),
+                  child: GestureDetector(
+                    // 长按（桌面上右键）只删这一条，不用清空整个列表。
+                    onLongPress: () => _forget(query),
+                    onSecondaryTap: () => _forget(query),
+                    child: ActionChip(
+                      avatar: const Icon(Icons.history_rounded, size: 16),
+                      label: Text(query),
+                      onPressed: () => _submit(query),
+                    ),
                   ),
                 ),
             ],

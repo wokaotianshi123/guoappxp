@@ -12,6 +12,7 @@ import '../widgets/drama_grid.dart';
 import '../widgets/drama_tile.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/status_view.dart';
+import '../widgets/swipe_switch.dart';
 import 'download_actions.dart';
 import 'downloaded_drama_page.dart';
 
@@ -47,6 +48,9 @@ class _DownloadsPageState extends State<DownloadsPage>
   bool _busy = false;
 
   bool get _pendingTab => _tabs.index == 0;
+
+  /// 已下载标签页：多选单位是「部」，不是「集」。
+  bool get _downloadedTab => _tabs.index == 1;
 
   @override
   void initState() {
@@ -145,17 +149,21 @@ class _DownloadsPageState extends State<DownloadsPage>
         for (final job in pendingDownloads(jobs))
           if (shown(job.drama)) job,
       ];
+      final downloaded = [
+        for (final drama in downloadedDramas(jobs))
+          if (shown(drama.drama)) drama,
+      ];
       final view = (
         pending: pending,
-        downloaded: [
-          for (final drama in downloadedDramas(jobs))
-            if (shown(drama.drama)) drama,
-        ],
+        downloaded: downloaded,
         sources: sources,
         source: source,
-        selection: _selection?.intersection({
-          for (final job in pending) job.id,
-        }),
+        // 两个标签页的多选单位不同：下载中按任务（集），已下载按剧（部）。
+        selection: _selection?.intersection(
+          index == 0
+              ? {for (final job in pending) job.id}
+              : {for (final item in downloaded) item.drama.id},
+        ),
       );
       final body = !widget.downloads.available
           ? const StatusView(
@@ -165,14 +173,29 @@ class _DownloadsPageState extends State<DownloadsPage>
           : index == 0
           ? _pendingList(context, view)
           : _downloadedGrid(context, view);
+      // 手机 / 平板：左右滑切换「下载中 / 已下载」。多选时不响应，
+      // 否则拖选和滑动会互相抢手势。
+      final touch = switch (AppScope.formFactorOf(context)) {
+        FormFactor.phone || FormFactor.pad => true,
+        FormFactor.window || FormFactor.television => false,
+      };
+      final swiped = touch
+          ? SwipeSwitch(
+              index: index,
+              count: _tabs.length,
+              enabled: _selection == null,
+              onSwitch: _tabs.animateTo,
+              child: body,
+            )
+          : body;
       return PopScope(
         canPop: _selection == null,
         onPopInvokedWithResult: (didPop, _) {
           if (!didPop) setState(() => _selection = null);
         },
         child: AppScope.formFactorOf(context) == FormFactor.phone
-            ? _phone(context, view, body)
-            : _wide(context, view, body),
+            ? _phone(context, view, swiped)
+            : _wide(context, view, swiped),
       );
     },
   );
@@ -213,20 +236,72 @@ class _DownloadsPageState extends State<DownloadsPage>
     );
   }
 
+  bool _editable(_View view) =>
+      _downloadedTab ? view.downloaded.isNotEmpty : view.pending.isNotEmpty;
+
   Widget _editButton(_View view, {bool icon = true}) => _textButton(
     '编辑',
-    view.pending.isEmpty ? null : () => setState(() => _selection = {}),
+    _editable(view) ? () => setState(() => _selection = {}) : null,
     icon: icon ? Icons.check_box_outlined : null,
   );
 
+  /// 多选标题：已下载按「部」，下载中按「集」。
+  String _selectedTitle(int count) =>
+      '已选择 $count ${_downloadedTab ? '部' : '集'}';
+
   Widget _selectAll(_View view) {
-    final all = {for (final job in view.pending) job.id};
+    final all = _downloadedTab
+        ? {for (final item in view.downloaded) item.drama.id}
+        : {for (final job in view.pending) job.id};
     final everything = view.selection!.length == all.length;
     return _textButton(
       everything ? '取消全选' : '全选',
       () => setState(() => _selection = everything ? {} : all),
     );
   }
+
+  /// 删除已下载的多部剧：把选中的剧展开成该剧全部已完成的分集任务。
+  Future<void> _deleteDownloaded(_View view) async {
+    final chosen = {
+      for (final item in view.downloaded)
+        if (view.selection!.contains(item.drama.id))
+          for (final job in item.episodes) job.id,
+    };
+    if (chosen.isEmpty ||
+        !await confirmRemoval(
+          context,
+          title: '删除已下载的 ${view.selection!.length} 部剧？',
+          message: '共 ${chosen.length} 集的视频文件会一起删除。',
+          action: '删除',
+        ) ||
+        !mounted) {
+      return;
+    }
+    await _run(() => removeDownloads(context, chosen.toList(), done: '已删除'));
+    if (mounted) setState(() => _selection = null);
+  }
+
+  Widget _deleteButton(_View view) {
+    final colors = Theme.of(context).colorScheme;
+    final selection = view.selection!;
+    return FocusRing(
+      radius: 20,
+      child: FilledButton.icon(
+        style: FilledButton.styleFrom(
+          backgroundColor: colors.error,
+          foregroundColor: colors.onError,
+        ),
+        onPressed: selection.isEmpty || _busy
+            ? null
+            : () => _deleteDownloaded(view),
+        icon: const Icon(Icons.delete_outline_rounded, size: 18),
+        label: const Text('删除'),
+      ),
+    );
+  }
+
+  Widget _selectionAction(_View view) =>
+      _downloadedTab ? _deleteButton(view) : _cancelButton(view);
 
   Widget _cancelButton(_View view) {
     final colors = Theme.of(context).colorScheme;
@@ -297,7 +372,8 @@ class _DownloadsPageState extends State<DownloadsPage>
                     icon: const Icon(Icons.play_arrow_rounded),
                   ),
                   _editButton(view, icon: false),
-                ],
+                ] else if (_downloadedTab && view.downloaded.isNotEmpty)
+                  _editButton(view, icon: false),
                 const SizedBox(width: 8),
               ],
               bottom: PreferredSize(
@@ -311,7 +387,7 @@ class _DownloadsPageState extends State<DownloadsPage>
                 onPressed: () => setState(() => _selection = null),
                 icon: const Icon(Icons.close_rounded),
               ),
-              title: Text('已选择 ${selection.length} 集'),
+              title: Text(_selectedTitle(selection.length)),
               actions: [_selectAll(view), const SizedBox(width: 8)],
             ),
       body: SafeArea(
@@ -330,7 +406,7 @@ class _DownloadsPageState extends State<DownloadsPage>
           : SafeArea(
               child: Padding(
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                child: SizedBox(height: 48, child: _cancelButton(view)),
+                child: SizedBox(height: 48, child: _selectionAction(view)),
               ),
             ),
     );
@@ -363,7 +439,7 @@ class _DownloadsPageState extends State<DownloadsPage>
                       child: Text(
                         view.selection == null
                             ? '下载'
-                            : '已选择 ${view.selection!.length} 集',
+                            : _selectedTitle(view.selection!.length),
                         maxLines: 1,
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(
@@ -375,13 +451,14 @@ class _DownloadsPageState extends State<DownloadsPage>
                   ),
                   if (view.selection != null) ...[
                     _selectAll(view),
-                    _cancelButton(view),
+                    _selectionAction(view),
                     _textButton('完成', () => setState(() => _selection = null)),
                   ] else if (_pendingTab && view.pending.isNotEmpty) ...[
                     _pauseAll(view),
                     _resumeAll(view),
                     _editButton(view),
-                  ],
+                  ] else if (_downloadedTab && view.downloaded.isNotEmpty)
+                    _editButton(view),
                 ],
               ),
             ),
@@ -473,6 +550,12 @@ class _DownloadsPageState extends State<DownloadsPage>
               busy: _busy,
               onToggle: () => _toggle(view.pending[index - 1].id),
               onControl: () => _control(view.pending[index - 1]),
+              // 长按 / 右键直接进入多选并选中这一条任务。
+              onMore: view.selection == null
+                  ? () => setState(() {
+                      _selection = {view.pending[index - 1].id};
+                    })
+                  : null,
             ),
     );
   }
@@ -526,14 +609,26 @@ class _DownloadsPageState extends State<DownloadsPage>
                     '${item.episodes.length} 集 · ${formatBytes(item.bytes)}',
                 tag: SourceSite.byId(item.drama.source).name,
                 badge: item.pending > 0 ? '${item.pending} 集下载中' : null,
-                onTap: () => openPage<void>(
-                  context,
-                  (_) => DownloadedDramaPage(
-                    store: widget.store,
-                    downloads: widget.downloads,
-                    drama: item.drama,
-                  ),
-                ),
+                selected: view.selection?.contains(item.drama.id),
+                onTap: () {
+                  // 多选状态里点海报是勾选/取消，不再跳进剧集页。
+                  if (view.selection != null) {
+                    _toggle(item.drama.id);
+                    return;
+                  }
+                  openPage<void>(
+                    context,
+                    (_) => DownloadedDramaPage(
+                      store: widget.store,
+                      downloads: widget.downloads,
+                      drama: item.drama,
+                    ),
+                  );
+                },
+                // 长按 / 右键直接进入多选并选中这部剧。
+                onMore: view.selection == null
+                    ? () => setState(() => _selection = {item.drama.id})
+                    : null,
               ),
             );
           },
@@ -552,6 +647,7 @@ class _JobRow extends StatelessWidget {
     required this.busy,
     required this.onToggle,
     required this.onControl,
+    this.onMore,
   });
   final DownloadJob job;
   final double? conversion;
@@ -559,6 +655,7 @@ class _JobRow extends StatelessWidget {
   final bool busy;
   final VoidCallback onToggle;
   final VoidCallback onControl;
+  final VoidCallback? onMore;
 
   @override
   Widget build(BuildContext context) {
@@ -597,6 +694,8 @@ class _JobRow extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: selected == null ? null : onToggle,
+            onLongPress: onMore,
+            onSecondaryTap: onMore,
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Row(

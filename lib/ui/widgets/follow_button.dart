@@ -13,6 +13,41 @@ Future<void> _toggle(BuildContext context, LocalStore store, Drama drama) =>
       }
     });
 
+/// 长按海报 / 搜索结果的快捷追剧：直接切换追剧状态，底部提示可撤销。
+/// 电视端没有长按，桌面上右键等效。
+Future<void> quickFollow(
+  BuildContext context,
+  LocalStore store,
+  Drama drama,
+) async {
+  final messenger = ScaffoldMessenger.of(context);
+  final followed = store.isFavorite(drama.id);
+  try {
+    await store.toggleFavorite(drama);
+  } catch (failure) {
+    messenger.showSnackBar(SnackBar(content: Text('$failure')));
+    return;
+  }
+  messenger
+    ..hideCurrentSnackBar()
+    ..showSnackBar(
+      SnackBar(
+        content: Text(
+          followed ? '已取消追剧「${drama.title}」' : '已追剧「${drama.title}」',
+        ),
+        action: SnackBarAction(
+          label: '撤销',
+          onPressed: () => store
+              .toggleFavorite(drama)
+              .catchError(
+                (Object failure) =>
+                    messenger.showSnackBar(SnackBar(content: Text('$failure'))),
+              ),
+        ),
+      ),
+    );
+}
+
 class FollowPill extends StatelessWidget {
   const FollowPill({
     super.key,

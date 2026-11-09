@@ -526,6 +526,22 @@ class LocalStore extends ChangeNotifier {
     });
   }
 
+  /// 删掉一条最近搜索（长按 / 右键单条）。匹配时忽略全角、大小写和标点，
+  /// 与去重规则一致，避免「名 字」和「名字」删不掉另一条。
+  Future<void> forgetSearch(String text) {
+    final epoch = _epoch;
+    return _queue(() async {
+      if (locked || epoch != _epoch) return;
+      final target = normalizedSearchText(text);
+      final entries = [
+        for (final entry in recentSearches)
+          if (normalizedSearchText(entry) != target) entry,
+      ];
+      await _commit({_key('recentSearches'): jsonEncode(entries)});
+      _notify();
+    });
+  }
+
   Future<void> clearRecentSearches() => _setting(_key('recentSearches'), '[]');
 
   Future<void> _commit(
@@ -693,10 +709,17 @@ class LocalStore extends ChangeNotifier {
     });
   }
 
-  Future<void> saveWatch(WatchEntry entry) {
+  /// 保存一条观看进度。
+  ///
+  /// [quiet] 用于播放页每 5 秒的定时保存：只把记录写下去，不通知监听者。
+  /// 否则被播放页盖住的首页、详情页和历史页会跟着整体重绘（约 2600 个控件，
+  /// 实测 15～26 毫秒），弹幕会顿一下。换了剧 / 换了集，或从播放页退出、
+  /// 暂停时走非 quiet 调用，界面照常刷新。
+  Future<void> saveWatch(WatchEntry entry, {bool quiet = false}) {
     final epoch = _epoch;
     return _queue(() async {
       if (!allowsSource(entry.drama.source) || epoch != _epoch) return;
+      final latest = _history.values.firstOrNull;
       final previous = _history[entry.drama.id]?.drama;
       final current = previous == null
           ? entry
@@ -731,7 +754,14 @@ class LocalStore extends ChangeNotifier {
         },
       });
       _loadLibrary();
-      _notify();
+      // 定时静默保存只在「换了剧 / 换了集」时才通知，进度条的细微前进不
+      // 需要首页、详情页、历史页跟着重绘。
+      if (!quiet ||
+          latest == null ||
+          latest.drama.id != current.drama.id ||
+          latest.episode != current.episode) {
+        _notify();
+      }
     });
   }
 

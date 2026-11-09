@@ -9,6 +9,7 @@ import '../../follow_updater.dart';
 import '../../local_store.dart';
 import '../../models.dart';
 import '../app_scope.dart';
+import '../theme/motion.dart';
 import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
@@ -53,6 +54,8 @@ class _AppShellState extends State<AppShell> {
     for (final _ in AppTab.values) GlobalKey<NavigatorState>(),
   ];
   final _tabFocus = [for (final _ in AppTab.values) FocusNode()];
+  // 每个标签一份主滚动控制器：再点一次当前标签要能回到列表顶部。
+  final _tabScrolls = [for (final _ in AppTab.values) ScrollController()];
   final _followEntry = FocusNode();
   final _mineEntry = FocusNode();
   final _header = FocusNode();
@@ -103,6 +106,9 @@ class _AppShellState extends State<AppShell> {
     for (final node in _tabFocus) {
       node.dispose();
     }
+    for (final scroll in _tabScrolls) {
+      scroll.dispose();
+    }
     _followEntry.dispose();
     _mineEntry.dispose();
     _header.dispose();
@@ -116,6 +122,29 @@ class _AppShellState extends State<AppShell> {
   }
 
   void _select(AppTab tab) => setState(() => _tab = tab);
+
+  /// 点底部导航 / 侧栏：
+  /// - 换标签：直接切；
+  /// - 已经在当前标签：先退掉这个标签里的子页面（详情、搜索、记录……），
+  ///   已经在首页则回到列表顶部；发现页已在顶部时改为刷新。
+  void _tap(AppTab tab) {
+    if (tab != _tab) return _select(tab);
+    final navigator = _navigator;
+    if (navigator != null && navigator.canPop()) {
+      return navigator.popUntil((route) => route.isFirst);
+    }
+    if (tab == AppTab.explore) return _explore.currentState?.reselect();
+    for (final position in _tabScrolls[tab.index].positions) {
+      if (position.pixels <= position.minScrollExtent) continue;
+      unawaited(
+        position.animateTo(
+          position.minScrollExtent,
+          duration: Motion.of(context, Motion.long),
+          curve: Motion.enter,
+        ),
+      );
+    }
+  }
 
   void _followFocus() {
     final previous = _lastFocus;
@@ -283,7 +312,12 @@ class _AppShellState extends State<AppShell> {
               routeDirectionalTraversalEdgeBehavior:
                   TraversalEdgeBehavior.parentScope,
               onGenerateInitialRoutes: (_, _) => [
-                MaterialPageRoute<void>(builder: (_) => _root(tab)),
+                MaterialPageRoute<void>(
+                  builder: (_) => PrimaryScrollController(
+                    controller: _tabScrolls[tab.index],
+                    child: _root(tab),
+                  ),
+                ),
               ],
             ),
         ],
@@ -307,8 +341,7 @@ class _AppShellState extends State<AppShell> {
               ? null
               : NavigationBar(
                   selectedIndex: _tab.index,
-                  onDestinationSelected: (index) =>
-                      _select(AppTab.values[index]),
+                  onDestinationSelected: (index) => _tap(AppTab.values[index]),
                   destinations: [
                     for (final tab in AppTab.values)
                       NavigationDestination(
@@ -405,7 +438,7 @@ class _AppShellState extends State<AppShell> {
             selected: _tab,
             expanded: expanded,
             badged: _badged,
-            onSelect: _select,
+            onSelect: _tap,
             onToggle: roomy
                 ? () => widget.store.setSideBarExpanded(!expanded)
                 : null,

@@ -64,6 +64,7 @@ class DramaSliverGrid extends StatelessWidget {
     required this.width,
     required this.items,
     required this.onOpen,
+    this.onMore,
     this.rankOf,
     this.subtitleOf,
     this.autofocus = false,
@@ -71,6 +72,9 @@ class DramaSliverGrid extends StatelessWidget {
   final double width;
   final List<Drama> items;
   final ValueChanged<Drama> onOpen;
+
+  /// 长按（桌面上右键）海报：快速追剧 / 取消追剧。
+  final ValueChanged<Drama>? onMore;
   final int? Function(Drama drama)? rankOf;
 
   /// 卡片第二行的说明文字。跨源搜索结果用它标出「这条来自哪个源」，
@@ -98,6 +102,7 @@ class DramaSliverGrid extends StatelessWidget {
             subtitle: subtitleOf?.call(drama),
             autofocus: autofocus && index == 0,
             onTap: () => onOpen(drama),
+            onMore: onMore == null ? null : () => onMore!(drama),
           ),
         );
       },

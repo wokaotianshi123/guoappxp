@@ -5,7 +5,6 @@ import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
-import 'package:media_kit_video/media_kit_video.dart';
 import 'package:window_manager/window_manager.dart';
 
 import '../../app_device.dart';
@@ -20,6 +19,7 @@ import 'danmaku_overlay.dart';
 import '../widgets/follow_button.dart';
 import 'episode_grid.dart';
 import 'playback_handle.dart';
+import 'player_video.dart';
 import 'player_gestures.dart';
 import 'playback_sheets.dart';
 import 'player_intro.dart';
@@ -420,12 +420,10 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
     return Stack(
       fit: StackFit.expand,
       children: [
-        Video(
+        PlayerVideo(
           key: ValueKey(session.player),
-          controller: widget.handle.video(session.player),
-          controls: NoVideoControls,
-          fill: Colors.black,
-          pauseUponEnteringBackgroundMode: false,
+          handle: widget.handle,
+          player: session.player,
         ),
         DanmakuOverlay(
           controller: session.danmaku,

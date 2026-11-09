@@ -227,6 +227,28 @@ func (manager *nativeDownloads) snapshot() ([]nativeDownloadJob, error) {
 	return jobs, nil
 }
 
+// snapshotSince 返回下载列表，并附带一个按列表内容算出的指纹。
+//
+// 客户端每 2 秒轮询一次下载列表；记录多时每次都把整份列表序列化、传过 FFI、
+// 再在 Dart 里解析一遍，开销随记录数线性增长。带上上次的指纹后，列表没变化
+// 时只回一个指纹字符串，不传 jobs。指纹取 sha256 前 8 字节，够用且短。
+func (manager *nativeDownloads) snapshotSince(since string) (map[string]any, error) {
+	jobs, err := manager.snapshot()
+	if err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(jobs)
+	if err != nil {
+		return nil, err
+	}
+	hash := sha256.Sum256(data)
+	fingerprint := hex.EncodeToString(hash[:8])
+	if since == fingerprint {
+		return map[string]any{"fingerprint": fingerprint}, nil
+	}
+	return map[string]any{"jobs": json.RawMessage(data), "fingerprint": fingerprint}, nil
+}
+
 func (manager *nativeDownloads) enqueue(input nativeInput) (int, error) {
 	return manager.enqueueContext(context.Background(), input)
 }

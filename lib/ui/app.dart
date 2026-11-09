@@ -121,10 +121,17 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
         : KeyEventResult.ignored;
   }
 
+  /// 桌面端的 Esc：先交给最近的 DismissIntent（关闭弹窗 / 退出全屏等），
+  /// 没人接管才退一层页面。
+  ///
+  /// 这里只处理 Esc，**不要**再处理 [LogicalKeyboardKey.goBack]：
+  /// Android 的返回键 / 三键导航 / 侧滑手势在发 goBack 按键事件的同时，
+  /// 系统还会走一遍 popRoute（PopScope → Navigator.maybePop），两路一起
+  /// 处理就会一次退两级——搜索结果进详情后按返回直接回到首页、设置分组页
+  /// 返回越过设置根页都是这个原因。
   KeyEventResult _escape(KeyEvent event) {
     if (event is! KeyDownEvent ||
-        event.logicalKey != LogicalKeyboardKey.escape &&
-            event.logicalKey != LogicalKeyboardKey.goBack) {
+        event.logicalKey != LogicalKeyboardKey.escape) {
       return KeyEventResult.ignored;
     }
     final context =
