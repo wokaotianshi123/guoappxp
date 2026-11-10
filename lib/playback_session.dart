@@ -100,8 +100,16 @@ class PlaybackSession extends ChangeNotifier {
       stream.error.listen(_playerError),
       stream.completed.listen(_completed),
       stream.position.listen((position) {
-        if (!_closed && _openedIndex == _index && position > Duration.zero) {
-          _resumePosition = position.inMilliseconds / 1000;
+        if (!_closed) {
+          // 设备会上报进度的证据：收到过「超过起播位置」的进度。open 时的
+          // 初始事件（0 或续播起点）不算；部分 TV / 硬解设备只发这一个，
+          // 之后一个 position 事件都没有。
+          if (position.inMilliseconds / 1000 > _openedAt + 0.3) {
+            _positionAdvanced = true;
+          }
+          if (_openedIndex == _index && position > Duration.zero) {
+            _resumePosition = position.inMilliseconds / 1000;
+          }
         }
         _sync();
       }),
@@ -169,6 +177,10 @@ class PlaybackSession extends ChangeNotifier {
   String? _saveWarning;
   String? _savedProgressKey;
   bool _savedQuietly = false;
+  // 本次打开后是否收到过「超过起播位置」的进度。部分电视 / 硬解设备
+  // 根本不发 position 事件（或只发一个初始值），这时「进度没动」不能
+  // 当作播放失败的证据，否则刚能播的源会被反复切到备用线路直至判失败。
+  bool _positionAdvanced = false;
   PlaybackPlan? _plan;
   PlaybackPlan? _standbyPlan;
   int _standbyIndex = -1;
@@ -270,6 +282,12 @@ class PlaybackSession extends ChangeNotifier {
   DanmakuStyle get danmakuStyle => DanmakuStyle.of(store.playbackPreferences);
 
   double get _rate => _boosting ? 2 : _speed;
+
+  /// 打开新地址、暂停/恢复、前后台切换时，重新开始观察这一轮的进度上报。
+  void _resetWatch() {
+    _health.reset();
+    _positionAdvanced = false;
+  }
 
   void _buffering(bool buffering) {
     _stallTimer?.cancel();
@@ -413,13 +431,18 @@ class PlaybackSession extends ChangeNotifier {
       if (!_current(ticket) || !_foreground || !_acceptErrors) return;
       _pendingError = false;
       final state = player.state;
-      // 只要还在播、没卡在缓冲、进度确实前进，就说明播放器已经自愈。
+      // 只要还在播、没卡在缓冲、没结束，就说明播放器已经自愈。
       // 旧逻辑还要求 state.width > 0，但 TV / 硬件解码常常不上报视频尺寸，
       // 于是一次可忽略的错误也会重新解析地址，反复加载几次后直接判失败。
+      // 同理，TV 不上报 position（或起播几秒才发第一次）时，900ms 内
+      // 「进度没前进」也不是故障证据：只有确认设备会上报进度、且进度
+      // 确实停住了，才重新解析地址切线路。真断流会进入 buffering 或停播，
+      // 这两种状态不会在这里被放过。
       if (state.playing &&
           !state.buffering &&
           !state.completed &&
-          state.position > position + const Duration(milliseconds: 300)) {
+          (state.position > position + const Duration(milliseconds: 300) ||
+              !_positionAdvanced)) {
         return;
       }
       unawaited(_recover(reason));
@@ -561,7 +584,7 @@ class PlaybackSession extends ChangeNotifier {
     _acceptErrors = false;
     _pendingError = false;
     _errorTimer?.cancel();
-    _health.reset();
+    _resetWatch();
     if (recovery == null) {
       _recovery.reset();
       _playIntent = playWhenReady;
@@ -653,7 +676,7 @@ class PlaybackSession extends ChangeNotifier {
         );
         if (!_current(ticket)) return;
         _openedIndex = index;
-        _health.reset();
+        _resetWatch();
         await _setRate(_rate);
         if (!_current(ticket)) return;
         _loading = false;
@@ -700,7 +723,7 @@ class PlaybackSession extends ChangeNotifier {
     _pendingError = false;
     _pausedByBackground = false;
     _errorTimer?.cancel();
-    _health.reset();
+    _resetWatch();
     _recovery.reset();
     _playIntent = playWhenReady;
     _resumePosition = 0;
@@ -837,7 +860,7 @@ class PlaybackSession extends ChangeNotifier {
     if (!_usable || !ready) return;
     endBoost();
     _playIntent = !player.state.playing;
-    _health.reset();
+    _resetWatch();
     if (_playIntent && player.state.completed) {
       unawaited(play(_index));
       return;
@@ -1095,7 +1118,7 @@ class PlaybackSession extends ChangeNotifier {
   void setForeground(bool visible) {
     if (_closed || _foreground == visible) return;
     _foreground = visible;
-    _health.reset();
+    _resetWatch();
     _sync();
     if (!visible) {
       // 记住「是系统让我们停的」，回到前台才自动续播；用户自己暂停时

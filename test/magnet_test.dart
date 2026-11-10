@@ -1232,6 +1232,25 @@ void main() {
     expect(find.text('请先自动识别或粘贴磁力源规则'), findsOneWidget);
   });
 
+  testWidgets('电视端去掉重复的「磁力」标题栏，把高度留给内容', (tester) async {
+    final store = await openStore();
+    await tester.pumpWidget(
+      AppScope(
+        repository: _MagnetRepository(),
+        formFactor: FormFactor.television,
+        child: MaterialApp(home: MagnetPage(store: store)),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // 外壳顶栏已有一级「磁力」标签，页面里这条 AppBar 是重复的第二层，
+    // 还固定占 56px，把下面的分类 / 列表 / 「加载更多」挤出可视区。
+    expect(find.byType(AppBar), findsNothing);
+    expect(find.text('磁力'), findsNothing);
+    expect(find.text('磁力播放'), findsOneWidget);
+    expect(find.byType(TabBar), findsOneWidget);
+  });
+
   testWidgets('切换一级标签后已加载的列表不会重新拉取（预缓存）', (tester) async {
     final repository = _MagnetRepository();
     await _pumpMagnetPage(tester, repository);

@@ -6,6 +6,7 @@ import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/ui/app_scope.dart';
 import 'package:duanju_app/ui/shell/app_shell.dart';
+import 'package:duanju_app/ui/theme/app_theme.dart';
 
 import 'support/fakes.dart';
 
@@ -59,6 +60,38 @@ String searchTooltip(LocalStore store) =>
 
 void main() {
   TestWidgetsFlutterBinding.ensureInitialized();
+
+  test('电视端实心按钮聚焦时反色，方向键选中一眼可辨', () {
+    for (final brightness in Brightness.values) {
+      final theme = AppTheme.build(
+        const Color(0xFF3366CC),
+        brightness,
+        television: true,
+      );
+      final colors = theme.colorScheme;
+      final style = theme.filledButtonTheme.style!;
+      // 旧的 12% onSurface 叠色在已经是主色底的「播放」上几乎看不出来；
+      // 现在聚焦直接反色，非聚焦仍走组件默认（主色底）。
+      expect(
+        style.backgroundColor!.resolve({WidgetState.focused}),
+        colors.onSurface,
+      );
+      expect(style.backgroundColor!.resolve(<WidgetState>{}), isNull);
+      expect(
+        style.foregroundColor!.resolve({WidgetState.focused}),
+        colors.surface,
+      );
+      expect(style.side!.resolve({WidgetState.focused})?.width, 2);
+      expect(style.side!.resolve(<WidgetState>{}), isNull);
+      // 非电视主题不受影响。
+      final normal = AppTheme.build(
+        const Color(0xFF3366CC),
+        brightness,
+        television: false,
+      );
+      expect(normal.filledButtonTheme.style, isNull);
+    }
+  });
 
   testWidgets('电视端顶栏切到追剧 / 我的后，源与搜索按钮仍常驻', (tester) async {
     await openTelevisionShell(tester);

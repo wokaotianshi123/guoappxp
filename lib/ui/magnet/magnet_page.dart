@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../../local_store.dart';
+import '../app_scope.dart';
 import 'magnet_play_tab.dart';
 import 'magnet_search_tab.dart';
 import 'magnet_sources_tab.dart';
@@ -51,8 +52,12 @@ class _MagnetPageState extends State<MagnetPage>
   @override
   Widget build(BuildContext context) {
     final index = _tabs.index;
+    // 电视端外壳顶栏已经有一级「磁力」标签，这里再放一条「磁力」AppBar
+    // 属于重复，而且固定吃掉 56px，把下面的分类、列表和「加载更多」挤出
+    // 可视区。电视端直接省掉，把高度全留给内容。
+    final television = AppScope.of(context).television;
     return Scaffold(
-      appBar: AppBar(title: const Text('磁力')),
+      appBar: television ? null : AppBar(title: const Text('磁力')),
       body: Column(
         children: [
           TabBar(

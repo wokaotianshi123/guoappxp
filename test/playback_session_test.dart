@@ -216,23 +216,26 @@ void main() {
     expect(session.qualityLabel, '720P');
   });
 
-  test('manual route switching reuses the session and keeps position', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
+  test(
+    'manual route switching reuses the session and keeps position',
+    () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore();
+      final (session, player) = await _open(repository, store);
 
-    player.progress(_seconds(40), duration: _seconds(100));
-    await session.setRoute(1);
+      player.progress(_seconds(40), duration: _seconds(100));
+      await session.setRoute(1);
 
-    expect(repository.routes, [1]);
-    expect(repository.resolved, hasLength(1));
-    expect(repository.fallbacks, 0);
-    expect(player.opened, hasLength(2));
-    expect(player.opened.last.start, _seconds(40));
-    expect(session.routeIndex, 1);
-    expect(session.ready, isTrue);
-    expect(repository.released, contains('session-1'));
-  });
+      expect(repository.routes, [1]);
+      expect(repository.resolved, hasLength(1));
+      expect(repository.fallbacks, 0);
+      expect(player.opened, hasLength(2));
+      expect(player.opened.last.start, _seconds(40));
+      expect(session.routeIndex, 1);
+      expect(session.ready, isTrue);
+      expect(repository.released, contains('session-1'));
+    },
+  );
 
   test('the selected route carries over to the next episode', () async {
     final repository = _PlaybackRepository();
@@ -627,6 +630,47 @@ void main() {
     expect(session.ready, isTrue);
   });
 
+  test(
+    'a TV that never reports position ignores a soft player error',
+    () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore();
+      final (session, player) = await _open(repository, store);
+
+      // TV / 硬解设备画面在播，却一个 position 事件都不发。旧逻辑会把
+      // 「900ms 内进度没前进」当成故障，反复切备用线路最后报恢复失败。
+      expect(player.state.playing, isTrue);
+      player.fail('non-fatal decoder warning');
+      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      await pumpEventQueue();
+
+      expect(repository.fallbacks, 0);
+      expect(repository.resolved, hasLength(1));
+      expect(player.opened, hasLength(1));
+      expect(session.error, isNull);
+      expect(session.ready, isTrue);
+    },
+  );
+
+  test(
+    'a TV without position still recovers when playback really stalls',
+    () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore();
+      final (session, player) = await _open(repository, store);
+
+      // 真断流会卡在缓冲：即使设备不上报进度，也不能被上面的保护放过。
+      player.fail('connection reset');
+      player.buffer(true);
+      await Future<void>.delayed(const Duration(milliseconds: 1000));
+      await pumpEventQueue();
+
+      expect(repository.fallbacks, 1);
+      expect(player.opened, hasLength(2));
+      expect(session.ready, isTrue);
+    },
+  );
+
   test('a brief background switch resumes without reloading', () async {
     final repository = _PlaybackRepository();
     final store = await openStore();
@@ -704,13 +748,16 @@ void main() {
   });
 
   group('player volume memory', () {
-    test('a new session restores the volume saved by the previous one', () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore({'playerVolume': 42.0});
-      final (session, player) = await _open(repository, store);
-      expect(player.state.volume, 42.0);
-      expect(store.playerVolume, 42.0);
-    });
+    test(
+      'a new session restores the volume saved by the previous one',
+      () async {
+        final repository = _PlaybackRepository();
+        final store = await openStore({'playerVolume': 42.0});
+        final (session, player) = await _open(repository, store);
+        expect(player.state.volume, 42.0);
+        expect(store.playerVolume, 42.0);
+      },
+    );
 
     test('clamps a saved mute to a quiet but audible volume', () async {
       final repository = _PlaybackRepository();
