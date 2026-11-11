@@ -13,7 +13,7 @@ import '../theme/motion.dart';
 import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
-import '../magnet/magnet_page.dart';
+import '../audiobook/audiobook_screen.dart';
 import '../mine/mine_page.dart';
 import '../widgets/bar_button.dart';
 import '../widgets/focus_ring.dart';
@@ -21,10 +21,9 @@ import '../widgets/source_bar.dart';
 
 enum AppTab {
   explore('发现', Icons.explore_outlined, Icons.explore),
+  audiobook('听书', Icons.headphones_outlined, Icons.headphones),
   follow('追剧', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
-  mine('我的', Icons.person_outline_rounded, Icons.person_rounded),
-  // 磁力与发现 / 追剧 / 我的并列；放在最后，保持前三项的索引与退出逻辑不变。
-  magnet('磁力', Icons.cloud_download_outlined, Icons.cloud_download);
+  mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
 
   const AppTab(this.label, this.icon, this.selectedIcon);
   final String label;
@@ -158,7 +157,7 @@ class _AppShellState extends State<AppShell> {
     }
   }
 
-  /// 顶栏这一行的遥控器顺序：发现 → 追剧 → 我的 → 磁力 → 切换站源 → 搜索。
+  /// 顶栏这一行的遥控器顺序：发现 → 听书 → 追剧 → 我的 → 切换站源 → 搜索。
   /// 站源为空时 SourceBar 不渲染，两个按钮的 context 也就为空，自动出列。
   List<FocusNode> get _televisionHeaderNodes => [
     ..._tabFocus,
@@ -179,9 +178,9 @@ class _AppShellState extends State<AppShell> {
       final entry = switch (_tab) {
         AppTab.follow => _followEntry,
         AppTab.mine => _mineEntry,
-        // 磁力页与发现页一样由页面自己接管内容区焦点。
+        // 听书页与发现页一样由页面自己接管内容区焦点。
         AppTab.explore => null,
-        AppTab.magnet => null,
+        AppTab.audiobook => null,
       };
       if (entry?.context == null) return KeyEventResult.ignored;
       revealFocus(entry!);
@@ -292,7 +291,10 @@ class _AppShellState extends State<AppShell> {
       entryFocus: _mineEntry,
       onExitUp: _exitUpToHeader,
     ),
-    AppTab.magnet => MagnetPage(store: widget.store),
+    AppTab.audiobook => AudiobookScreen(
+      repository: AppScope.of(context).repository,
+      profileId: widget.store.profile.id,
+    ),
   };
 
   @override

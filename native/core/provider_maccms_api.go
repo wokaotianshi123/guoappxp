@@ -253,29 +253,29 @@ func (e *maccmsAPIError) Error() string { return e.message }
 // ---------------------------------------------------------------------------
 
 type maccmsXMLVideo struct {
-	ID         string `xml:"id"`
-	VodID      string `xml:"vod_id"`
-	Name       string `xml:"name"`
-	VodName    string `xml:"vod_name"`
-	Title      string `xml:"title"`
-	Type       string `xml:"type"`
-	TypeName   string `xml:"type_name"`
-	Remarks    string `xml:"note"`
-	VodRemarks string `xml:"vod_remarks"`
-	Content    string `xml:"des"`
-	VodContent string `xml:"vod_content"`
-	Blurb      string `xml:"vod_blurb"`
-	Actor      string `xml:"actor"`
-	VodActor   string `xml:"vod_actor"`
-	Director   string `xml:"director"`
+	ID          string `xml:"id"`
+	VodID       string `xml:"vod_id"`
+	Name        string `xml:"name"`
+	VodName     string `xml:"vod_name"`
+	Title       string `xml:"title"`
+	Type        string `xml:"type"`
+	TypeName    string `xml:"type_name"`
+	Remarks     string `xml:"note"`
+	VodRemarks  string `xml:"vod_remarks"`
+	Content     string `xml:"des"`
+	VodContent  string `xml:"vod_content"`
+	Blurb       string `xml:"vod_blurb"`
+	Actor       string `xml:"actor"`
+	VodActor    string `xml:"vod_actor"`
+	Director    string `xml:"director"`
 	VodDirector string `xml:"vod_director"`
-	Pic        string `xml:"vod_pic"`
-	PicAlt     string `xml:"pic"`
-	Img        string `xml:"vod_img"`
-	ImgAlt     string `xml:"img"`
-	PlayURL    string `xml:"vod_play_url"`
-	URL        string `xml:"vod_url"`
-	DL         struct {
+	Pic         string `xml:"vod_pic"`
+	PicAlt      string `xml:"pic"`
+	Img         string `xml:"vod_img"`
+	ImgAlt      string `xml:"img"`
+	PlayURL     string `xml:"vod_play_url"`
+	URL         string `xml:"vod_url"`
+	DL          struct {
 		Items []string `xml:"dd"`
 	} `xml:"dl"`
 }

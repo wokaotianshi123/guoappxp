@@ -2,6 +2,35 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.4.0+116
+
+把 `guoapplu` 的听书与直播模块移植进本项目，并按需求把磁力板块整体下线。Windows / Android / iOS / macOS / 本地服务版同步生效。
+
+### 新增
+- **听书模块（一级导航）**：`发现` 右侧新增 `听书` 标签，完整移植番茄畅听链路——听书榜 / 女生听书榜单、在线搜索、书架与收听进度、章节目录、带逐句时间轴的正文跟读（点段落跳转、当前句高亮），支持上一章 / 下一章、倍速、睡眠定时与章节下载。书架与进度按用户隔离，走 `AudiobookStore`（`<dataDir>/audiobooks`），切换用户时重建。
+  - Dart 侧：`lib/ui/audiobook/`（`audiobook_fanqie.dart`、`audiobook_store.dart`、`audiobook_download.dart`、`audiobook_session.dart`、`audiobook_screen.dart`、`audiobook_widgets.dart`）。
+  - Go 侧：`provider_audiobook_device.go`（听书专用播放设备注册）、`provider_audiobook_fetch.go`（榜单 / 搜索 / 目录 / 网页正文，只放行番茄相关域名且仅支持 GET）、`provider_novelfm.go`（音频地址与 CENC key）、`provider_fqnovel_text.go`（正文解密与逐句时间轴）。
+  - RPC：新增 `audiobookFetch` / `audiobookText` / `audiobookMedia` 三个动作，Flutter 与本地服务版共用同一套请求，代理、限流与超时跟现有设置一致。
+  - 加密：章节音频带 CENC 时返回 `decryptionKey`，App 端交给 media_kit 的 `decryption_key` 解码。
+- **本地服务版网页听书**：顶栏新增「听书」入口，页面为「左列目录 / 右列正文 / 底部播放条」。新增 `/api/audiobook/ranks|search|chapters|text|media|stream` 六个接口；CENC 加密音频复用红果那套 `-decryption_key` 链路，由 ffmpeg 解密后重编码成纯音频 HLS（`transcodeManager.startAudio()`），明文音频走 `/api/audiobook/stream` 代理并透传 Range。
+- **直播接入斗鱼、哔哩哔哩、虎牙**：直播入口位置保持不变（Flutter 仍从发现 / 我的进入，网页仍是顶栏「直播」）。内置源顺序改为**斗鱼（默认）→ 哔哩哔哩 → 虎牙 → 秀果直播**，原「秀果」改名「秀果直播」并排在最后。
+  - App 端：新增 `LiveProtocol.room` 与 `lib/live/live_rooms.dart`（分类、房间列表、点播解析；斗鱼 `getEncryption` + `getH5PlayV1` 的 md5 循环签名、哔哩哔哩 `getRoomPlayInfo` 选最高画质、虎牙 `profileRoom` 选主线路），`live_page.dart` 增加「加载更多」分页，`live_playback.dart` 的线路计数把房间型源按一条线路显示。
+  - 网页端：新增 `native/server/livestream_rooms.go`（同一套逻辑的 Go 实现）与 `/api/livestream/play` 点播接口；房间列表只下发房间号，点播时才换取真实地址；直播流代理按平台补 Referer，避免 403。
+  - 绿色模式：三个公开平台照常可见，只有成人源「秀果直播」整源隐藏。
+
+### 移除
+- **磁力板块整体下线**：删除 `provider_magnet*.go`、`magnet_sites.json`、`lib/magnet_models.dart`、`lib/ui/magnet/*`、`core_bridge.dart` 的磁力 RPC 与超时、`playback_loader.dart` 的磁力短路、设置与缓存页的磁力项、网页端约 960 行磁力实现，以及 CHANGELOG / README 里的磁力历史说明。
+- **依赖与构建**：`go mod tidy` 后移除 `anacrolix/torrent`、`anacrolix/dht/v2`、`antchfx/htmlquery` 等 BT 相关依赖；`scripts/app_build.py` 的 `-tags=disable_libutp,nosqlite` 与 CI 里的 C++ 后端校验一并删除。
+- **缓存口径**：`cacheInfo` / `clearCache` 不再统计磁力分片，只处理播放缓存与临时文件；`app_cache_clean_test.go` 的期望值同步改为 2 个文件 / 768 字节。
+
+### 修复
+- **缓存清理测试**：移除磁力夹具后，`TestClearCacheOnlyRemovesRegenerableFiles` 仍在断言删除 3 个文件，改为 2 个。
+
+### 实现与约束
+- **听书设备链**：源项目的 `provider_fqnovel_text.go` 依赖 `hongguoPlaybackDevice`，而本项目的红果设备注册结构是另一套。移植时新增 `audiobookPlaybackDevice` 与 `registerAudiobookPlaybackDevice()`，把听书正文与音频解析用到的查询串、内容密钥、设备注册独立出来，避免与红果主链路互相影响。
+- **测试**：新增 `provider_novelfm_test.go`、`provider_fqnovel_text_test.go`、`test/audiobook_catalog_test.dart`、`test/audiobook_fanqie_test.dart`、`test/audiobook_store_test.dart`；`test/app_shell_tv_focus_test.dart` 的标签顺序改为「发现 / 听书 / 追剧 / 我的」。
+- **未提交**：本轮改动全部留在工作区，未做 git 提交。
+
 ## 1.3.0+115
 
 把 `guoappxpx` 里的 15 项体验与性能改进移植进本项目，并新增站源「笔盒」。Android / Windows / macOS / iOS / 本地服务版同步生效。
@@ -14,10 +43,6 @@
 - **竖屏播放双指缩放铺满**：手机竖屏播放页支持双指张开把画面放大到去掉上下黑边（cover 比例线性插值，过半吸附到铺满），捏合还原，退出播放自动还原；换集会重置缩放。捏合期间 `PageView` 的滑动关掉、并加 300ms 的防误触窗口，不会顺手暂停或切集。
 - **动画体系统一**：新增 `ui/theme/motion.dart`（`Motion.short / medium / long`、`enter / exit / standard`、`reduced()` 读系统「减弱动态效果」、`pageTransitions()`、`fadeRoute()`）与 `ui/widgets/motion/motion_widgets.dart`（`FadeSwitcher`、`ToggleIconSwitcher`、`fadeInFrameBuilder`、`EnterOnce`、`coverHeroTag`）；`AppTheme` 的 `pageTransitionsTheme` 改用这套：Android 上是「缩放 0.92 + 淡入」，电视端纯淡入。
 - **新增站源「笔盒」（beabox.cc）**：默认关闭，可在站源管理里打开。站点域名经常更换，当前线路失效时会从发布页自动发现可用域名并记住上次可用的线路（落盘 `beabox-sites.json`，重启直接使用）；「全部」列出最新视频，分类取站点热门标签，支持翻页、详情、分集与在线搜索，`needParse` 的线路会自动向站点接口换取播放地址。
-- **磁力搜索页：没有结果的站源标签暂时隐藏**：抓完却一条都没搜到的站源不再占一行标签（还在抓的站仍显示「…」保留进度），免得一排「0 条 / ✕」把有结果的标签挤进「更多」。计数行补一句「N 个站源没有结果（标签已收起）」，下次搜索 / 翻页时标签会重新出现。
-- **磁力搜索发现提速**：内置 35 个站源默认全开，而列表页并发只有 6、单请求 12 秒，慢站占着 worker 会把整批搜索拖成 3~6 轮。现在列表并发 12、详情并发 12，列表请求 9 秒、详情补磁力单独限 5 秒（详情只是可降级信息，短超时让慢站快速让位），首屏结果由快站决定，不再被最慢的站拖住。会话预算与 40 秒元数据预算保持不变，慢站仍有出结果的机会。
-- **磁力播放解析提速（首屏预取）**：搜索结束后 `_probeDht` 本来就会对可见的前 24 条逐个建 torrent 并探测 6 秒 DHT 节点，这窗口里热门种子的元数据其实已经到了，但结束时直接 `Drop()` 丢掉。现在在 Drop 之前把已到达的元数据写进 `magnet-meta/<hash>.torrent` 缓存；用户随后点播时 `addMagnetFast` 直接命中本地种子、跳过 DHT 等待，把「首次点播等元数据」变成秒开。没有拿到元数据的种子行为不变，不增加任何网络请求。
-- **磁力播放解析提速（云端种子缓存，可关）**：本地 `magnet-meta` 没命中时，`magnetFiles` / `magnetPlay` 会先花最多 5 秒按 infohash 向公开 `.torrent` 缓存端点取种子，校验 bencode 且 infohash 完全一致才落盘，之后 `addMagnetFast` 用 `InfoBytes` 直接建任务——首次点播也不必等最多 40 秒的 DHT 元数据。端点只保留实测对真实 infohash 返回种子的 `itorrents.org`（带浏览器 UA）；返回 HTML、404、超 2MB、hash 不符、超时或用户点另一条磁力而取消，一律静默降级回原来的 DHT 路径，不写成新卡点。「我的 → 设置 → 代理」新增「磁力云端种子缓存」开关，默认开启、仅管理员可改、下次点播立即生效；**关闭后完全本地解析，不会把 infohash 发给第三方**。旧版设置文件没有该字段时按开启处理，显式关闭会持久化。
 
 ### 修复
 - **修复 Android 返回键一次退两级**：`ui/app.dart` 的 `_escape` 原来同时处理 `LogicalKeyboardKey.goBack` 与系统 `popRoute`（`PopScope` → `Navigator.maybePop`），Android 手机上物理返回键、三键导航、侧滑手势、电视遥控器返回都会两路同时触发，一次退两层页面。现在键盘只处理 `Esc`，返回键统一交给系统路由；桌面 Esc 行为不变。`player_page.dart` 的同类分支一并收敛，`AndroidManifest.xml` 打开 `enableOnBackInvokedCallback` 以走预测返回。
@@ -30,67 +55,14 @@
 - **亮色主题下播放页不再反复生成深色配色**：`playback_sheets.dart` 的 `playerTheme` 按源主题缓存生成的深色 `ThemeData`，主题没变就复用。
 - **修复 Android 侧滑返回没有预览**：`motion.dart` 里的 `_FadeScalePageTransitionsBuilder` 在 Android 上接 `WidgetsBindingObserver.handleStartBackGesture`，拖动手势时页面跟手缩小 / 平移 / 露出上一页，松手淡出缩小完成返回，拖回则回弹；打开动画没播完也能侧滑。页面通过 `PageRoute.popGestureEnabled` / `isCurrent` 判断能不能接手势，不可返回时框架照常处理。
 - **修复电视端「视频能播却反复切源，最后提示自动恢复未成功」**：`PlaybackSession` 的 900ms 错误复查原来要求「进度前进 300ms」才算自愈，但部分电视 / 硬解设备根本不上报 `position`（或起播几秒才发第一次），刚加载好的源因此被误判成故障，一次次切到备用线路，3 次后走到 `stop` 弹出「自动恢复未成功」。现在记录本轮是否收到过超过起播位置的进度：只有确认设备会上报进度、且进度确实停住了，才重新解析地址；真断流会进入缓冲或停止播放，仍照常自动恢复。
-- **电视端磁力页去掉重复的「磁力」标题栏**：`MagnetPage` 的 `AppBar` 与外壳顶栏的一级「磁力」标签重复，还固定吃掉 56px，把下面的分类、列表和「加载更多」挤出可视区。电视端不再渲染这一条，手机 / 平板 / 桌面保持不变。
 - **电视端按钮焦点更易辨认**：TV 主题里聚焦只叠 12% 的 `onSurface`，在已经是主色底的「播放」等实心按钮上几乎看不出颜色变化，遥控器移过去判断不了有没有选中。现在标准按钮聚焦时加主色描边与更明显的叠色，实心按钮直接反色（`onSurface` 底 + `surface` 图标文字）；非电视主题不变。
 
 ### 实现与约束
-- **磁力云端种子缓存的边界**：只对 `magnetFiles` / `magnetPlay` 的首次解析生效；`magnetPeers` 的 DHT 节点探测、BT 分片下载、站源搜索都不发这类请求，不会一次把整页 infohash 广播出去。请求复用核心的代理与 CA 配置（含手动代理），只有 infohash 会出现在 URL 里，不含用户搜索词、观看记录或设备标识；响应只写进既有的 `magnet-meta/` 可清理缓存，受 30 天 / 2000 条淘汰策略约束。公开端点为第三方服务，可用性不受本项目控制，失效时自动回退 DHT。
 - **笔盒站源的取数与线路发现**：新增 `provider_beabox.go`。发布页的 `__ENC_DOMAINS` 是异或过的 base64 域名池、`__KEY` 是异或密钥，解析后按主机名白名单校验（https、无端口无路径）；接口返回的信封 `data` 是 `AES-128-CBC` 十六进制密文（固定 key + 前置 IV + PKCS#7），解码后才是业务 JSON。线路尝试顺序是「上次可用 → 内置线路 → 发布页发现」，发现结果 30 分钟内复用、失败 1 分钟后重试；站点状态写在 `<dataDir>/beabox-sites.json`，只接受 `https://host` 形式的地址，最多 256 条。
 - **笔盒接入点**：`sourceBeabox` 常量与 `canonicalProviderSource` / `isHuangguoProviderSource`、`GetHuangguoDetail` 分发、`providerBaseURL`、`resolveBeaboxMedia`（播放地址解析）、`nativeCategories` / `validNativeCategory`、`app_cover_metadata`、`nativeCatalog`（分类 + 空列表不报错）、`nativeSourceSupportsSearch` / `nativeSearchSource`（在线搜索）逐处接入；Dart 侧只加一条 `SourceSite('beabox', '笔盒', ...)` 到 `restrictedValues`（默认关闭）与 `pagedSearch`。
 - **笔盒封面是文本文件**：部分线路把封面存成 `.txt`，内容是异或 18 的 `data:image/...;base64` 文本。`app_covers.go` 的 `nativeDecodeCover` 增加 `nativeDecodeTextCover` 一步先试这类封面，失败再走原来的 AES / 异或兜底。
 - **跨端一致**：本次改动只动 Flutter 与 Go 核心，本地服务版网页没有新增路由；侧滑返回、双指缩放、标签回顶这些手势只在前端实现，网页端不受影响。
 - **未提交**：本轮改动全部留在工作区，未做 git 提交。
-
-## 1.2.9+114
-
-把 `cisou.apk`（超强磁力搜索）的磁力搜索与 `cibo.apk`（种子磁力播放器）的磁力播放移植进 guoappxp：Flutter App 主页新增「磁力」标签、本地服务版网页顶栏新增「磁力」入口，搜索结果可直接调用项目原有播放器播放。Android / Windows / macOS / iOS / 本地服务版同步生效。
-
-### 改进
-- **主页「磁力」入口**：`AppTab` 新增 `magnet`，排在 `explore / follow / mine` 之后，手机 `NavigationBar`、平板 / 桌面 `_SideBar`、电视顶栏都由 `AppTab.values` 自动生成，一处接入四端齐活。前三项索引不变，退出逻辑与站源按钮行为不变；电视顶栏遥控器顺序相应更新为「发现 → 追剧 → 我的 → 磁力 → 切换站源 → 搜索」，`app_shell_tv_focus_test.dart` 同步断言 4 个标签。本地服务版 `index.html` 顶栏在「直播」后新增「磁力」链接（`#/magnet`）。
-- **35 个磁力站源聚合搜索**：从 `cisou.apk` 的 `assets/site-1.0.1.json` 保真导出 35 个启用站源规则，作为 `native/core/magnet_sites.json` 用 `//go:embed` 嵌进二进制（Flutter FFI 与本地服务版都不依赖运行时外部文件）。规则含 `[keyword]` / `[page]` 搜索模板、请求头与 `group / title / date / size / url / magnet` 的 XPath 字段；Go 侧按模板替换关键词、附带规则头、用 `htmlquery` 抽列表，6 个站源并发、4 个详情页并发，总预算 40 秒、单次抓取 12 秒。列表里没直接给出 infohash 的结果再抓一次详情页（隐藏 input / 下载按钮 / 正文磁力链接）补齐；按 infohash 跨站去重，单站失败只记账不影响其它站，全部失败时给 warning。搜索结果可勾选站源、最多翻 10 页、复制磁力链接。
-- **磁力播放接回原播放器**：`cibo.apk` 的播放链路是「迅雷 SDK `XLTaskHelper.addMagentTask()` → `.torrent` → 下载视频 → 本地播放器」，核心是 Android 闭源 `libxl_thunder_sdk.so`，无法搬进 Go 核心 / Flutter 五端。这里做等价重实现：内置纯 Go BT 客户端（`github.com/anacrolix/torrent`）解析 DHT / tracker 元数据，把选中的种子文件挂到本机 `127.0.0.1:<随机端口>/magnet/<infohash>/<文件序号>`，用 `http.ServeContent` 提供 Range / 206 流，播放器边下边播。多文件种子先列文件（标出视频后缀与大小）供选集；Flutter 侧用一套「伪剧集」把 `magnet` / `fileIndex` 放进 `Episode.raw`，`PlaybackLoader.load()` 见到 `raw['magnet']` 就短路到 `magnetPlay()`，返回的 `PlaybackPlan` 与站源取流完全一致，播放器、弹幕、进度、选集逻辑一行未改。
-- **「我的 → 设置 → 缓存」清理入口**：Flutter 设置页新增 `cache` 分组与 `CacheView`，显示可清理占用并按磁力缓存 / 播放缓存 / 临时文件分类，二次确认后调用核心 `clearCache` 释放空间；本地服务版网页顶栏同样新增「清理缓存」按钮（该版本没有「我的」页），复用 `cacheInfo` / `clearCache` 两个 action。清理前会关闭 BT 客户端释放分片句柄，清理后再次播放会懒启动新引擎。已完成下载（含 `.part` 断点续传分片与 `.ts` HLS 分片）、剧库、追剧、设置与会话凭据一律不动；30 分钟内的临时文件与系统临时目录也被排除。
-- **本地服务版同款能力**：网页端复用 `/api/request` 通用转发，不新增后端路由；`rewriteLocalMedia()` 把本机磁力流地址改写成 `/api/media/magnet/...`，`handleMedia()` 反代回 BT 流端口并透传 Range，局域网设备与浏览器都能播。播放复用现有 `mountVideo(url, 0)`，不引入新播放器库；磁力播放时清空观看页 `state.drama`，不会往播放记录里写一条错剧集。
-- **磁力结果按站源分标签 + 每标签独立筛选**：Flutter 磁力页与本地服务版网页端都把结果拆成「全部」+ 每个有结果的站源标签，可点标签或在结果区左右滑动切换；每个标签独立记忆「默认 / 按时间 / 按大小 / 按 DHT 数量」排序与「仅含磁力」开关。Go 侧把站点原文的 `1.2 GB` / `2026-11-08` / `3天前` 归一化成 `sizeBytes` / `timestamp` 数值，排序不再按字典序；「加载更多」提到标签外层，所有标签共用同一份翻页。
-- **每条结果显示可连接 DHT 节点数并支持按它排序**：新增 `magnetPeers` action，用同一个纯 Go BT 客户端对当前标签前 24 个 infohash 做 6 秒短窗口探测（DHT get_peers / announce + 公共 tracker），按 peer 来源统计 DHT 节点数 `dht` 与全部已知节点数 `peers`，另返回 DHT 路由表好节点数 `dhtNodes`。结果带 5 分钟缓存，切标签会取消上一轮窗口，探测完未用于播放的 torrent 会 Drop；探测是异步增量回填，不阻塞搜索出结果。界面显示 `DHT N · 节点 M`，并提供「按 DHT 数量」排序与「刷新 DHT」按钮（`force` 跳过缓存）。
-- **切换磁力即刻终止上一条加载**：Go 侧新增按 infohash 聚合引用的活动加载表，新一次 `prepare` 会取消其它 hash 仍在等元数据的 context；`magnetCancel` action 立即取消全部并 Drop 旧种子占的连接与分片，`state.lastHash` 保证连已加载完、仍在后台下载的旧种子也会被停掉。Dart / 网页端在每次点播前串行等取消返回再发新请求，并用 generation 丢弃旧请求迟到的结果或报错；原先「正在准备」期间禁止再点的限制同时去掉，连点两条磁力可直接抢占。
-
-### 实现与约束
-- Go 新增 `provider_magnet.go`（站源加载 / 搜索 URL 模板 / XPath 属性表达式拆取 / infohash 提取 / 详情补磁力 / 并发去重）与 `provider_magnet_torrent.go`（BT 客户端 / 文件选择 / Range 流）。编码沿用 `xbpqDecodeBody()` 处理 GBK，站源请求头与 UA 沿用项目既有约定。`app_runtime.go` 新增 `magnetSites / magnetSearch / magnetFiles / magnetPlay` 四个 action 与 90 秒 RPC 超时；这四个 action 不属于站源白名单分支，`nativeAuthorizeInput()` 不拦截，两个构建变体都能用。
-- 依赖：新增 `github.com/antchfx/htmlquery@v1.3.4`、`github.com/anacrolix/torrent@v1.54.1`。后者会带入 WebRTC / SQLite / bbolt / otel 等间接依赖，`go.mod` 依赖面明显变大，首次冷编译较慢；所有原生构建统一带 `-tags=disable_libutp,nosqlite` 禁用 cgo 版 uTP / SQLite 后端，否则 CI 交叉编译需要外部 C++ 工具链（详见下方「修复」）。BT 客户端 `Seed = false` / `NoUpload = true` / 关闭默认端口映射，缓存写在 `initialize` 传入的应用数据目录 `<dataDir>/magnet-cache`（Android 的 `os.TempDir()` 是 `/data/local/tmp`，普通应用没有写权限），只下载不上传。缺少 tracker 的磁力会补 3 个公共 UDP tracker，元数据等待上限 40 秒，超时不删任务，后台继续找种子、稍后重试可命中缓存。
-- Dart 新增 `magnet_models.dart`、`ui/magnet/magnet_page.dart`，改动 `core_bridge.dart`（4 个 RPC 抽象与 `NativeRepository` 实现、磁力 action 100 秒超时）、`playback_loader.dart`（磁力短路）、`ui/shell/app_shell.dart`（新标签）。修掉三处实际缺陷：`AppScope` 的相对导入层级错误；站源清单在 `initState` 里读 InheritedWidget 会触发 Flutter 生命周期断言，改到 `didChangeDependencies` 只加载一次；「正在准备」标记原本用 `id` 且初值为空串，会让所有未解析出 infohash 的条目一直转圈，改成以磁力链接为键的可空标记。
-- **约束**：本机流只在 `127.0.0.1` 监听，`nativePlan.Local = true`、`DirectURL` 为空，因此不支持投屏；元数据与分片都依赖真实 DHT / tracker / peer 可达性，国内网络下冷门种子可能长时间拿不到元数据；APK 内置的站源域名是快照，可能已失效，失效站点只影响自己那一路结果。本项目不提供、不托管任何磁力资源，请仅用于合法内容。
-- **站源标签 / DHT / 切换的实现接线**：Go 新增 `provider_magnet_sort.go`（大小 / 日期文本归一化）、`provider_magnet_cancel.go`（活动加载表）、`provider_magnet_peers.go`（批量 DHT 探测、缓存、节点统计与 `magnetCancelAll()`）；`app_runtime.go` 增加 `nativeInput.Hashes` 与 `magnetPeers` / `magnetCancel` 两个 action，前者 RPC 预算 30 秒（Dart `_call()` 40 秒），后者进 unrestricted 列表并给 10 秒超时。两个新 action 同样不进站源白名单，两个构建变体都能用。Dart `magnet_models.dart` 增加 `MagnetSort` / `MagnetSiteGroup` / `magnetSiteGroups()` / `magnetFilterResults()` / `MagnetPeerItem` / `MagnetPeersInfo` 与 `MagnetResult.copyWith()`；`ui/magnet/magnet_page.dart` 用 `TabController` + `TickerProviderStateMixin` 驱动标签（标签数量会随搜索结果变化，需要可重建的 ticker），标签外只挂一个结果列表、靠水平拖动手势切换；网页端 `app.js` 对应新增 `magnetBuildTabs()` / `magnetVisibleItems()` / `probeMagnetDht()` 与点播序号 `playSeq`。
-- **DHT 数字的含义与边界**：`dht` 是该种子经 DHT `get_peers` / `announce_peer` 发现的可连接节点数，`peers` 还含 tracker / PEX 提供的节点，`dhtNodes` 是 BT 客户端全局 DHT 路由表好节点数。探测复用播放用的 BT 客户端，首次探测会懒启动引擎并在 `<dataDir>/magnet-cache` 落缓存；引擎起不来时返回全 0 而不让搜索页报错。国内网络下 DHT 可能拿不到节点，此时 `dht` 为 0、排序退化为按 `peers`；探测不下载文件、不上传，也不代表真实种子一定能播。
-- **磁力搜索改为会话式并发（边搜边显）**：新增 `provider_magnet_session.go`，`magnetSearchStart` 立刻返回全部目标站标签（`sites` 里每站带 `pending / fetching / done / failed` 状态），各站并发去抓，每抓完一个站就把结果推进会话；界面用 `magnetSearchPoll` 增量取回（长轮询最多等 2 秒），`magnetSearchStop` 立即中断。Flutter 与网页端都改成「先把所有站标签画出来，再逐站填充」，不必等最慢的那个站。会话是「一次搜索」的快照，3 分钟过期、最多保留 4 个，`start` 只继承取消能力不继承调用方 deadline（请求返回后抓取要继续跑）。选轮询而不是回调，是因为 FFI 的 `_nativeRequest` 是同步请求-应答、Dart 每次调用跑在独立 Isolate 里，没有反向推送通道，轮询在五个端与本地服务版的 HTTP 转发下语义一致。
-- **磁力解析提速**：新增 `provider_magnet_meta.go`。① 种子元数据按 infohash 落盘到 `<dataDir>/magnet-meta/<hash>.torrent`，第二次打开同一个种子直接 `AddTorrentSpec(InfoBytes)` 跳过 DHT 等待；缓存带 hash 校验（文件名与内容不符即视为未命中，避免串种子），30 天过期、最多 2000 条，超出按最旧访问时间淘汰，属于可清理缓存。② 新增 `magnetWarmup` action，磁力页一打开就懒启动 BT 客户端并触发一次 DHT 查询，用户真正点播放时路由表已有节点。③ 播放预读窗口 `magnetReadahead` 从 16MB 提到 32MB，起播与小幅拖动更快出画面。**说明**：`cibo.apk` 的解析速度来自迅雷 SDK 的服务端元数据缓存（`libxl_thunder_sdk.so`，Android 闭源），Go 侧无法复刻那部分；这里做的是「同种子第二次秒开 + 冷启动预热 + 更大预读」，冷门种子的首次元数据仍需等 DHT / tracker。
-- **每条结果的可达性标记与「仅可达」筛选**：`MagnetResult.reachability` 分三态——未探测（中性）、探测到有节点（可达，勾选图标）、探测过但 0 节点（**不可达，整行标题与元信息标红并显示「不可达」**）。三态是必须的：国内网络 DHT 经常拿不到节点，把「未探测」当成「不可达」会让整页结果看起来全坏。「仅可达」只保留确实探测到节点的条目，与「仅含磁力」叠加生效；Flutter 与网页端都有这个筛选。探测改为会话结束时统一探一次，避免边搜边显期间每来一批就把同一批 hash 重复塞进 BT 客户端。**磁力播放页的分类列表也走同一条链路**：列表先显示、再后台补 `dht` / `peers` 并标红不可达；站源行右侧新增「仅可达」开关与「刷新节点数与可达性」按钮（`force` 跳过缓存重探），筛选只影响显示、不改动已加载数据，仅可达筛空时提示可关掉筛选，底部「加载更多」仍可用以便继续找可达条目。
-- **磁力播放页预缓存与「解析中可停止」**：三个子页改用 `Visibility` + `maintainState` 常驻（不是 `TabBarView` 的懒构建/销毁），在「磁力搜索 / 磁力播放 / 磁力源管理」之间来回切换时，已加载的分类、结果列表与滚动位置都保留，不会每次切换都重新拉一遍；未显示的子页是 offstage 的，不参与命中测试、也不被 finder 与读屏软件看到。子页新增 `active` 参数，只有第一次被显示时才发请求，避免一进磁力页就并发三个请求。解析中按钮从「解析中…」改为 **「停止解析」**，再点一次即通过新增的 `cancelSignal` 立即取消 Go 侧元数据等待并复位界面，不必等 40 秒超时。
-- **磁力页标签按窗口宽度自适应换行**：热词、搜索结果按站源分的标签、播放页的磁力源标签原来都是单行横滑，窗口一窄就有一半要靠横滑才看得到，看起来像「没显示出来」。新增 `ui/magnet/magnet_chip_flow.dart` 的 `MagnetChipFlow`：用 `TextPainter` 估算每个标签宽度后贪心分行，宽屏一行放得更多、窄屏自动多行；两行仍放不下时折叠成「+N」，点开菜单直接切换，当前选中项恰好被折叠时按钮直接显示它的名字并在菜单里打勾。行数上限随可用高度自适应（可用高 < 560 只放一行），横屏手机 / 小窗里不会把结果列表挤没。搜索结果的站源标签从 `TabBar` 换成这套可换行 chip，`TabController` 一并去掉（改成手动索引，左右滑动与方向键切换标签的行为不变）。修掉一个实际坑：胶囊若用 `Container(alignment: center)` 会撑满 Wrap 分到的整行，20 个热词各占一行（实测 370px 高、直接把结果区挤爆），改用 `Center(widthFactor: 1, heightFactor: 1)` 收缩到文字尺寸。
-- **平板 / Windows 窗口主页顶栏去掉常驻搜索框**：`SourceBar` 的 pad / window 分支原来内嵌一个 240~320px 的 `SearchField`，既占宽又与手机、电视两端不一致。现在三端统一为「标题 + 切换站源 + 搜索按钮」，点按钮才进搜索页；只为内联输入框存在的 `searchController` / `onSearchSubmitted` 两个参数一并删除，`ExplorePage` 的 `_search` controller 与电视顶栏的 `onSearchSubmitted` 同步清理。
-- **磁力源可编辑内置源 + 导入导出**：`magnet_sources.json` 增加 `overrides` 覆盖层，内置源现在也能编辑（保存时写覆盖，出厂规则仍留在安装包里），列表上用「已改」小标区分；`magnetResetSites` 一并清空自定义源、内置覆盖与禁用表，回到内嵌的 35 站。新增 `magnetExportSites` / `magnetImportSites` 两个 action：导出的是**当前生效配置**（含被改过的内置源与全部自定义源），导入支持 `merge`（追加/更新，不影响其它源）与 `replace`（先清空再导入），导入时与出厂规则完全一致的条目不会留下无意义覆盖，认不出的自定义 ID 会按源网址重新分配。界面在新增按钮旁提供导入/导出入口（横向滚动一行，窄屏也点得到）。
-
-### 修复
-- **修复 GitHub Actions 上 Android / Windows 原生核心编译失败**：1.2.9+114 引入 `github.com/anacrolix/torrent` 后，CI 的 `CGO_ENABLED=1` 交叉编译会启用该库默认的两个 C/C++ 后端——`go-libutp`（C++ 版 uTP 传输，6 个 `.cpp`）与 `go-llsqlite/crawshaw`（C 版 SQLite 分片记录，11 个 cgo 文件）。Android 上 Go 的 `gccld` 一旦检测到 C++ 目标文件就改用 `CXX` 做外部链接（`cmd/go/internal/work/exec.go` 里 `len(p.CXXFiles) > 0` 的分支），而构建脚本只设了 `CC`，于是落到宿主机 x86_64 的 `/usr/bin/g++`，拿它链 AArch64 的 `go.o`，报 `Relocations in generic ELF (EM: 183) / file in wrong format`；Windows / MinGW 上则是 `go-libutp` 的 `utp_types.h:120 typedef uint8 bool;` 与 C++ 的 `bool` 关键字冲突，报 `two or more data types in declaration specifiers`。两者都是确定性编译错误，脚本原有的「补依赖后重试 5 次」只会把同一条错误连刷 4 遍。
-- **统一切到纯 Go 后端**：用库自带的构建标签 `-tags=disable_libutp,nosqlite` 换掉 cgo 版 uTP 与 SQLite 分片记录（分别回落到纯 Go `anacrolix/utp` 与 `go.etcd.io/bbolt`），BT 的 TCP / DHT / 磁力元数据 / HTTP Range 流能力不变，五端 c-shared / c-archive 都不再需要外部 C/C++ 工具链。标签统一定义在 `scripts/app_build.py` 的 `GO_BUILD_TAGS` / `go_build_tag_args()`，由 `scripts/build_native.py`（Android / Windows / macOS）、`scripts/build_ios.py`、`scripts/build_web.py` 与 workflow 的 `go test -race` 全部引用，避免只修 Android、漏掉其它平台；`build_web.py` 本来就是 `CGO_ENABLED=0`，加上只是保持依赖图一致。
-- **两处防回归**：`build_native.py` 的 Android 分支显式把 `CXX` 设为 NDK 的 `aarch64-linux-android24-clang++`（文件存在时才设），将来万一再引入 C++ 依赖也不会退回宿主机 g++；workflow 的 `checks` job 新增一步，用 `go list -deps` 断言 android/arm64 依赖图无 C++ 目标文件，漏加标签会直接让检查失败。
-- 实测七个 CI 目标（`android` arm64 / arm / amd64、`windows` amd64、`darwin` arm64 / amd64、`ios` arm64）在带标签后 `CXXFiles` 全为 0，cgo 依赖只剩 Go 运行时自带的 `runtime/cgo`。本机校验：`go build -tags=... ./core ./server`、`go vet ./...`、全量 `go test -tags=... ./... -count=1`（core 13.8s，`TEST=0`）、13 例磁力定向测试、本轮 Go 文件 `gofmt -l`、`python -m py_compile scripts/*.py`、`node --check`、`git diff --check`、workflow YAML 与新增 shell 片段语法全部通过。期间 C 盘一度只剩 1.2 GB，全量测试出现 8 条「剧库尚未保存…请检查剩余空间」写盘失败，并连锁触发一个既有 flaky 崩溃；空间回升到 2.3 GB 后同一条命令重跑即全绿，确认与本次改动无关，没有做批量清理缓存。本机无 Android NDK / MinGW，真实 cgo 交叉编译仍以 CI 为准。
-- **修复 Android 点磁力播放报 `mkdir /data/local/tmp/duanjuapp-magnet: permission denied`**：根因是 BT 客户端把 `config.DataDir` 写成 `os.TempDir()/duanjuapp-magnet`，Android 上 `TMPDIR` 指向 `/data/local/tmp`，普通应用无写权限。改成 `magnetFileList` / `magnetPlaybackPlan` 从 `engine.directory` 取应用私有数据目录，固定落在 `<dataDir>/magnet-cache`，创建时做一次写探测；`sync.Once` 换成互斥锁，初始化失败不再被永久缓存，用户重试或清理缓存后能重新拉起引擎。同时新增 `magnetEngineReset()` 供清理缓存时释放分片句柄。
-- **修复红果四个榜单显示「共 3 集」**：站点榜单的 `episodeVids` 只是开放的 3~5 个试看 vid（实测总热播榜首部 `episodeCount=202`、`episodeVids` 5 条），旧代码把它的长度当成总集数；详情页又用 `len(chapters)`（网页 `vid_list` 同样只给试看集）覆盖总集数。现在 `parseHongguoRanking` 优先读站点显式声明的 `episodeCount`（兼容数字/字符串、缺失时留空不冒充），`fetchHongguoWebChapters` 返回带 `episode_cnt` 的完整 `Drama`，`nativeDetail` 对红果取「可访问集数 / 榜单集数 / 详情元数据」三者最大值。总热播榜、真人剧榜、漫剧榜、AI 剧榜四个榜单共用同一解析路径，一并修复。
-- **修复磁力源编辑自锁死**：`magnetUpdateCustomSite` 持 `magnetSources` 写锁后会调 `magnetBuiltinByID`，而它原本调 `loadMagnetSites()` 去拿同一把锁的读锁，形成自锁——表现为编辑内置源时整个核心卡死（Go 测试里以 10 分钟超时暴露）。改成 `magnetBuiltinByID` 只触发内嵌数据的一次性解析、不再走 `loadMagnetSites`；`magnetImportSites` 同样把内置 ID 表在拿锁之前建好。
-- **修复磁力页切换标签时 `dispose` 崩溃**：`_MagnetSearchTabState.dispose()` 里通过 `AppScope.of(context)` 取 repository 会在元素已 deactivate 后查 InheritedWidget，抛「Looking up a deactivated widget's ancestor is unsafe」。改为在 `didChangeDependencies` 缓存 repository，`dispose` 只用缓存值停会话。
-- **修复搜索结果分标签时条目被藏起来**：Go 侧没解析出 infohash 的条目 `siteId` 为 0，旧分组只按 `siteId` 匹配，导致「磁力猫」这类标签显示 0 条而结果只出现在「全部」里。现在 `siteId` 缺失时退回按站名匹配，并为「会话没登记但结果里出现过的站」补标签。
-- **修复导出/导入在无剪贴板环境下卡住**：`Clipboard.setData` 在没有 handler 的环境会一直挂着不返回，导致导出弹窗永远不出现。改为不 await 复制（失败不影响内容预览），导入侧读取加 600ms 超时兜底。
-
-### 测试
-
-- Go：新增 `native/core/provider_magnet_test.go`，13 例覆盖嵌入站源表完整性、搜索 URL 模板替换、相对 / 绝对 / 磁力地址补全、infohash（hex / base32 / magnet xt）提取、XPath 属性抽取与非法表达式容错、列表五字段解析、详情页绝对 XPath 补磁力、跨站去重与勾选站源、单站失败给 warning、视频后缀与文件挑选、tracker 追加去重、磁力流端点对未知任务返回 503 / 非法路径返回 400、四个磁力 action 不被站源白名单拦截。HTTP 用假 `RoundTripper` 与 `httptest`，不依赖真实站点与 DHT。
-- Dart：新增 `test/magnet_test.dart`，覆盖四个标签并列且原三项索引不变、Go ↔ Dart JSON 模型（缺磁力链接时不可点播）、`PlaybackLoader` 见 `raw['magnet']` 短路到 `magnetPlay()` 且不再走站源取流、磁力页选站源 / 搜索 / 结果列表、点播后列出种子内文件供选集。更新 `test/app_shell_tv_focus_test.dart` 适配 4 标签顶栏焦点顺序。
-- 全量校验全部通过：`go build ./core ./server`（`BUILD=0`）、`go test ./... -count=1 -timeout 300s`（core 29.1s，`TEST=0`）、`go vet ./...`（`VET=0`）、本轮 4 个 Go 文件 `gofmt -l` 无输出（仓库里 `provider_maccms_api.go` / `livestream.go` 两个既有文件仍会被 formatter 列出，本次未改动以免产生无关 diff）；`dart analyze lib test` → `No issues found!`、本轮改动文件 `dart format` 通过；`node --check native/server/web/app.js` 通过；全量 `flutter test --no-pub -j 1` → `01:42 +185: All tests passed!`，0 失败（上一版 180 例，新增 5 例磁力测试）。Flutter 全量套件沿用后台 / 长超时 + `-j 1` + 日志重定向的跑法，避免多份 `output.dill` 同时写入临时盘触发 errno 112。
-- 本轮追加回归：Go 新增 `provider_magnet_torrent_test.go`（磁力缓存目录必须落在应用数据目录、reset 幂等）、`provider_hongguo_detail_parse_test.go`（`episode_cnt=202` 而 `vid_list` 只有 3 条）、`app_cache_clean_test.go`（分类统计与清理、保护 `.part` / `.ts` 断点续传分片、播放器 cache 目录白名单、拒绝系统临时目录），并在 `provider_rankings_test.go` / `provider_rankings_loader_test.go` 断言 `episodeCount` 生效且试看 vid 不再冒充总集数。校验：`go build -tags=... ./core ./server`、`go vet`、`go test -tags=... ./...`（core 22s）、`gofmt -l` 无输出、`dart analyze lib test` → `No issues found!`、`node --check`、`git diff --check`、全量 `flutter test --no-pub -j 1` → `01:10 +185: All tests passed!`（本机需带 `NO_PROXY=127.0.0.1,localhost` 才能连上 flutter_tester）。
-- 本轮追加回归（会话式搜索 / 解析提速 / 可达性 / 源编辑导入导出）：Go 新增 `provider_magnet_session_test.go` 7 组——快站结果必须先于慢站出现（证明「边搜边显」而不是等全部完成）、`stop` 后 `poll` 报失效、元数据缓存写入/读回与 hash 不匹配拒绝（含路径穿越防护）、过期元数据被淘汰、内置源可编辑并写入覆盖层且「恢复默认」还原出厂名、导出含内置修改并可 `merge` / `replace` 导入、会话数量受上限约束、并发 `poll` 不死锁。Dart `test/magnet_test.dart` 增至 25 例，新增可达性三态与「仅可达」筛选（未探测不算可达、tracker-only 也算可达、两个筛选叠加）、会话快照 JSON 解析、慢会话下「先出标签再逐站填充」、搜索中可停止、磁力页打开即预热、源管理编辑内置源 / 导入 / 导出、切换标签不重新拉列表（预缓存）。校验：`go build -tags=... ./core ./server`、`go vet`、`go test -tags=... ./...`（core 31.3s）、`gofmt -l` 无输出、`dart analyze lib test` → `No issues found!`、`node --check`、`git diff --check`、全量 `flutter test --no-pub -j 1` 通过。
-
-> 未验证项：真实磁力站源当前可用性、真实种子的 DHT / tracker 元数据获取与边下边播体验、每条结果显示的 DHT 节点数在真实网络下的准确度（测试全部用桩，不发真实 BT 流量；国内网络 DHT 可能拿不到节点，此时数字为 0、可达性会显示为不可达）、会话式搜索在 35 站全开时的实际增量节奏与轮询开销、元数据缓存对「第二次打开」的真实提速幅度、Android / iOS / macOS 上 gomobile 链接新增 BT 依赖的兼容性、本地服务版网页前端在浏览器里的实际交互，以及 BT 依赖对各端包体与冷启动的影响，均需联网真机 / 真种子验收。
 
 ## 1.2.8+113
 

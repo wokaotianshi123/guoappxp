@@ -38,9 +38,9 @@ Future<void> press(WidgetTester tester, LogicalKeyboardKey key) async {
   await tester.pump(const Duration(milliseconds: 100));
 }
 
-/// 四个标签各是一个带文字的 InkWell，FocusNode 由宿主持有。
+/// 每个标签各是一个带文字的 InkWell，FocusNode 由宿主持有。
 List<FocusNode> tabNodes(WidgetTester tester) => [
-  for (final label in ['发现', '追剧', '我的', '磁力'])
+  for (final label in ['发现', '听书', '追剧', '我的'])
     find
         .ancestor(of: find.text(label), matching: find.byType(InkWell))
         .evaluate()
@@ -109,7 +109,7 @@ void main() {
     expect(find.byTooltip('切换站源'), findsOneWidget, reason: '焦点移到我的后源按钮不能跟着消失');
   });
 
-  testWidgets('电视端顶栏方向键依次经过 发现→追剧→我的→磁力→源→搜索', (tester) async {
+  testWidgets('电视端顶栏方向键依次经过 发现→听书→追剧→我的→源→搜索', (tester) async {
     final store = await openTelevisionShell(tester);
     final tabs = tabNodes(tester);
     final source = button(tester, '切换站源').focusNode!;

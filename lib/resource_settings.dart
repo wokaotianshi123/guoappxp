@@ -14,15 +14,12 @@ class ResourceSettings {
     this.catalogIntervalMs = 250,
     this.downloadConcurrency = 2,
     this.downloadBySource = false,
-    // 磁力云端种子缓存默认开启：按 infohash 取回种子能跳过几十秒的 DHT 等待。
-    // 关闭后完全本地解析，不向第三方发送 infohash。
-    this.magnetMetaFetch = true,
     this.warning = '',
     this.systemProxyStatus = '',
   });
   final String proxyMode, proxyUrl, warning, systemProxyStatus;
   final int catalogConcurrency, catalogIntervalMs, downloadConcurrency;
-  final bool downloadBySource, magnetMetaFetch;
+  final bool downloadBySource;
 
   factory ResourceSettings.fromJson(Map<String, dynamic> data) =>
       ResourceSettings(
@@ -32,8 +29,6 @@ class ResourceSettings {
         catalogIntervalMs: intValue(data['catalogIntervalMs']),
         downloadConcurrency: intValue(data['downloadConcurrency']),
         downloadBySource: data['downloadBySource'] == true,
-        // 老版本核心不返回该字段，按默认开启处理。
-        magnetMetaFetch: data['magnetMetaFetch'] as bool? ?? true,
         warning: data['warning'] as String? ?? '',
         systemProxyStatus: data['systemProxyStatus'] as String? ?? '',
       );
@@ -45,7 +40,6 @@ class ResourceSettings {
     int? catalogIntervalMs,
     int? downloadConcurrency,
     bool? downloadBySource,
-    bool? magnetMetaFetch,
   }) => ResourceSettings(
     proxyMode: proxyMode ?? this.proxyMode,
     proxyUrl: proxyUrl ?? this.proxyUrl,
@@ -53,7 +47,6 @@ class ResourceSettings {
     catalogIntervalMs: catalogIntervalMs ?? this.catalogIntervalMs,
     downloadConcurrency: downloadConcurrency ?? this.downloadConcurrency,
     downloadBySource: downloadBySource ?? this.downloadBySource,
-    magnetMetaFetch: magnetMetaFetch ?? this.magnetMetaFetch,
     warning: warning,
     systemProxyStatus: systemProxyStatus,
   );
@@ -65,7 +58,6 @@ class ResourceSettings {
     'catalogIntervalMs': catalogIntervalMs,
     'downloadConcurrency': downloadConcurrency,
     'downloadBySource': downloadBySource,
-    'magnetMetaFetch': magnetMetaFetch,
   };
 }
 

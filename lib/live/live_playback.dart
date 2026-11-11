@@ -58,7 +58,13 @@ class LivePlaybackController extends ChangeNotifier {
   bool get ready => _player != null;
   bool get paused => _paused;
   int get route => _route;
-  int get routeCount => channel?.urls.length ?? 0;
+  // 房间型源（斗鱼 / 哔哩哔哩 / 虎牙）在点击时才解析真实地址，
+  // 列表里没有多条线路；仍按「一条线路」显示，避免出现 1/0。
+  int get routeCount {
+    final urls = channel?.urls.length ?? 0;
+    return urls > 0 ? urls : 1;
+  }
+
   String? get error => _error;
   double get aspectRatio => _aspectRatio;
 

@@ -1,4 +1,4 @@
-enum LiveProtocol { pingtai, list }
+enum LiveProtocol { pingtai, list, room }
 
 class LiveSource {
   const LiveSource({
@@ -42,12 +42,35 @@ class LiveSource {
   final bool enabled;
 
   /// 是否支持按页续载。整类一次返回的源不参与滚动加载。
-  bool get paginated => protocol == LiveProtocol.list;
+  bool get paginated =>
+      protocol == LiveProtocol.list || protocol == LiveProtocol.room;
 
+  /// 默认斗鱼，其次哔哩哔哩、虎牙，原有的秀果直播排在最后。
   static const values = <LiveSource>[
     LiveSource(
+      id: 'douyu',
+      name: '斗鱼',
+      description: '游戏 · 娱乐 · 赛事',
+      protocol: LiveProtocol.room,
+      endpoints: ['https://www.douyu.com'],
+    ),
+    LiveSource(
+      id: 'bilibili',
+      name: '哔哩哔哩',
+      description: '游戏 · 娱乐 · 赛事',
+      protocol: LiveProtocol.room,
+      endpoints: ['https://live.bilibili.com'],
+    ),
+    LiveSource(
+      id: 'huya',
+      name: '虎牙',
+      description: '游戏 · 娱乐 · 赛事',
+      protocol: LiveProtocol.room,
+      endpoints: ['https://www.huya.com'],
+    ),
+    LiveSource(
       id: 'xiuguo',
-      name: '秀果',
+      name: '秀果直播',
       description: '主播直播 · 实时开播',
       protocol: LiveProtocol.pingtai,
       endpoints: [
@@ -67,14 +90,19 @@ class LiveSource {
     caseSensitive: false,
   );
 
-  /// 绿色模式下的直播可见性：成人源整源隐藏，成人分类单独隐藏。
+  /// 绿色模式下的直播可见性：秀果直播这类成人源整源隐藏；
+  /// 斗鱼 / 哔哩哔哩 / 虎牙是公开平台，绿色模式下依然可见。
   static List<LiveSource> visible(bool greenMode) => [
     for (final source in values)
       if (!greenMode || !source.adult) source,
   ];
 
-  static bool hidesCategory(String name, {required bool greenMode}) =>
-      greenMode && !_greenCategory.hasMatch(name);
+  /// 只过滤成人源的分类；公开平台即使有娱乐分区也不整类隐藏。
+  static bool hidesCategory(
+    String name, {
+    required bool greenMode,
+    bool adult = true,
+  }) => greenMode && adult && !_greenCategory.hasMatch(name);
 
   /// 在既有内置源之外追加一个源，仅用于验证绿色模式的整源过滤。
   static List<LiveSource> spreadWith(

@@ -24,7 +24,6 @@ func TestClearCacheOnlyRemovesRegenerableFiles(t *testing.T) {
 		}
 		return path
 	}
-	magnet := write(filepath.Join("magnet-cache", "piece.bin"), 1024)
 	playback := write(filepath.Join("playback-cache", "clip.ts"), 512)
 	temp := write(filepath.Join("downloads", ".download-write-abc"), 256)
 	keep := write("catalog-cache.json", 128)
@@ -44,10 +43,10 @@ func TestClearCacheOnlyRemovesRegenerableFiles(t *testing.T) {
 	}
 
 	info := engine.cacheInfo("")
-	if info.Bytes != 1024+512+256 {
-		t.Fatalf("可清理缓存 = %d 字节，期望 1792：%+v", info.Bytes, info)
+	if info.Bytes != 512+256 {
+		t.Fatalf("可清理缓存 = %d 字节，期望 768：%+v", info.Bytes, info)
 	}
-	if info.MagnetBytes != 1024 || info.PlaybackBytes != 512 || info.TempBytes != 256 {
+	if info.PlaybackBytes != 512 || info.TempBytes != 256 {
 		t.Fatalf("缓存分类统计错误: %+v", info)
 	}
 
@@ -55,13 +54,13 @@ func TestClearCacheOnlyRemovesRegenerableFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if result.ClearedBytes != info.Bytes || result.ClearedFiles != 3 {
+	if result.ClearedBytes != info.Bytes || result.ClearedFiles != 2 {
 		t.Fatalf("实际清理 = %d 字节 / %d 文件：%+v", result.ClearedBytes, result.ClearedFiles, result)
 	}
 	if result.Bytes != 0 {
 		t.Fatalf("清理后仍有 %d 字节缓存", result.Bytes)
 	}
-	for _, path := range []string{magnet, playback, temp} {
+	for _, path := range []string{playback, temp} {
 		if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 			t.Fatalf("缓存文件未被删除: %s (%v)", path, err)
 		}

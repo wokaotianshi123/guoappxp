@@ -9,7 +9,6 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
-import 'magnet_models.dart';
 import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'fanqie_backend.dart';
@@ -254,6 +253,22 @@ abstract class AppRepository {
   Future<void> cancelPlayback();
   Future<void> release(String session);
 
+  // ---- 听书（番茄畅听）：Flutter 与本地服务端共用 Go 核心的同一组动作 ----
+  Future<Map<String, dynamic>> audiobookMedia(
+    String bookId,
+    String chapterId,
+  ) async => throw AppFailure('当前环境不支持听书播放');
+
+  /// 章节正文：`paragraphs` 每项含 `text`、`start`（秒，无时间戳为 -1）和逐句 `segments`。
+  Future<Map<String, dynamic>> audiobookText(String chapterId) async =>
+      throw AppFailure('当前环境不支持听书原文');
+
+  /// 榜单 / 搜索 / 目录 / 网页正文的原始 JSON；Go 核心按域名白名单代发。
+  Future<String> audiobookFetch(
+    String url, {
+    Map<String, String> headers = const {},
+  }) async => throw AppFailure('当前环境不支持听书源');
+
   /// 投屏：核心把当前播放会话再挂一份到 0.0.0.0，返回电视能访问的内网基址。
   /// [peer] 是电视的地址，核心据此确定手机这一侧用哪块网卡（Android 上
   /// 枚举网卡不一定拿得到地址，按路由挑出口最可靠）。
@@ -290,113 +305,6 @@ abstract class AppRepository {
   /// 不会写入自定义源；是否保存由用户在表单里点「保存」决定。
   Future<Map<String, dynamic>> analyzeCustomSourceSite(String base) async =>
       throw AppFailure('当前环境不支持自定义源');
-
-  /// 磁力搜索：站源列表、分页搜索、种子内的文件列表、以及可直接交给播放器的地址。
-  Future<List<MagnetSite>> magnetSites() async =>
-      throw AppFailure('当前环境不支持磁力搜索');
-  Future<MagnetSearchPage> magnetSearch(
-    String query, {
-    int page = 1,
-    List<int> sites = const [],
-  }) async => throw AppFailure('当前环境不支持磁力搜索');
-  Future<List<MagnetFile>> magnetFiles(String magnet) async =>
-      throw AppFailure('当前环境不支持磁力播放');
-  Future<PlaybackPlan> magnetPlay(String magnet, {int fileIndex = -1}) async =>
-      throw AppFailure('当前环境不支持磁力播放');
-
-  /// 批量探测每条结果当前可连接的 DHT 节点数（测试替身默认返回空结果）。
-  /// [force] 为真时跳过 Go 侧的 5 分钟缓存，对应界面上的「刷新」。
-  Future<MagnetPeersInfo> magnetPeers(
-    List<String> hashes, {
-    bool force = false,
-  }) async => const MagnetPeersInfo();
-
-  /// 立即终止上一条磁力的元数据加载与分片下载，方便快速切换到新磁力。
-  Future<void> magnetCancel() async {}
-
-  // ---- 磁力热词 / 分类浏览 / 磁力源管理 ----
-  // 下面三个方法给「磁力搜索」与「磁力播放」页的首屏用，测试替身不实现时
-  // 返回空结果而不是抛错，避免老测试的桩仓库一进页面就炸。
-
-  /// 搜索框下方的 20 个热词；[refresh] 为真时重新从磁力站首页随机抓取。
-  Future<List<String>> magnetHotWords({bool refresh = false}) async =>
-      const <String>[];
-
-  /// 「磁力播放」页的分类：按站源实际抓回来的导航分类，站点没有分类时返回空，
-  /// 由界面回退到「全部」照常显示列表。[refresh] 跳过 Go 侧缓存重新抓。
-  Future<List<MagnetCategory>> magnetCategories({
-    List<int> sites = const [],
-    bool refresh = false,
-  }) async => const <MagnetCategory>[];
-
-  /// 按分类浏览站内列表（可不带关键词），结果与 magnetSearch 同结构。
-  /// [categoryUrl] 非空时按这个真实分类地址抓，[categorySiteId] 限定它属于哪个源。
-  Future<MagnetSearchPage> magnetBrowse(
-    String query, {
-    int page = 1,
-    List<int> sites = const [],
-    String categoryUrl = '',
-    int categorySiteId = 0,
-  }) async => const MagnetSearchPage();
-
-  /// 输入网址自动反推磁力源规则，只回填表单、不写盘。
-  Future<MagnetSiteAnalysis> analyzeMagnetSite(String base) async =>
-      const MagnetSiteAnalysis();
-
-  Future<MagnetSite> addMagnetSite({
-    required String name,
-    required String base,
-    required String rule,
-  }) async => throw AppFailure('当前环境不支持磁力源管理');
-
-  Future<MagnetSite> updateMagnetSite(
-    int id, {
-    required String name,
-    required String rule,
-    bool? state,
-  }) async => throw AppFailure('当前环境不支持磁力源管理');
-
-  Future<void> removeMagnetSite(int id) async =>
-      throw AppFailure('当前环境不支持磁力源管理');
-
-  Future<int> resetMagnetSites() async => throw AppFailure('当前环境不支持磁力源管理');
-
-  // ---- 磁力搜索会话（边搜边显）----
-  // start 立刻返回全部站标签，poll 增量取回结果，stop 立即中断。测试替身默认
-  // 退化成一次性返回空会话，老测试的桩仓库不会因此炸掉。
-
-  /// 开始一次搜索会话。[browse] 为真时按站内列表浏览（可不带关键词）。
-  Future<MagnetSessionSnapshot> magnetSearchStart(
-    String query, {
-    int page = 1,
-    List<int> sites = const [],
-    bool browse = false,
-    String categoryUrl = '',
-    int categorySiteId = 0,
-  }) async => const MagnetSessionSnapshot(phase: 'done');
-
-  /// 取回增量结果。[wait] 为真时 Go 侧最多等 2 秒，避免空转轮询。
-  Future<MagnetSessionSnapshot> magnetSearchPoll(
-    String session, {
-    bool wait = true,
-  }) async => const MagnetSessionSnapshot(phase: 'done');
-
-  /// 立即中断会话（用户点「停止」或发起新搜索时）。
-  Future<void> magnetSearchStop(String session) async {}
-
-  /// 预热 BT 引擎与 DHT，磁力页打开时调一次，点播放时省掉冷启动。
-  Future<void> magnetWarmup() async {}
-
-  // ---- 磁力源导入导出 ----
-
-  /// 导出当前生效配置（含被改过的内置源），返回可直接存成文件的 JSON 文本。
-  Future<String> magnetExportSites() async => throw AppFailure('当前环境不支持磁力源管理');
-
-  /// 导入配置。[mode] 为 `merge`（默认，追加/更新）或 `replace`（先清空再导入）。
-  Future<MagnetImportResult> magnetImportSites(
-    String content, {
-    String mode = 'merge',
-  }) async => const MagnetImportResult();
 }
 
 class NativeRepository extends AppRepository {
@@ -744,7 +652,6 @@ class NativeRepository extends AppRepository {
             'release',
             'cancelPlayback',
             'cancelRead',
-            'magnetCancel',
             'updateSystemProxy',
           }.contains(action) ||
           action == 'workLease' && input['command'] == 'end' ||
@@ -817,31 +724,6 @@ class NativeRepository extends AppRepository {
                   ? 620
                   : action == 'analyzeCustomSourceSite'
                   ? 100
-                  : action == 'magnetSearch' ||
-                        action == 'magnetBrowse' ||
-                        action == 'magnetFiles' ||
-                        action == 'magnetPlay'
-                  ? 100
-                  : action == 'magnetAnalyzeSite'
-                  ? 50
-                  : action == 'magnetHotWords'
-                  ? 25
-                  : action == 'magnetCategories'
-                  ? 35
-                  : action == 'magnetPeers'
-                  ? 40
-                  : action == 'magnetCancel'
-                  ? 10
-                  : action == 'magnetSearchStart'
-                  ? 30
-                  : action == 'magnetSearchPoll'
-                  ? 25
-                  : action == 'magnetSearchStop'
-                  ? 10
-                  : action == 'magnetWarmup'
-                  ? 30
-                  : action == 'magnetImportSites'
-                  ? 40
                   : action == 'danmaku'
                   ? 15
                   : action == 'preload'
@@ -1272,6 +1154,37 @@ class NativeRepository extends AppRepository {
   }
 
   @override
+  Future<Map<String, dynamic>> audiobookMedia(
+    String bookId,
+    String chapterId,
+  ) => _call({
+    'action': 'audiobookMedia',
+    'query': bookId,
+    'category': chapterId,
+  });
+
+  @override
+  Future<Map<String, dynamic>> audiobookText(String chapterId) =>
+      _call({'action': 'audiobookText', 'category': chapterId});
+
+  @override
+  Future<String> audiobookFetch(
+    String url, {
+    Map<String, String> headers = const {},
+  }) async {
+    final data = await _call({
+      'action': 'audiobookFetch',
+      'query': url,
+      if (headers.isNotEmpty) 'content': jsonEncode(headers),
+    });
+    final body = data['body'];
+    if (body is! String || body.isEmpty) {
+      throw AppFailure('听书源没有返回内容');
+    }
+    return body;
+  }
+
+  @override
   Future<String> castBase({String peer = ''}) async {
     final data = await _call({
       'action': 'castBase',
@@ -1375,237 +1288,5 @@ class NativeRepository extends AppRepository {
       'base': base,
     });
     return Map<String, dynamic>.from(result as Map);
-  }
-
-  @override
-  Future<List<MagnetSite>> magnetSites() async {
-    final result = await _call({'action': 'magnetSites'});
-    return [
-      for (final row in (result as Map)['items'] as List? ?? const [])
-        MagnetSite.fromJson(Map<String, dynamic>.from(row as Map)),
-    ];
-  }
-
-  @override
-  Future<MagnetSearchPage> magnetSearch(
-    String query, {
-    int page = 1,
-    List<int> sites = const [],
-  }) async {
-    final result = await _call({
-      'action': 'magnetSearch',
-      'query': query,
-      'page': page,
-      'sites': sites,
-    });
-    return MagnetSearchPage.fromJson(Map<String, dynamic>.from(result as Map));
-  }
-
-  @override
-  Future<List<MagnetFile>> magnetFiles(String magnet) async {
-    final result = await _call({'action': 'magnetFiles', 'magnet': magnet});
-    return [
-      for (final row in (result as Map)['items'] as List? ?? const [])
-        MagnetFile.fromJson(Map<String, dynamic>.from(row as Map)),
-    ];
-  }
-
-  @override
-  Future<PlaybackPlan> magnetPlay(String magnet, {int fileIndex = -1}) async =>
-      PlaybackPlan.fromJson(
-        Map<String, dynamic>.from(
-          await _call({
-                'action': 'magnetPlay',
-                'magnet': magnet,
-                'fileIndex': fileIndex,
-              })
-              as Map,
-        ),
-      );
-
-  @override
-  Future<MagnetPeersInfo> magnetPeers(
-    List<String> hashes, {
-    bool force = false,
-  }) async {
-    if (hashes.isEmpty) return const MagnetPeersInfo();
-    final result = await _call({
-      'action': 'magnetPeers',
-      'hashes': hashes,
-      'force': force,
-    });
-    return MagnetPeersInfo.fromJson(Map<String, dynamic>.from(result as Map));
-  }
-
-  @override
-  Future<void> magnetCancel() async {
-    await _call({'action': 'magnetCancel'});
-  }
-
-  @override
-  Future<List<String>> magnetHotWords({bool refresh = false}) async {
-    final result = await _call({'action': 'magnetHotWords', 'force': refresh});
-    return [
-      for (final row in (result as Map)['items'] as List? ?? const [])
-        if (row is String && row.trim().isNotEmpty) row,
-    ];
-  }
-
-  @override
-  Future<List<MagnetCategory>> magnetCategories({
-    List<int> sites = const [],
-    bool refresh = false,
-  }) async {
-    final result = await _call({
-      'action': 'magnetCategories',
-      'sites': sites,
-      'force': refresh,
-    });
-    return [
-      for (final row in (result as Map)['items'] as List? ?? const [])
-        if (row is Map) MagnetCategory.fromJson(Map<String, dynamic>.from(row)),
-    ];
-  }
-
-  @override
-  Future<MagnetSearchPage> magnetBrowse(
-    String query, {
-    int page = 1,
-    List<int> sites = const [],
-    String categoryUrl = '',
-    int categorySiteId = 0,
-  }) async {
-    final result = await _call({
-      'action': 'magnetBrowse',
-      'query': query,
-      'page': page,
-      'sites': sites,
-      if (categoryUrl.isNotEmpty) 'categoryUrl': categoryUrl,
-      if (categorySiteId > 0) 'categorySiteId': categorySiteId,
-    });
-    return MagnetSearchPage.fromJson(Map<String, dynamic>.from(result as Map));
-  }
-
-  @override
-  Future<MagnetSiteAnalysis> analyzeMagnetSite(String base) async {
-    final result = await _call({'action': 'magnetAnalyzeSite', 'base': base});
-    return MagnetSiteAnalysis.fromJson(
-      Map<String, dynamic>.from(result as Map),
-    );
-  }
-
-  @override
-  Future<MagnetSite> addMagnetSite({
-    required String name,
-    required String base,
-    required String rule,
-  }) async {
-    final result = await _call({
-      'action': 'magnetAddSite',
-      'name': name,
-      'base': base,
-      'rule': rule,
-    });
-    return MagnetSite.fromJson(Map<String, dynamic>.from(result as Map));
-  }
-
-  @override
-  Future<MagnetSite> updateMagnetSite(
-    int id, {
-    required String name,
-    required String rule,
-    bool? state,
-  }) async {
-    final payload = <String, dynamic>{
-      'action': 'magnetUpdateSite',
-      'siteId': id,
-      'name': name,
-      'rule': rule,
-    };
-    if (state != null) payload['siteState'] = state;
-    final result = await _call(payload);
-    return MagnetSite.fromJson(Map<String, dynamic>.from(result as Map));
-  }
-
-  @override
-  Future<void> removeMagnetSite(int id) async {
-    await _call({'action': 'magnetRemoveSite', 'siteId': id});
-  }
-
-  @override
-  Future<int> resetMagnetSites() async {
-    final result = await _call({'action': 'magnetResetSites'});
-    return (result as Map)['removed'] as int? ?? 0;
-  }
-
-  @override
-  Future<MagnetSessionSnapshot> magnetSearchStart(
-    String query, {
-    int page = 1,
-    List<int> sites = const [],
-    bool browse = false,
-    String categoryUrl = '',
-    int categorySiteId = 0,
-  }) async {
-    final result = await _call({
-      'action': 'magnetSearchStart',
-      'query': query,
-      'page': page,
-      'sites': sites,
-      if (browse) 'command': 'browse',
-      if (categoryUrl.isNotEmpty) 'categoryUrl': categoryUrl,
-      if (categorySiteId > 0) 'categorySiteId': categorySiteId,
-    });
-    return MagnetSessionSnapshot.fromJson(
-      Map<String, dynamic>.from(result as Map),
-    );
-  }
-
-  @override
-  Future<MagnetSessionSnapshot> magnetSearchPoll(
-    String session, {
-    bool wait = true,
-  }) async {
-    if (session.isEmpty) return const MagnetSessionSnapshot(phase: 'done');
-    final result = await _call({
-      'action': 'magnetSearchPoll',
-      'session': session,
-      'force': wait,
-    });
-    return MagnetSessionSnapshot.fromJson(
-      Map<String, dynamic>.from(result as Map),
-    );
-  }
-
-  @override
-  Future<void> magnetSearchStop(String session) async {
-    if (session.isEmpty) return;
-    await _call({'action': 'magnetSearchStop', 'session': session});
-  }
-
-  @override
-  Future<void> magnetWarmup() async {
-    await _call({'action': 'magnetWarmup'});
-  }
-
-  @override
-  Future<String> magnetExportSites() async {
-    final result = await _call({'action': 'magnetExportSites'});
-    return jsonEncode(result);
-  }
-
-  @override
-  Future<MagnetImportResult> magnetImportSites(
-    String content, {
-    String mode = 'merge',
-  }) async {
-    final result = await _call({
-      'action': 'magnetImportSites',
-      'content': content,
-      'command': mode,
-    });
-    return MagnetImportResult.fromJson(
-      Map<String, dynamic>.from(result as Map),
-    );
   }
 }

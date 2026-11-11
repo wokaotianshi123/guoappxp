@@ -10,7 +10,7 @@ import (
 	"time"
 )
 
-// 「清理缓存」只处理可再生的播放/磁力缓存与临时文件。剧库、设置、追剧、
+// 「清理缓存」只处理可再生的播放缓存与临时文件。剧库、设置、追剧、
 // 观看记录、会话凭据和已完成下载一律不动。
 const playbackCacheDirName = "playback-cache"
 
@@ -24,7 +24,6 @@ var playbackCacheSubdirs = []string{
 type nativeCacheInfo struct {
 	Bytes         int64  `json:"bytes"`
 	Files         int64  `json:"files"`
-	MagnetBytes   int64  `json:"magnetBytes"`
 	PlaybackBytes int64  `json:"playbackBytes"`
 	TempBytes     int64  `json:"tempBytes"`
 	ClearedBytes  int64  `json:"clearedBytes"`
@@ -92,7 +91,6 @@ func nativeCacheMediaTempName(name string) bool {
 // nativeCacheFiles 收集当前可清理的缓存文件。临时文件只挑 30 分钟前的，
 // 不碰正在写入的下载分片和正在播放的转码中间文件。
 func (engine *nativeEngine) nativeCacheFiles(extra string) []nativeCacheFile {
-	magnetDir := magnetCacheDirectory(engine.directory)
 	playbackDir := filepath.Join(engine.directory, playbackCacheDirName)
 	seen := map[string]bool{}
 	var out []nativeCacheFile
@@ -132,7 +130,7 @@ func (engine *nativeEngine) nativeCacheFiles(extra string) []nativeCacheFile {
 				if path == root {
 					return nil
 				}
-				if onlyRoot || path == magnetDir || path == playbackDir {
+				if onlyRoot || path == playbackDir {
 					return fs.SkipDir
 				}
 				return nil
@@ -152,7 +150,6 @@ func (engine *nativeEngine) nativeCacheFiles(extra string) []nativeCacheFile {
 			return nil
 		})
 	}
-	collectDir(magnetDir, "magnet")
 	collectDir(playbackDir, "playback")
 	collectTemp(engine.directory, false, false)
 	if cache := nativeCacheExtraDirectory(extra, engine.directory); cache != "" {
@@ -170,8 +167,6 @@ func nativeCacheTotals(files []nativeCacheFile) nativeCacheInfo {
 		info.Bytes += file.size
 		info.Files++
 		switch file.kind {
-		case "magnet":
-			info.MagnetBytes += file.size
 		case "playback":
 			info.PlaybackBytes += file.size
 		default:
@@ -206,10 +201,6 @@ func (engine *nativeEngine) cacheInfo(extra string) nativeCacheInfo {
 // 被进程占用的文件会跳过并给出提示，其余照常清理。
 func (engine *nativeEngine) clearCache(extra string) (nativeCacheInfo, error) {
 	files := engine.nativeCacheFiles(extra)
-	// 先取消还在等元数据的加载并 Drop 旧种子，再关客户端释放分片句柄；
-	// 否则清理时挂着的 prepare 要一直等到 40 秒超时。
-	magnetCancelAll()
-	magnetEngineReset()
 	info := nativeCacheInfo{}
 	failed := 0
 	for _, file := range files {
@@ -222,11 +213,10 @@ func (engine *nativeEngine) clearCache(extra string) (nativeCacheInfo, error) {
 		info.ClearedBytes += file.size
 		info.ClearedFiles++
 	}
-	nativePruneEmptyDirs(magnetCacheDirectory(engine.directory))
 	nativePruneEmptyDirs(filepath.Join(engine.directory, playbackCacheDirName))
 	remaining := nativeCacheTotals(engine.nativeCacheFiles(extra))
 	info.Bytes, info.Files = remaining.Bytes, remaining.Files
-	info.MagnetBytes, info.PlaybackBytes, info.TempBytes = remaining.MagnetBytes, remaining.PlaybackBytes, remaining.TempBytes
+	info.PlaybackBytes, info.TempBytes = remaining.PlaybackBytes, remaining.TempBytes
 	if failed > 0 {
 		info.Warning = fmt.Sprintf("%d 个文件正在使用中，未能删除；关闭播放或下载后可再清理一次", failed)
 	}

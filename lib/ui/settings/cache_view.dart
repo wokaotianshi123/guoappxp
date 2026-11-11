@@ -6,7 +6,7 @@ import '../widgets/group_card.dart';
 import '../widgets/status_view.dart';
 import 'storage_view.dart' show storageSize;
 
-/// 「我的 → 设置 → 缓存」：统计并清理磁力下载分片、播放缓存与临时文件。
+/// 「我的 → 设置 → 缓存」：统计并清理播放缓存与临时文件。
 /// 已完成下载、剧库、追剧和设置都不在清理范围内。
 class CacheView extends StatefulWidget {
   const CacheView({super.key});
@@ -60,7 +60,7 @@ class _CacheViewState extends State<CacheView> {
       builder: (context) => AlertDialog(
         title: const Text('清理缓存？'),
         content: const Text(
-          '将删除磁力下载缓存、播放与转码临时文件。\n'
+          '将删除播放与转码临时文件。\n'
           '已下载的视频、剧库、追剧记录和设置不会受影响。\n'
           '正在播放的视频建议先退出。',
         ),
@@ -147,12 +147,6 @@ class _CacheViewState extends State<CacheView> {
             ),
             const Divider(indent: 16, endIndent: 16),
             SettingsTile(
-              title: '磁力下载缓存',
-              subtitle: 'BT 边下边播产生的种子分片',
-              value: storageSize(bytes('magnetBytes')),
-            ),
-            const Divider(indent: 16, endIndent: 16),
-            SettingsTile(
               title: '播放缓存',
               subtitle: '播放器与播放临时目录中的可再生成文件',
               value: storageSize(bytes('playbackBytes')),
@@ -188,7 +182,7 @@ class _CacheViewState extends State<CacheView> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
           child: Text(
-            '清理后再次播放磁力会重新下载所需分片。',
+            '清理后再次播放会重新生成所需缓存。',
             style: text.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
           ),
         ),

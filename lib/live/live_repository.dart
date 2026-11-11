@@ -5,6 +5,7 @@ import '../core_bridge.dart';
 import 'live_http.dart';
 import 'live_models.dart';
 import 'live_parser.dart';
+import 'live_rooms.dart';
 import 'live_sources.dart';
 
 class LiveRepository {
@@ -48,6 +49,7 @@ class LiveRepository {
     final result = switch (source.protocol) {
       LiveProtocol.pingtai => await _pingtaiPlatforms(source),
       LiveProtocol.list => const [LivePlatform(id: 'all', name: '全部频道')],
+      LiveProtocol.room => await LiveRoomClient(_http).platforms(source),
     };
     if (result.isEmpty) throw AppFailure('该直播源没有可用分类');
     if (token == _generation) _platforms[source.id] = result;
@@ -68,19 +70,29 @@ class LiveRepository {
     final result = switch (source.protocol) {
       LiveProtocol.pingtai => await _pingtaiChannels(source, platform),
       LiveProtocol.list => await _listChannels(source),
+      LiveProtocol.room => await LiveRoomClient(
+        _http,
+      ).channels(source, platform, page: page),
     };
-    if (result.isEmpty) throw AppFailure('该分类暂时没有频道');
+    if (result.isEmpty) {
+      if (page > 1 && source.protocol == LiveProtocol.room) {
+        _channels[cacheKey] = const [];
+        return const [];
+      }
+      throw AppFailure('该分类暂时没有频道');
+    }
     _channels[cacheKey] = result;
     return result;
   }
 
   Future<LivePlayback> playback(LiveSource source, LiveChannel channel) async {
-    switch (source.protocol) {
-      case LiveProtocol.pingtai:
-      case LiveProtocol.list:
-        if (channel.urls.isEmpty) throw AppFailure('该频道没有可用线路');
-        return LivePlayback(url: channel.urls.first, headers: channel.headers);
+    // 收藏 / 最近观看里的频道可能来自另一个源，取流要按频道自己记录的源路由。
+    final resolved = LiveSource.byId(channel.source) ?? source;
+    if (resolved.protocol == LiveProtocol.room) {
+      return LiveRoomClient(_http).playback(resolved, channel);
     }
+    if (channel.urls.isEmpty) throw AppFailure('该频道没有可用线路');
+    return LivePlayback(url: channel.urls.first, headers: channel.headers);
   }
 
   /// 合并同一面板的所有镜像：各镜像共享内容但分类子集不同，取并集后去重，

@@ -16,6 +16,13 @@ const _deviceInfo = '{"t":"webPc","v":"1.0","ui":"0","ck":{"sessKeyAsp":""}}';
 
 String get liveDeviceInfo => _deviceInfo;
 
+class LiveHttpResult {
+  const LiveHttpResult(this.body, {this.date});
+
+  final String body;
+  final DateTime? date;
+}
+
 class LiveHttp {
   LiveHttp();
 
@@ -25,28 +32,36 @@ class LiveHttp {
 
   void close() => _client.close(force: true);
 
-  Future<String> get(String url, {Map<String, String> headers = const {}}) =>
-      _send(url, method: 'GET', headers: headers);
+  Future<LiveHttpResult> getResult(
+    String url, {
+    Map<String, String> headers = const {},
+  }) => _send(url, method: 'GET', headers: headers);
+
+  Future<String> get(
+    String url, {
+    Map<String, String> headers = const {},
+  }) async => (await getResult(url, headers: headers)).body;
 
   Future<String> postForm(
     String url,
     String body, {
     Map<String, String> headers = const {},
-  }) => _send(url, method: 'POST', body: body, headers: headers);
+  }) async =>
+      (await _send(url, method: 'POST', body: body, headers: headers)).body;
 
   Future<String> postJson(
     String url,
     Object body, {
     Map<String, String> headers = const {},
-  }) => _send(
+  }) async => (await _send(
     url,
     method: 'POST',
     body: jsonEncode(body),
     contentType: 'application/json',
     headers: headers,
-  );
+  )).body;
 
-  Future<String> _send(
+  Future<LiveHttpResult> _send(
     String url, {
     required String method,
     String body = '',
@@ -88,11 +103,15 @@ class LiveHttp {
       }
       final response = await request.close().timeout(timeout);
       _rememberCookies(response);
+      final date = _responseDate(response);
       if (response.statusCode != HttpStatus.ok) {
         await response.drain<void>();
         throw AppFailure('直播源返回 ${response.statusCode}');
       }
-      return _decode(await _collect(response).timeout(timeout));
+      return LiveHttpResult(
+        _decode(await _collect(response).timeout(timeout)),
+        date: date,
+      );
     } on AppFailure {
       rethrow;
     } on TimeoutException {
@@ -103,6 +122,16 @@ class LiveHttp {
       throw AppFailure('无法连接直播源');
     } on FormatException {
       throw AppFailure('直播源返回的内容无法识别');
+    }
+  }
+
+  static DateTime? _responseDate(HttpClientResponse response) {
+    final value = response.headers.value(HttpHeaders.dateHeader);
+    if (value == null || value.isEmpty) return null;
+    try {
+      return HttpDate.parse(value);
+    } on Exception {
+      return null;
     }
   }
 

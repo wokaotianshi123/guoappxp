@@ -127,6 +127,65 @@ func (manager *transcodeManager) get(key string) *transcodeJob {
 // start 启动（或复用）一个转码任务。红果等站源的视频是 CENC 加密的 H.265，
 // 浏览器既不能解密也不能解码，必须由 ffmpeg 解密后重编码成 H.264 才能播放。
 func (manager *transcodeManager) start(key, input, decryptionKey string) (*transcodeJob, error) {
+	return manager.launch(key, func(dir string) []string {
+		arguments := []string{"-nostdin", "-loglevel", "error", "-y"}
+		if decryptionKey != "" {
+			arguments = append(arguments, "-decryption_key", decryptionKey)
+		}
+		arguments = append(arguments,
+			"-i", input,
+			"-map", "0:v:0", "-map", "0:a:0?",
+			"-c:v", "libx264", "-preset", "veryfast", "-crf", "25",
+			"-pix_fmt", "yuv420p", "-profile:v", "main",
+			"-c:a", "aac", "-b:a", "96k", "-ac", "2",
+			"-max_muxing_queue_size", "1024",
+			"-f", "hls", "-hls_time", "3", "-hls_playlist_type", "event",
+			"-hls_flags", "independent_segments",
+			"-hls_segment_filename", filepath.Join(dir, "seg_%05d.ts"),
+			filepath.Join(dir, "index.m3u8"),
+		)
+		return arguments
+	})
+}
+
+// startAudio 与 start 同一条链路，只产出纯音频 HLS：听书章节是 CENC 加密的
+// m4a，浏览器不能解密也不能解 CENC 盒，同样交给 ffmpeg 解密后重编码。
+// headers 是上游要求的 Referer / User-Agent（番茄 CDN 会校验）。
+func (manager *transcodeManager) startAudio(key, input, decryptionKey string, headers map[string]string) (*transcodeJob, error) {
+	return manager.launch(key, func(dir string) []string {
+		arguments := []string{"-nostdin", "-loglevel", "error", "-y"}
+		if decryptionKey != "" {
+			arguments = append(arguments, "-decryption_key", decryptionKey)
+		}
+		if len(headers) > 0 {
+			var builder strings.Builder
+			for name, value := range headers {
+				if strings.TrimSpace(value) == "" {
+					continue
+				}
+				builder.WriteString(name)
+				builder.WriteString(": ")
+				builder.WriteString(value)
+				builder.WriteString("\r\n")
+			}
+			if builder.Len() > 0 {
+				arguments = append(arguments, "-headers", builder.String())
+			}
+		}
+		arguments = append(arguments,
+			"-i", input,
+			"-vn", "-sn", "-dn",
+			"-c:a", "aac", "-b:a", "96k", "-ac", "2", "-ar", "44100",
+			"-f", "hls", "-hls_time", "4", "-hls_playlist_type", "event",
+			"-hls_flags", "independent_segments",
+			"-hls_segment_filename", filepath.Join(dir, "seg_%05d.ts"),
+			filepath.Join(dir, "index.m3u8"),
+		)
+		return arguments
+	})
+}
+
+func (manager *transcodeManager) launch(key string, arguments func(dir string) []string) (*transcodeJob, error) {
 	binary := ffmpegPath()
 	if binary == "" {
 		return nil, errors.New("未找到 ffmpeg")
@@ -143,23 +202,7 @@ func (manager *transcodeManager) start(key, input, decryptionKey string) (*trans
 		manager.mu.Unlock()
 		return nil, err
 	}
-	arguments := []string{"-nostdin", "-loglevel", "error", "-y"}
-	if decryptionKey != "" {
-		arguments = append(arguments, "-decryption_key", decryptionKey)
-	}
-	arguments = append(arguments,
-		"-i", input,
-		"-map", "0:v:0", "-map", "0:a:0?",
-		"-c:v", "libx264", "-preset", "veryfast", "-crf", "25",
-		"-pix_fmt", "yuv420p", "-profile:v", "main",
-		"-c:a", "aac", "-b:a", "96k", "-ac", "2",
-		"-max_muxing_queue_size", "1024",
-		"-f", "hls", "-hls_time", "3", "-hls_playlist_type", "event",
-		"-hls_flags", "independent_segments",
-		"-hls_segment_filename", filepath.Join(dir, "seg_%05d.ts"),
-		filepath.Join(dir, "index.m3u8"),
-	)
-	command := exec.Command(binary, arguments...)
+	command := exec.Command(binary, arguments(dir)...)
 	attachProcess(command)
 	command.Dir = dir
 	// 输入地址是本机播放服务，必须绕开任何代理设置。

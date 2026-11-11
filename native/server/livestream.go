@@ -35,6 +35,7 @@ const (
 const (
 	liveProtocolPingtai = "pingtai"
 	liveProtocolList    = "list"
+	liveProtocolRoom    = "room"
 )
 
 type liveSourceDef struct {
@@ -50,11 +51,29 @@ type liveSourceDef struct {
 	Builtin     bool              `json:"builtin"`
 }
 
-// 内置直播源，与 lib/live_sources.dart 的 LiveSource.values 保持一致。
-// 秀果（adult）在绿色模式下整源隐藏，与 App 端 LiveSource.visible 语义相同。
+// 内置直播源，与 lib/live/live_sources.dart 的 LiveSource.values 保持一致：
+// 默认斗鱼，其次哔哩哔哩、虎牙，秀果直播（adult）排在最后并在绿色模式下整源隐藏。
 var builtinLiveSources = []liveSourceDef{
 	{
-		ID: "xiuguo", Name: "秀果", Description: "主播直播 · 实时开播",
+		ID: "douyu", Name: "斗鱼", Description: "游戏 · 娱乐 · 赛事",
+		Protocol:  liveProtocolRoom,
+		Endpoints: []string{"https://www.douyu.com"},
+		Builtin:   true,
+	},
+	{
+		ID: "bilibili", Name: "哔哩哔哩", Description: "游戏 · 娱乐 · 赛事",
+		Protocol:  liveProtocolRoom,
+		Endpoints: []string{"https://live.bilibili.com"},
+		Builtin:   true,
+	},
+	{
+		ID: "huya", Name: "虎牙", Description: "游戏 · 娱乐 · 赛事",
+		Protocol:  liveProtocolRoom,
+		Endpoints: []string{"https://www.huya.com"},
+		Builtin:   true,
+	},
+	{
+		ID: "xiuguo", Name: "秀果直播", Description: "主播直播 · 实时开播",
 		Protocol: liveProtocolPingtai,
 		Endpoints: []string{
 			"http://api.vipmisss.com:81/xcdsw",
@@ -208,6 +227,13 @@ func (session *liveSession) remember(response *http.Response) {
 }
 
 func (session *liveSession) request(target string, method string, body []byte, headers map[string]string) ([]byte, error) {
+	payload, _, err := session.requestWithHeaders(target, method, body, headers)
+	return payload, err
+}
+
+// requestWithHeaders 与 request 相同，额外把响应头交给调用方：斗鱼签名要用
+// 响应 Date 计算时间戳（本机时钟偏差会让 auth 校验失败）。
+func (session *liveSession) requestWithHeaders(target string, method string, body []byte, headers map[string]string) ([]byte, http.Header, error) {
 	client := &http.Client{Transport: localTransport, Timeout: liveRequestTimeout}
 	var reader io.Reader
 	if body != nil {
@@ -215,7 +241,7 @@ func (session *liveSession) request(target string, method string, body []byte, h
 	}
 	request, err := http.NewRequest(method, target, reader)
 	if err != nil {
-		return nil, errors.New("直播源地址无效")
+		return nil, nil, errors.New("直播源地址无效")
 	}
 	request.Header.Set("User-Agent", liveUserAgentValue)
 	if cookie := session.cookieHeader(); cookie != "" {
@@ -234,21 +260,21 @@ func (session *liveSession) request(target string, method string, body []byte, h
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return nil, errors.New("无法连接直播源")
+		return nil, nil, errors.New("无法连接直播源")
 	}
 	defer response.Body.Close()
 	session.remember(response)
 	if response.StatusCode != http.StatusOK {
-		return nil, errors.New("直播源返回 " + strconv.Itoa(response.StatusCode))
+		return nil, nil, errors.New("直播源返回 " + strconv.Itoa(response.StatusCode))
 	}
 	payload, err := io.ReadAll(io.LimitReader(response.Body, liveMaxBytes+1))
 	if err != nil {
-		return nil, errors.New("直播源读取失败")
+		return nil, nil, errors.New("直播源读取失败")
 	}
 	if len(payload) > liveMaxBytes {
-		return nil, errors.New("直播源返回的数据过大")
+		return nil, nil, errors.New("直播源返回的数据过大")
 	}
-	return payload, nil
+	return payload, response.Header, nil
 }
 
 func (session *liveSession) get(target string, headers map[string]string) (string, error) {
@@ -268,6 +294,9 @@ type liveChannelOut struct {
 	Number  string            `json:"number"`
 	Group   string            `json:"group"`
 	Headers map[string]string `json:"headers"`
+	// 房间型源（斗鱼 / 哔哩哔哩 / 虎牙）只下发房间号，点播时再换取真实地址。
+	Token    string `json:"token,omitempty"`
+	Subtitle string `json:"subtitle,omitempty"`
 }
 
 type liveGroupOut struct {
@@ -338,9 +367,9 @@ type liveChannelBuilder struct {
 }
 
 type liveGroupBuilder struct {
-	name     string
-	order    []*liveChannelBuilder
-	byName   map[string]*liveChannelBuilder
+	name   string
+	order  []*liveChannelBuilder
+	byName map[string]*liveChannelBuilder
 }
 
 func newLiveGroupBuilder(name string) *liveGroupBuilder {
@@ -831,7 +860,7 @@ func handleLiveCustomSources(writer http.ResponseWriter, request *http.Request) 
 			writeJSON(writer, map[string]any{"ok": false, "error": "直播源地址需要是 http(s) 直链"})
 			return
 		}
-		id := "live-" + hex.EncodeToString(sha1.New().Sum([]byte(name+"\x00"+endpoint))[:8])
+		id := "live-" + hex.EncodeToString(sha1.New().Sum([]byte(name + "\x00" + endpoint))[:8])
 		replaced := false
 		for index := range custom {
 			if custom[index].ID == id || strings.TrimSpace(custom[index].Name) == name {
@@ -889,6 +918,13 @@ func handleLivePlatforms(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		platforms = list
+	case liveProtocolRoom:
+		list, err := liveRoomPlatforms(session, source)
+		if err != nil {
+			writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		platforms = list
 	default:
 		platforms = []map[string]any{{"id": "all", "name": "全部频道", "count": 0, "endpoint": ""}}
 	}
@@ -920,6 +956,20 @@ func handleLiveChannels(writer http.ResponseWriter, request *http.Request) {
 			item.Group = name
 			channels = append(channels, item)
 		}
+	case liveProtocolRoom:
+		platformID := request.URL.Query().Get("platform")
+		group := request.URL.Query().Get("group")
+		page, _ := strconv.Atoi(request.URL.Query().Get("page"))
+		if platformID == "" {
+			writeJSON(writer, map[string]any{"ok": true, "data": []liveChannelOut{}})
+			return
+		}
+		list, err := liveRoomChannels(session, source, platformID, page, group)
+		if err != nil {
+			writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		channels = list
 	default:
 		if len(source.Endpoints) == 0 {
 			writeJSON(writer, map[string]any{"ok": false, "error": "直播源没有可用地址"})
@@ -962,6 +1012,28 @@ func handleLiveChannels(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, map[string]any{"ok": true, "data": result})
 }
 
+// GET /api/livestream/play?source=ID&room=ID —— 房间型源换取真实播放地址。
+// 列表接口不下发地址（斗鱼/哔哩哔哩/虎牙都要二次签名解析），点播时才解析。
+func handleLivePlay(writer http.ResponseWriter, request *http.Request) {
+	source, ok := findLiveSource(request.URL.Query().Get("source"))
+	if !ok {
+		writeJSON(writer, map[string]any{"ok": false, "error": "直播源不存在"})
+		return
+	}
+	room := request.URL.Query().Get("room")
+	if room == "" {
+		room = request.URL.Query().Get("token")
+	}
+	urls, headers, err := liveRoomPlayback(newLiveSession(), source, room)
+	if err != nil {
+		writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(writer, map[string]any{"ok": true, "data": map[string]any{
+		"urls": urls, "headers": headers,
+	}})
+}
+
 // GET /api/livestream/stream?source=ID&url=RAW  —— 直播流代理。
 // m3u8：服务端拉取清单、改写分片与子清单地址继续走本代理；其余直接流式转发。
 func handleLivestreamStream(writer http.ResponseWriter, request *http.Request) {
@@ -973,6 +1045,11 @@ func handleLivestreamStream(writer http.ResponseWriter, request *http.Request) {
 	}
 	source, _ := findLiveSource(request.URL.Query().Get("source"))
 	headers := copyHeader(source.Headers)
+	// 房间型源（斗鱼/哔哩哔哩/虎牙）必须带 Referer 才不返回 403，源定义里没有
+	// 头信息，这里按平台补一份与 App 端一致的取流头。
+	if len(headers) == 0 && source.Protocol == liveProtocolRoom {
+		headers = liveRoomHeaders(source.ID)
+	}
 	// 直播流是长连接：不能用整请求超时的 http.Client.Timeout（会把持续拉流
 	// 的 HLS / flv 在 14 秒后截断），只保留 localTransport 的 15 秒拨号/建连上限。
 	client := &http.Client{Transport: localTransport}

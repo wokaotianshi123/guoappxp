@@ -167,35 +167,6 @@ var state = {
   libraryQuery: '',
   // 跨源聚合搜索得到的同名剧副本（按剧 id 缓存），供详情页「切换播放源」使用。
   crossPeers: {},
-  // 磁力搜索页的查询/结果/站源勾选缓存：切换 hash 回来仍能接着看上次的结果。
-  // tabs 按站源分组（0 号是「全部」），每个标签独立记忆排序与「仅含磁力」。
-  magnet: {
-    sites: [],
-    selected: {},
-    sitesLoaded: false,
-    query: '',
-    page: 1,
-    items: [],
-    visible: [],
-    tabs: [],
-    activeTab: 0,
-    sorts: {},
-    onlyMagnet: {},
-    onlyReachable: {},
-    dhtNodes: 0,
-    dhtLoading: false,
-    probeSeq: 0,
-    playSeq: 0,
-    hasMore: false,
-    warning: '',
-    error: '',
-    loading: false,
-    searchSites: [],
-    // 搜索会话：start 后先画全部站标签，poll 增量填充；sessionSeq 用于丢弃过期轮询。
-    session: '',
-    sessionSeq: 0,
-    sessionSites: [],
-  },
 };
 
 var hlsInstance = null;
@@ -2847,6 +2818,9 @@ var liveState = {
   platformLoading: false,
   showFavs: false,
   showCustom: false,
+  page: 1,
+  hasMore: false,
+  moreLoading: false,
   urlIndex: 0,
   urlList: [],
 };
@@ -2928,6 +2902,7 @@ function liveToggleFavourite(channel) {
     list.unshift({
       key: key, source: liveState.source, group: channel.group || '',
       name: channel.name, urls: channel.urls || [], logo: channel.logo || '',
+      token: channel.token || '',
     });
   }
   try { localStorage.setItem('liveFavourites', JSON.stringify(list.slice(0, 200))); } catch (error) {}
@@ -2935,6 +2910,34 @@ function liveToggleFavourite(channel) {
 
 function liveMountChannel(channel, startIndex) {
   var urls = (channel.urls || []).filter(function (item) { return !!item; });
+  // 房间型源（斗鱼 / 哔哩哔哩 / 虎牙）列表只带房间号，点播时才向服务端换取真实地址。
+  if (!urls.length && channel.token) {
+    if (liveState.playing && liveState.playing.token === channel.token) { return; }
+    liveState.playing = channel;
+    liveStopPlayer();
+    var idleNode = document.getElementById('live-idle');
+    if (idleNode) { idleNode.style.display = 'none'; }
+    showNotice('正在解析直播地址…');
+    liveGet('play', { source: liveState.source, room: channel.token })
+      .then(function (data) {
+        var list = (data && data.urls) || [];
+        if (!list.length) {
+          showNotice('该直播间当前没有可播放的地址');
+          liveState.playing = null;
+          if (idleNode) { idleNode.style.display = ''; }
+          return;
+        }
+        channel.urls = list;
+        if (data && data.headers) { channel.headers = data.headers; }
+        liveMountChannel(channel, 0);
+      })
+      .catch(function (error) {
+        showNotice(error.message || '直播地址解析失败');
+        liveState.playing = null;
+        if (idleNode) { idleNode.style.display = ''; }
+      });
+    return;
+  }
   if (!urls.length) {
     showNotice('该频道没有可播线路');
     return;
@@ -3144,7 +3147,14 @@ function renderLiveChannels() {
           (count > 1 ? '<span class="live-count">' + count + ' 路</span>' : '') +
           '</button>';
       }).join('');
-  }).join('');
+  }).join('') + (liveState.hasMore
+    ? '<button type="button" class="btn mini live-more">' +
+      (liveState.moreLoading ? '正在加载…' : '加载更多') + '</button>'
+    : '');
+  var moreButton = body.querySelector('.live-more');
+  if (moreButton) {
+    moreButton.addEventListener('click', liveLoadMoreChannels);
+  }
   Array.prototype.forEach.call(body.querySelectorAll('.live-channel'), function (button) {
     button.addEventListener('click', function () {
       var name = button.getAttribute('data-name');
@@ -3157,7 +3167,7 @@ function renderLiveChannels() {
   });
 }
 
-// 左侧「秀果分类」列：分类（卡哇伊/咪狐等）一列上下滚动；list 型源无分类时显示提示。
+// 左侧分类列：分类（游戏 / 娱乐 / 赛事等）一列上下滚动；list 型源无分类时显示提示。
 function renderLivePlatforms() {
   var body = document.getElementById('live-platforms-body');
   if (!body) { return; }
@@ -3218,7 +3228,7 @@ function renderLivePanel() {
     '</div>' +
     '<div class="live-columns">' +
       '<div class="live-col live-col-platforms">' +
-        '<div class="live-group-head">秀果分类</div>' +
+        '<div class="live-group-head">分类</div>' +
         '<div class="live-platform-scroll" id="live-platforms-body"></div>' +
       '</div>' +
       '<div class="live-col live-col-channels">' +
@@ -3317,12 +3327,16 @@ function liveSelectSource(id, done) {
   liveState.channelLoading = true;
   liveState.platformLoading = true;
   liveState.playing = null;
+  liveState.page = 1;
+  liveState.hasMore = false;
+  liveState.moreLoading = false;
   liveStopPlayer();
   var idleOnSource = document.getElementById('live-idle');
   if (idleOnSource) { idleOnSource.style.display = ''; }
   var source = liveSourceById(id) || {};
   renderLivePanel();
-  if (source.protocol === 'pingtai') {
+  // pingtai / room 都要先取分类再取房间列表，其余（list 型）直接是频道清单。
+  if (source.protocol === 'pingtai' || source.protocol === 'room') {
     liveGet('platforms', { source: id })
       .then(function (list) {
         liveState.platformLoading = false;
@@ -3368,18 +3382,24 @@ function liveSelectSource(id, done) {
 
 function liveSelectPlatform(platform, done) {
   liveState.channelLoading = true;
+  liveState.page = 1;
+  liveState.hasMore = false;
+  liveState.moreLoading = false;
   renderLiveChannels();
   liveGet('channels', {
     source: liveState.source,
     platform: platform.id,
     endpoint: platform.endpoint || '',
     group: platform.name || '',
+    page: 1,
     green: liveState.green ? '1' : '0',
   })
     .then(function (list) {
       liveState.channelLoading = false;
       liveState.platform = platform.id;
       liveState.channels = list || [];
+      // 房间型源没有总数接口，用「这一页是否满」判断还有没有下一页。
+      liveState.hasMore = list.length >= 24;
       renderLivePlatforms();
       renderLiveChannels();
       if (done) { done(); }
@@ -3389,6 +3409,45 @@ function liveSelectPlatform(platform, done) {
       renderLiveChannels();
       showNotice(error.message || '频道加载失败');
       if (done) { done(); }
+    });
+}
+
+// 房间型源的「加载更多」：按页追加，按房间号去重。
+function liveLoadMoreChannels() {
+  if (!liveState.hasMore || liveState.moreLoading) { return; }
+  var platform = liveState.platforms.filter(function (item) {
+    return item.id === liveState.platform;
+  })[0];
+  if (!platform) { return; }
+  liveState.moreLoading = true;
+  renderLiveChannels();
+  var page = liveState.page + 1;
+  liveGet('channels', {
+    source: liveState.source,
+    platform: platform.id,
+    endpoint: platform.endpoint || '',
+    group: platform.name || '',
+    page: page,
+    green: liveState.green ? '1' : '0',
+  })
+    .then(function (list) {
+      liveState.moreLoading = false;
+      liveState.page = page;
+      var seen = {};
+      liveState.channels.forEach(function (item) {
+        seen[(item.token || '') + '\u0001' + (item.group || '') + '\u0001' + item.name] = true;
+      });
+      (list || []).forEach(function (item) {
+        var key = (item.token || '') + '\u0001' + (item.group || '') + '\u0001' + item.name;
+        if (!seen[key]) { seen[key] = true; liveState.channels.push(item); }
+      });
+      liveState.hasMore = (list || []).length >= 24;
+      renderLiveChannels();
+    })
+    .catch(function (error) {
+      liveState.moreLoading = false;
+      showNotice(error.message || '加载更多失败');
+      renderLiveChannels();
     });
 }
 
@@ -3415,982 +3474,687 @@ function renderLiveView() {
   });
 }
 
-/* ---------- 磁力搜索：复用 /api/request 通用转发与网页版现有播放器 ---------- */
+/* ---------- 听书（Web 版） ---------- */
 
-// api() 已经把 {ok, data} 信封拆开并 resolve data.data，所以下面四个封装
-// 拿到的就是各 action 的返回对象本身，不用再取一层 .data。
-function magnetSites() {
-  return api({ action: 'magnetSites' });
-}
+var AUDIOBOOK_PROGRESS_KEY = 'duanjuweb:audiobookProgress';
+var AUDIOBOOK_SHELF_KEY = 'duanjuweb:audiobookShelf';
+var audiobookBoards = [
+  { name: '听书榜', side: '17', type: '1' },
+  { name: '女生听书', side: '17', type: '0' },
+];
+var audiobookRates = [1, 1.25, 1.5, 2, 0.75];
 
-function magnetSearch(query, page, sites) {
-  return api({ action: 'magnetSearch', query: query, page: page, sites: sites || [] });
-}
-
-function magnetFiles(magnet) {
-  return api({ action: 'magnetFiles', magnet: magnet });
-}
-
-function magnetPlay(magnet, fileIndex) {
-  return api({ action: 'magnetPlay', magnet: magnet, fileIndex: fileIndex });
-}
-
-// 搜索会话：start 立刻返回全部站标签，poll 增量取回，stop 立即中断。
-// 与 Flutter 端 magnetSearchStart / Poll / Stop 是同一套 Go action。
-function magnetSearchStart(query, page, sites) {
-  return api({ action: 'magnetSearchStart', query: query, page: page, sites: sites || [] });
-}
-
-function magnetSearchPoll(session, wait) {
-  return api({ action: 'magnetSearchPoll', session: session, force: wait !== false });
-}
-
-function magnetSearchStop(session) {
-  return api({ action: 'magnetSearchStop', session: session });
-}
-
-// 磁力页打开就预热 BT 引擎，点播放时 DHT 已有节点。
-function magnetWarmup() {
-  return api({ action: 'magnetWarmup' });
-}
-
-// 批量探测每条结果当前能连上的 DHT / tracker 节点数；force 跳过 Go 侧缓存。
-function magnetPeers(hashes, force) {
-  return api({ action: 'magnetPeers', hashes: hashes || [], force: !!force });
-}
-
-// 用户点另一条磁力时先掐掉上一条的元数据加载与分片下载，避免旧任务抢带宽。
-function magnetCancel() {
-  return api({ action: 'magnetCancel' });
-}
-
-function magnetFormatSize(size) {
-  if (typeof size === 'number' && isFinite(size)) {
-    var units = ['B', 'KB', 'MB', 'GB', 'TB'];
-    var value = size;
-    var unit = 0;
-    while (value >= 1024 && unit < units.length - 1) {
-      value /= 1024;
-      unit += 1;
-    }
-    return (unit === 0 ? String(value) : value.toFixed(2)) + ' ' + units[unit];
-  }
-  return size === undefined || size === null ? '' : String(size);
-}
-
-function magnetSetHTML(html) {
-  var box = document.getElementById('magnet-status');
-  if (!box) {
-    return;
-  }
-  box.innerHTML = html || '';
-  box.style.display = html ? 'block' : 'none';
-}
-
-function magnetSetStatus(message, kind) {
-  if (!message) {
-    magnetSetHTML('');
-    return;
-  }
-  var tone = kind === 'error'
-    ? ';border-color:#7a2b2f;background:rgba(255,90,95,0.12)'
-    : '';
-  magnetSetHTML(
-    '<div class="notice" style="display:block' + tone + '">' +
-    escapeHTML(message) + '</div>'
-  );
-}
-
-// 全选时传空数组，交给后端「全部启用站源」的语义；用户取消任意勾选后，
-// 才把剩下勾选的站源 id 明确传过去。
-function magnetSelectedSites() {
-  var sites = state.magnet.sites || [];
-  var allSelected = sites.length
-    ? sites.every(function (item) { return !!state.magnet.selected[item.id]; })
-    : true;
-  if (allSelected) {
-    return [];
-  }
-  return sites
-    .filter(function (item) { return !!state.magnet.selected[item.id]; })
-    .map(function (item) { return Number(item.id); });
-}
-
-function magnetSitesCountText() {
-  var sites = state.magnet.sites || [];
-  var selected = sites.filter(function (item) { return !!state.magnet.selected[item.id]; }).length;
-  return '站源 ' + sites.length + ' 个 · 已选 ' + selected + ' 个';
-}
-
-function renderMagnetSitesPanel() {
-  var count = document.getElementById('magnet-sites-count');
-  if (count) {
-    count.textContent = magnetSitesCountText();
-  }
-  var all = document.getElementById('magnet-sites-all');
-  var sites = state.magnet.sites || [];
-  if (all) {
-    all.checked = sites.every(function (item) { return !!state.magnet.selected[item.id]; });
-  }
-  var list = document.getElementById('magnet-sites-list');
-  if (!list) {
-    return;
-  }
-  list.innerHTML = sites.length
-    ? sites.map(function (item) {
-        return (
-          '<label style="display:inline-flex;align-items:center;gap:6px;min-width:160px;' +
-          'font-size:13px;color:var(--muted);cursor:pointer;padding:4px 8px;' +
-          'border:1px solid var(--line);border-radius:8px">' +
-          '<input type="checkbox" class="magnet-site" data-id="' + escapeHTML(item.id) + '"' +
-          (state.magnet.selected[item.id] ? ' checked' : '') + ' />' +
-          '<span>' + escapeHTML(item.name || item.id) +
-          (item.state === false ? '（停用）' : '') + '</span>' +
-          '</label>'
-        );
-      }).join('')
-    : '<div class="empty">暂无站源。</div>';
-  var boxes = list.querySelectorAll('.magnet-site');
-  Array.prototype.forEach.call(boxes, function (box) {
-    box.addEventListener('change', function () {
-      state.magnet.selected[box.getAttribute('data-id')] = box.checked;
-      renderMagnetSitesPanel();
-    });
-  });
-}
-
-// ---- 站源标签 / 每标签筛选 / DHT 节点探测 ----
-// 与 Flutter 端 magnetSiteGroups / magnetFilterResults 保持同一套语义：
-// 有 siteId 按 id 分组，没有就按站源名分组，规则缺失时也能正确分标签。
-function magnetGroupKey(item) {
-  return Number(item.siteId) > 0
-    ? 'id:' + item.siteId
-    : 'name:' + (item.site || '');
-}
-
-function magnetBuildTabs() {
-  var items = state.magnet.items || [];
-  var order = [], names = {}, grouped = {};
-  items.forEach(function (item) {
-    var key = magnetGroupKey(item);
-    if (!grouped[key]) {
-      grouped[key] = [];
-      order.push(key);
-      names[key] = item.site || '其它站源';
-    }
-    grouped[key].push(item);
-  });
-  // 会话里登记过的站即使还没出结果也要有标签：这就是「先出标签、再填结果」。
-  var status = {};
-  (state.magnet.sessionSites || []).forEach(function (site) {
-    var key = 'id:' + site.siteId;
-    status[key] = site;
-    if (!grouped[key]) {
-      grouped[key] = [];
-      order.push(key);
-      names[key] = site.name || '站源';
-    }
-  });
-  state.magnet.tabs = [{ key: '*', name: '全部', items: items, status: null }].concat(
-    order.map(function (key) {
-      return { key: key, name: names[key], items: grouped[key], status: status[key] || null };
-    })
-  );
-  if (state.magnet.activeTab >= state.magnet.tabs.length) {
-    state.magnet.activeTab = 0;
-  }
-}
-
-function magnetCurrentTab() {
-  return state.magnet.tabs[state.magnet.activeTab] ||
-    state.magnet.tabs[0] ||
-    { key: '*', name: '全部', items: [] };
-}
-
-function magnetVisibleItems() {
-  var key = magnetCurrentTab().key;
-  var sort = state.magnet.sorts[key] || 'default';
-  var only = !!state.magnet.onlyMagnet[key];
-  var onlyReachable = !!state.magnet.onlyReachable[key];
-  var list = (magnetCurrentTab().items || []).filter(function (item) {
-    return !only || (item.playable && /^magnet:/.test(item.magnet || ''));
-  });
-  if (onlyReachable) {
-    // 三态：只有「探测过且有节点」才算可达；未探测的不算，也不会被当成死链。
-    list = list.filter(function (item) { return magnetReachability(item) === 'reachable'; });
-  }
-  if (sort === 'default') {
-    return list;
-  }
-  return list.slice().sort(function (a, b) {
-    var av, bv;
-    if (sort === 'date') {
-      av = Number(a.timestamp) || 0; bv = Number(b.timestamp) || 0;
-    } else if (sort === 'size') {
-      av = Number(a.sizeBytes) || 0; bv = Number(b.sizeBytes) || 0;
-    } else {
-      av = Number(a.dht) || 0; bv = Number(b.dht) || 0;
-      if (av === bv) { av = Number(a.peers) || 0; bv = Number(b.peers) || 0; }
-    }
-    return bv - av;
-  });
-}
-
-// unknown / reachable / unreachable。探测过 0 节点才算不可达。
-function magnetReachability(item) {
-  if (!item || !item.dhtProbed) {
-    return 'unknown';
-  }
-  return (Number(item.dht) || 0) > 0 || (Number(item.peers) || 0) > 0
-    ? 'reachable'
-    : 'unreachable';
-}
-
-function renderMagnetTabs() {
-  var box = document.getElementById('magnet-tabs');
-  if (!box) {
-    return;
-  }
-  var active = state.magnet.activeTab;
-  box.innerHTML = state.magnet.tabs.map(function (tab, i) {
-    // 还在抓的站显示省略号，失败的显示叉，避免用「0 条」误导用户。
-    var suffix = '';
-    if (tab.status) {
-      if (tab.status.state === 'pending' || tab.status.state === 'fetching') {
-        suffix = ' …';
-      } else if (tab.status.state === 'failed') {
-        suffix = ' ✕';
-      }
-    }
-    return '<button type="button" class="btn mini magnet-tab" data-tab="' + i + '"' +
-      (i === active ? ' style="border-color:#6c8cff;font-weight:700"' : '') + '>' +
-      escapeHTML(tab.name) + ' ' + (tab.items || []).length + suffix + '</button>';
-  }).join('');
-  var buttons = box.querySelectorAll('.magnet-tab');
-  Array.prototype.forEach.call(buttons, function (button) {
-    button.addEventListener('click', function () {
-      var index = Number(button.getAttribute('data-tab'));
-      if (index === state.magnet.activeTab) {
-        return;
-      }
-      state.magnet.activeTab = index;
-      renderMagnetTabs();
-      renderMagnetControls();
-      renderMagnetResults();
-      probeMagnetDht(false);
-    });
-  });
-}
-
-var magnetSortLabels = {
-  'default': '默认',
-  date: '按时间',
-  size: '按大小',
-  dht: '按 DHT 数量'
+var audiobookState = {
+  board: 0,
+  page: 1,
+  hasMore: false,
+  books: [],
+  loading: false,
+  query: '',
+  shelf: false,
+  book: null,
+  chapters: [],
+  chapterPage: 1,
+  chapterHasMore: false,
+  chapterIndex: -1,
+  paragraphs: [],
+  timed: false,
+  duration: 0,
+  rate: 1,
+  textLoading: false,
+  current: 0,
 };
 
-function renderMagnetControls() {
-  var box = document.getElementById('magnet-controls');
-  if (!box) {
+var audiobookAudio = null;
+var audiobookHls = null;
+var audiobookSleepTimer = null;
+var audiobookSleepMinutes = 0;
+var audiobookSleepUntil = 0;
+
+// 睡眠定时：15 / 30 / 60 分钟循环，到点暂停播放（与 App 端一致）。
+function abCycleSleep() {
+  var options = [0, 15, 30, 60];
+  var index = options.indexOf(audiobookSleepMinutes);
+  audiobookSleepMinutes = options[(index + 1) % options.length];
+  if (audiobookSleepTimer) {
+    window.clearInterval(audiobookSleepTimer);
+    audiobookSleepTimer = null;
+  }
+  if (!audiobookSleepMinutes) {
+    audiobookSleepUntil = 0;
+    abSyncPlayer();
+    showNotice('已关闭睡眠定时');
     return;
   }
-  var key = magnetCurrentTab().key;
-  var sort = state.magnet.sorts[key] || 'default';
-  var only = !!state.magnet.onlyMagnet[key];
-  var onlyReachable = !!state.magnet.onlyReachable[key];
-  var options = Object.keys(magnetSortLabels).map(function (value) {
-    return '<option value="' + value + '"' + (value === sort ? ' selected' : '') + '>' +
-      escapeHTML(magnetSortLabels[value]) + '</option>';
-  }).join('');
-  var unreachable = (state.magnet.items || []).filter(function (item) {
-    return magnetReachability(item) === 'unreachable';
-  }).length;
-  var dhtText = state.magnet.dhtLoading
-    ? '正在探测可连接的 DHT 节点…'
-    : state.magnet.dhtNodes > 0
-      ? 'DHT 网络已连接 ' + state.magnet.dhtNodes + ' 个节点' +
-        (unreachable > 0 ? ' · ' + unreachable + ' 条不可达（红色）' : '')
-      : 'DHT 网络暂未连上节点，可达性会随探测自动更新';
-  box.innerHTML =
-    '<div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;' +
-      'padding:8px 0;font-size:13px;color:var(--muted)">' +
-      '<label style="display:inline-flex;align-items:center;gap:6px">排序 ' +
-        '<select id="magnet-sort">' + options + '</select></label>' +
-      '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">' +
-        '<input type="checkbox" id="magnet-only"' + (only ? ' checked' : '') + ' /> 仅含磁力</label>' +
-      '<label style="display:inline-flex;align-items:center;gap:6px;cursor:pointer">' +
-        '<input type="checkbox" id="magnet-only-reachable"' + (onlyReachable ? ' checked' : '') +
-        ' /> 仅可达</label>' +
-      '<button type="button" class="btn mini" id="magnet-dht-refresh">刷新 DHT</button>' +
-      '<span>' + escapeHTML(dhtText) + '</span>' +
-    '</div>';
-  var select = document.getElementById('magnet-sort');
-  if (select) {
-    select.addEventListener('change', function () {
-      state.magnet.sorts[key] = select.value;
-      renderMagnetResults();
-      probeMagnetDht(false);
+  audiobookSleepUntil = Date.now() + audiobookSleepMinutes * 60000;
+  audiobookSleepTimer = window.setInterval(function () {
+    if (Date.now() < audiobookSleepUntil) {
+      abSyncPlayer();
+      return;
+    }
+    window.clearInterval(audiobookSleepTimer);
+    audiobookSleepTimer = null;
+    audiobookSleepUntil = 0;
+    audiobookSleepMinutes = 0;
+    if (audiobookAudio) {
+      try { audiobookAudio.pause(); } catch (error) {}
+    }
+    abSyncPlayer();
+    showNotice('睡眠定时已到，已暂停播放');
+  }, 20000);
+  abSyncPlayer();
+  showNotice(audiobookSleepMinutes + ' 分钟后自动暂停');
+}
+
+function abSleepLabel() {
+  if (!audiobookSleepUntil) { return '定时'; }
+  var left = Math.max(1, Math.ceil((audiobookSleepUntil - Date.now()) / 60000));
+  return '定时 ' + left + '分';
+}
+
+function abGet(path, params) {
+  var query = new URLSearchParams(params || {});
+  return fetch('/api/audiobook/' + path + '?' + query.toString())
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      if (!data.ok) { throw new Error(data.error || '听书请求失败'); }
+      return data.data;
     });
-  }
-  var onlyBox = document.getElementById('magnet-only');
-  if (onlyBox) {
-    onlyBox.addEventListener('change', function () {
-      state.magnet.onlyMagnet[key] = onlyBox.checked;
-      renderMagnetResults();
-    });
-  }
-  var reachBox = document.getElementById('magnet-only-reachable');
-  if (reachBox) {
-    reachBox.addEventListener('change', function () {
-      state.magnet.onlyReachable[key] = reachBox.checked;
-      renderMagnetResults();
-    });
-  }
-  var refresh = document.getElementById('magnet-dht-refresh');
-  if (refresh) {
-    refresh.addEventListener('click', function () { probeMagnetDht(true); });
+}
+
+function abReadJSON(key, fallback) {
+  try {
+    var raw = window.localStorage.getItem(key);
+    return raw ? JSON.parse(raw) : fallback;
+  } catch (error) {
+    return fallback;
   }
 }
 
-// 探测与展示解耦：结果先画出来，节点数回来后再增量回填并重绘。
-function probeMagnetDht(force) {
-  var hashes = magnetVisibleItems()
-    .filter(function (item) {
-      return item.playable && /^magnet:/.test(item.magnet || '') && item.id;
-    })
-    .slice(0, 24)
-    .map(function (item) { return item.id; });
-  if (!hashes.length) {
-    return Promise.resolve();
-  }
-  var seq = ++state.magnet.probeSeq;
-  state.magnet.dhtLoading = true;
-  renderMagnetControls();
-  return magnetPeers(hashes, force).then(function (result) {
-    if (seq !== state.magnet.probeSeq) {
-      return;
-    }
-    var byHash = {};
-    (result.items || []).forEach(function (row) {
-      byHash[String(row.hash || '').toLowerCase()] = row;
-    });
-    state.magnet.items = (state.magnet.items || []).map(function (item) {
-      var row = byHash[String(item.id || '').toLowerCase()];
-      if (!row) {
-        return item;
-      }
-      return Object.assign({}, item, {
-        dht: Number(row.dht) || 0,
-        peers: Number(row.peers) || 0,
-        dhtProbed: true
-      });
-    });
-    state.magnet.dhtNodes = Number(result.dhtNodes) || 0;
-    state.magnet.dhtLoading = false;
-    magnetBuildTabs();
-    renderMagnetResults();
-    renderMagnetControls();
-  }).catch(function () {
-    if (seq !== state.magnet.probeSeq) {
-      return;
-    }
-    state.magnet.dhtLoading = false;
-    renderMagnetControls();
-  });
+function abWriteJSON(key, value) {
+  try { window.localStorage.setItem(key, JSON.stringify(value)); } catch (error) {}
 }
 
-function renderMagnetResults() {
-  var box = document.getElementById('magnet-results');
-  if (!box) {
-    return;
+function abReadProgress(chapterId) {
+  var map = abReadJSON(AUDIOBOOK_PROGRESS_KEY, {});
+  var value = Number(map[chapterId]);
+  return value > 0 ? value : 0;
+}
+
+function abSaveProgress(chapterId, seconds) {
+  if (!chapterId || !(seconds > 0)) { return; }
+  var map = abReadJSON(AUDIOBOOK_PROGRESS_KEY, {});
+  map[chapterId] = Math.floor(seconds);
+  var keys = Object.keys(map);
+  // 只留最近 500 条，避免本地存储无限膨胀。
+  if (keys.length > 500) {
+    var trimmed = {};
+    keys.slice(keys.length - 500).forEach(function (key) { trimmed[key] = map[key]; });
+    map = trimmed;
   }
-  var items = magnetVisibleItems();
-  state.magnet.visible = items;
-  var warning = state.magnet.warning
-    ? '<div class="cross-warning">' + escapeHTML(state.magnet.warning) + '</div>'
-    : '';
-  if (!items.length) {
-    box.innerHTML = warning +
-      (state.magnet.query
-        ? '<div class="empty">当前标签没有符合条件的结果，换个关键词、站源或筛选条件试试。</div>'
-        : '<div class="empty">输入关键词开始搜索磁力资源。</div>');
+  abWriteJSON(AUDIOBOOK_PROGRESS_KEY, map);
+}
+
+function abShelf() {
+  var list = abReadJSON(AUDIOBOOK_SHELF_KEY, []);
+  return Array.isArray(list) ? list : [];
+}
+
+function abRememberBook(book) {
+  if (!book || !book.id) { return; }
+  var list = abShelf().filter(function (item) { return item.id !== book.id; });
+  list.unshift({ id: book.id, title: book.title, author: book.author || '', category: book.category || '' });
+  abWriteJSON(AUDIOBOOK_SHELF_KEY, list.slice(0, 100));
+}
+
+function abFormatTime(seconds) {
+  var total = Math.max(0, Math.floor(seconds || 0));
+  var minute = Math.floor(total / 60);
+  var second = total % 60;
+  return minute + ':' + (second < 10 ? '0' : '') + second;
+}
+
+function abEnsureAudio() {
+  if (audiobookAudio) { return audiobookAudio; }
+  var audio = new window.Audio();
+  audio.preload = 'auto';
+  audio.addEventListener('ended', function () { abPlayChapter(audiobookState.chapterIndex + 1); });
+  audio.addEventListener('timeupdate', abOnTime);
+  audio.addEventListener('play', abSyncPlayer);
+  audio.addEventListener('pause', abSyncPlayer);
+  audiobookAudio = audio;
+  return audio;
+}
+
+function abStopAudio() {
+  if (audiobookHls) {
+    try { audiobookHls.destroy(); } catch (error) {}
+    audiobookHls = null;
+  }
+  var audio = audiobookAudio;
+  if (audio) {
+    try {
+      audio.pause();
+      audio.removeAttribute('src');
+      audio.load();
+    } catch (error) {}
+  }
+  audiobookState.current = 0;
+}
+
+function abChapterId() {
+  var chapter = audiobookState.chapters[audiobookState.chapterIndex];
+  return chapter ? chapter.id : '';
+}
+
+function abOnTime() {
+  var audio = audiobookAudio;
+  if (!audio) { return; }
+  audiobookState.current = audio.currentTime || 0;
+  var chapterId = abChapterId();
+  // 每 5 秒落一次进度，避免 timeupdate（每秒 4 次）频繁写本地存储。
+  if (chapterId && Math.floor(audiobookState.current) % 5 === 0) {
+    abSaveProgress(chapterId, audiobookState.current);
+  }
+  abSyncPlayer();
+  abHighlightParagraph();
+}
+
+function abSyncPlayer() {
+  var bar = document.getElementById('ab-progress');
+  var audio = audiobookAudio;
+  var total = (audio && isFinite(audio.duration) && audio.duration > 0)
+    ? audio.duration
+    : audiobookState.duration;
+  var current = audio ? (audio.currentTime || 0) : 0;
+  if (bar) {
+    bar.max = total || 0;
+    bar.value = current;
+  }
+  var label = document.getElementById('ab-time');
+  if (label) { label.textContent = abFormatTime(current) + ' / ' + abFormatTime(total); }
+  var toggle = document.getElementById('ab-toggle');
+  if (toggle) {
+    var playing = audio && !audio.paused;
+    toggle.textContent = playing ? '暂停' : '播放';
+  }
+  var rateButton = document.getElementById('ab-rate');
+  if (rateButton) { rateButton.textContent = audiobookState.rate + 'x'; }
+  var sleepButton = document.getElementById('ab-sleep');
+  if (sleepButton) { sleepButton.textContent = abSleepLabel(); }
+}
+
+function abBooksHTML(books) {
+  if (!books.length) {
+    return '<div class="empty">这里还没有内容，换个榜单或搜索一下。</div>';
+  }
+  return '<div class="ab-grid">' + books.map(function (book, index) {
+    return '<button type="button" class="ab-card" data-index="' + index + '">' +
+      '<span class="ab-cover">' + escapeHTML((book.title || '书').slice(0, 1)) + '</span>' +
+      '<span class="ab-meta"><span class="ab-title">' + escapeHTML(book.title) + '</span>' +
+      '<span class="ab-sub">' + escapeHTML(book.author || '佚名') +
+      (book.category ? ' · ' + escapeHTML(book.category) : '') + '</span></span></button>';
+  }).join('') + '</div>';
+}
+
+function abParagraphsHTML() {
+  if (audiobookState.textLoading) {
+    return '<div class="loading">正在加载正文…</div>';
+  }
+  if (!audiobookState.paragraphs.length) {
+    return '<div class="empty">这一章没有可显示的正文，可直接听音频。</div>';
+  }
+  return '<div class="ab-text">' + audiobookState.paragraphs.map(function (item, index) {
+    var inner = item.text;
+    if (item.segments && item.segments.length) {
+      // 带逐句时间轴时按句拆成 span，高亮能跟到当前这一句。
+      inner = item.segments.map(function (segment) {
+        return '<span class="ab-seg" data-start="' + (segment.start || 0) + '">' +
+          escapeHTML(segment.text) + '</span>';
+      }).join('');
+    }
+    return '<p class="ab-line" data-index="' + index + '" data-start="' + (item.start || 0) + '">' +
+      inner + '</p>';
+  }).join('') + '</div>';
+}
+
+function abChaptersHTML() {
+  if (!audiobookState.chapters.length) {
+    return '<div class="loading">正在加载目录…</div>';
+  }
+  return audiobookState.chapters.map(function (chapter, index) {
+    var active = index === audiobookState.chapterIndex ? ' active' : '';
+    return '<button type="button" class="ab-chapter' + active + '" data-index="' + index + '">' +
+      '<span class="ab-order">' + chapter.order + '</span>' +
+      '<span class="ab-chapter-title">' + escapeHTML(chapter.title) + '</span>' +
+      (chapter.locked ? '<span class="ab-lock">付费</span>' : '') +
+      '</button>';
+  }).join('') + (audiobookState.chapterHasMore
+    ? '<button type="button" class="btn mini" id="ab-more-chapters">加载更多章节</button>'
+    : '');
+}
+
+function renderAudiobookBody() {
+  var body = document.getElementById('ab-body');
+  if (!body) { return; }
+  if (audiobookState.book) {
+    body.innerHTML = '<div class="ab-text-pane">' +
+      '<div class="ab-pane-head">' + escapeHTML(audiobookState.book.title) + '</div>' +
+      abParagraphsHTML() + '</div>';
   } else {
-    box.innerHTML = warning + items.map(function (item, i) {
-      var reach = magnetReachability(item);
-      var meta = [item.site, magnetFormatSize(item.size), item.date]
-        .filter(function (part) { return !!part; })
-        .join(' · ');
-      if (item.dhtProbed) {
-        meta += ' · DHT ' + (Number(item.dht) || 0);
-        if ((Number(item.peers) || 0) > (Number(item.dht) || 0)) {
-          meta += ' · 节点 ' + (Number(item.peers) || 0);
-        }
-      }
-      // 不可达整条标红：标题与元信息都用错误色，右侧再给一个明确标签。
-      var dead = reach === 'unreachable';
-      var titleStyle = 'font-size:14px;font-weight:600;word-break:break-all;line-height:1.4' +
-        (dead ? ';color:#e5484d' : '');
-      var metaStyle = 'color:' + (dead ? '#e5484d' : 'var(--muted)') +
-        ';font-size:12px;padding:6px 0 8px';
-      var badge = dead
-        ? '<span style="color:#e5484d;font-size:11px;margin-left:6px">不可达</span>'
-        : reach === 'reachable'
-          ? '<span style="color:#3b9d6a;font-size:11px;margin-left:6px">可达</span>'
-          : '';
-      return (
-        '<div class="card" style="padding:10px 12px;margin:8px 0">' +
-        '<div style="' + titleStyle + '">' +
-        escapeHTML(item.title || '无标题') + '</div>' +
-        '<div class="meta" style="' + metaStyle + '">' +
-        escapeHTML(meta) + badge +
-        (item.playable ? ' · 可在线播放' : '') + '</div>' +
-        '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-        '<button type="button" class="btn mini magnet-play" data-play="' + i + '"' +
-          (item.playable ? '' : ' disabled') + '>播放</button>' +
-        '<button type="button" class="btn mini magnet-copy" data-copy="' + i + '">复制磁力链接</button>' +
-        '</div></div>'
-      );
-    }).join('');
+    body.innerHTML = '<div class="ab-grid-pane">' + abBooksHTML(audiobookState.books) + '</div>';
   }
-  bindMagnetResults();
-  renderMagnetMore();
-}
-
-function bindMagnetResults() {
-  var plays = view.querySelectorAll('.magnet-play');
-  Array.prototype.forEach.call(plays, function (button) {
+  Array.prototype.forEach.call(body.querySelectorAll('.ab-card'), function (button) {
     button.addEventListener('click', function () {
-      var item = state.magnet.visible[Number(button.getAttribute('data-play'))];
-      if (item) {
-        startMagnetPlay(item.magnet, item.title);
-      }
+      abOpenBook(audiobookState.books[Number(button.getAttribute('data-index'))]);
     });
   });
-  var copies = view.querySelectorAll('.magnet-copy');
-  Array.prototype.forEach.call(copies, function (button) {
+  Array.prototype.forEach.call(body.querySelectorAll('.ab-line'), function (line) {
+    line.addEventListener('click', function () {
+      var start = Number(line.getAttribute('data-start')) || 0;
+      if (audiobookAudio) { audiobookAudio.currentTime = start; }
+    });
+  });
+  // 句级跳转：点某一句直接跳到这一句的时间点（比整段更准）。
+  Array.prototype.forEach.call(body.querySelectorAll('.ab-seg'), function (segment) {
+    segment.addEventListener('click', function (event) {
+      event.stopPropagation();
+      var start = Number(segment.getAttribute('data-start')) || 0;
+      if (audiobookAudio) { audiobookAudio.currentTime = start; }
+    });
+  });
+}
+
+function renderAudiobookPanel() {
+  var panel = document.getElementById('ab-panel');
+  if (!panel) { return; }
+  if (!audiobookState.book) {
+    panel.innerHTML = '<div class="live-group-head">榜单</div>' +
+      '<div class="empty">选一本书开始听</div>';
+    return;
+  }
+  panel.innerHTML = '<div class="live-group-head">目录' +
+    '<button type="button" class="btn mini" id="ab-back">返回</button></div>' +
+    '<div class="ab-chapters" id="ab-chapters">' + abChaptersHTML() + '</div>';
+  var back = document.getElementById('ab-back');
+  if (back) {
+    back.addEventListener('click', function () {
+      audiobookState.book = null;
+      audiobookState.chapters = [];
+      audiobookState.chapterIndex = -1;
+      audiobookState.paragraphs = [];
+      renderAudiobookView();
+    });
+  }
+  Array.prototype.forEach.call(panel.querySelectorAll('.ab-chapter'), function (button) {
     button.addEventListener('click', function () {
-      var item = state.magnet.visible[Number(button.getAttribute('data-copy'))];
-      if (item) {
-        copyMagnetLink(item.magnet);
-      }
+      abPlayChapter(Number(button.getAttribute('data-index')));
     });
   });
+  var more = document.getElementById('ab-more-chapters');
+  if (more) { more.addEventListener('click', abLoadMoreChapters); }
 }
 
-function renderMagnetMore() {
-  var box = document.getElementById('magnet-more');
-  if (!box) {
+function renderAudiobookPlayer() {
+  var player = document.getElementById('ab-player');
+  if (!player) { return; }
+  var chapter = audiobookState.chapters[audiobookState.chapterIndex];
+  if (!chapter) {
+    player.innerHTML = '';
     return;
   }
-  if (!state.magnet.items.length || !state.magnet.hasMore) {
-    box.innerHTML = '';
-    return;
-  }
-  box.innerHTML =
-    '<div class="pager"><button type="button" class="btn" id="magnet-more-btn">加载更多</button>' +
-    '<span>第 ' + state.magnet.page + ' 页</span></div>';
-  var more = document.getElementById('magnet-more-btn');
-  if (more) {
-    more.addEventListener('click', function () {
-      loadMagnetPage(state.magnet.page + 1);
+  player.innerHTML =
+    '<div class="ab-now">' +
+      '<span class="ab-now-title">' + escapeHTML(chapter.title) + '</span>' +
+      '<span class="ab-now-sub">' + escapeHTML(audiobookState.book ? audiobookState.book.title : '') + '</span>' +
+    '</div>' +
+    '<input id="ab-progress" class="ab-progress" type="range" min="0" max="0" step="1" value="0" />' +
+    '<span class="ab-time" id="ab-time">0:00 / 0:00</span>' +
+    '<button type="button" class="btn mini" id="ab-prev">上一章</button>' +
+    '<button type="button" class="btn mini" id="ab-toggle">播放</button>' +
+    '<button type="button" class="btn mini" id="ab-next">下一章</button>' +
+    '<button type="button" class="btn mini" id="ab-rate">' + audiobookState.rate + 'x</button>' +
+    '<button type="button" class="btn mini" id="ab-sleep">' + abSleepLabel() + '</button>';
+  var toggle = document.getElementById('ab-toggle');
+  if (toggle) {
+    toggle.addEventListener('click', function () {
+      var audio = audiobookAudio;
+      if (!audio || !audio.src) { return; }
+      if (audio.paused) { audio.play().catch(function () {}); } else { audio.pause(); }
     });
   }
-}
-
-// 会话式搜索：start 先把全部站标签画出来，再轮询增量填充，做到「边搜边显」。
-// 翻页（page > 1）追加，首屏（page <= 1）先清空。
-function loadMagnetPage(page) {
-  if (!state.magnet.query) {
-    return Promise.resolve();
-  }
-  // 用户连点搜索：先停掉上一轮会话，避免两轮结果混在一起。
-  if (state.magnet.session) {
-    stopMagnetSession();
-  }
-  state.magnet.loading = true;
-  var more = document.getElementById('magnet-more-btn');
-  if (more) {
-    more.disabled = true;
-    more.textContent = '加载中…';
-  }
-  var query = state.magnet.query;
-  var sites = state.magnet.searchSites || [];
-  if (page <= 1) {
-    state.magnet.items = [];
-    state.magnet.sessionSites = [];
-    magnetSetStatus('正在搜索「' + query + '」…');
-  }
-  var generation = ++state.magnet.sessionSeq;
-  syncMagnetSearchButtons();
-  return magnetSearchStart(query, page, sites).then(function (snapshot) {
-    if (generation !== state.magnet.sessionSeq) {
-      return;
-    }
-    state.magnet.session = snapshot.id || '';
-    applyMagnetSnapshot(snapshot, page > 1);
-    magnetSetStatus('');
-    return pollMagnetSession(generation);
-  }).catch(function (error) {
-    if (generation !== state.magnet.sessionSeq) {
-      return;
-    }
-    state.magnet.error = (error && error.message) || '搜索失败';
-    state.magnet.loading = false;
-    magnetSetStatus('搜索失败：' + state.magnet.error, 'error');
-    renderMagnetAll();
-  });
-}
-
-// 轮询直到会话 done。每拿到一批就重绘，用户能看着结果一条条冒出来。
-function pollMagnetSession(generation) {
-  if (generation !== state.magnet.sessionSeq || !state.magnet.session) {
-    return Promise.resolve();
-  }
-  return magnetSearchPoll(state.magnet.session, true).then(function (snapshot) {
-    if (generation !== state.magnet.sessionSeq) {
-      return;
-    }
-    applyMagnetSnapshot(snapshot, false);
-    if (snapshot.phase === 'running') {
-      return pollMagnetSession(generation);
-    }
-    state.magnet.loading = false;
-    state.magnet.session = '';
-    syncMagnetSearchButtons();
-    renderMagnetAll();
-    probeMagnetDht(false);
-  }).catch(function (error) {
-    if (generation !== state.magnet.sessionSeq) {
-      return;
-    }
-    state.magnet.error = (error && error.message) || '搜索失败';
-    state.magnet.loading = false;
-    state.magnet.session = '';
-    syncMagnetSearchButtons();
-    magnetSetStatus('搜索失败：' + state.magnet.error, 'error');
-    renderMagnetAll();
-  });
-}
-
-function stopMagnetSession() {
-  var session = state.magnet.session;
-  state.magnet.session = '';
-  state.magnet.sessionSeq = (state.magnet.sessionSeq || 0) + 1;
-  state.magnet.loading = false;
-  if (session) {
-    magnetSearchStop(session).catch(function () {});
-  }
-}
-
-// 搜索中把「搜索」藏起来、露出「停止」，结束后反过来。
-function syncMagnetSearchButtons() {
-  var search = document.getElementById('magnet-search-btn');
-  var stop = document.getElementById('magnet-stop-btn');
-  if (search) {
-    search.style.display = state.magnet.loading ? 'none' : '';
-  }
-  if (stop) {
-    stop.style.display = state.magnet.loading ? '' : 'none';
-  }
-}
-
-// 把一份会话快照并进 state：站点状态覆盖，结果按 id 去重追加。
-function applyMagnetSnapshot(snapshot, append) {
-  if (snapshot.sites && snapshot.sites.length) {
-    state.magnet.sessionSites = snapshot.sites;
-  }
-  var fresh = snapshot.items || [];
-  if (fresh.length) {
-    var byId = {};
-    (state.magnet.items || []).forEach(function (item) {
-      if (item.id) {
-        byId[item.id] = item;
-      }
+  var prev = document.getElementById('ab-prev');
+  if (prev) { prev.addEventListener('click', function () { abPlayChapter(audiobookState.chapterIndex - 1); }); }
+  var next = document.getElementById('ab-next');
+  if (next) { next.addEventListener('click', function () { abPlayChapter(audiobookState.chapterIndex + 1); }); }
+  var rate = document.getElementById('ab-rate');
+  if (rate) {
+    rate.addEventListener('click', function () {
+      var index = audiobookRates.indexOf(audiobookState.rate);
+      audiobookState.rate = audiobookRates[(index + 1) % audiobookRates.length];
+      if (audiobookAudio) { audiobookAudio.playbackRate = audiobookState.rate; }
+      abSyncPlayer();
     });
-    var added = [];
-    fresh.forEach(function (item) {
-      if (!item.id) {
-        added.push(item);
-        return;
-      }
-      var existing = byId[item.id];
-      if (!existing) {
-        byId[item.id] = item;
-        added.push(item);
-      } else if (!existing.magnet && item.magnet) {
-        // 详情页补到了磁力：升级成可播放版本。
-        existing.magnet = item.magnet;
-        existing.playable = true;
-      }
+  }
+  var progress = document.getElementById('ab-progress');
+  if (progress) {
+    progress.addEventListener('change', function () {
+      if (audiobookAudio) { audiobookAudio.currentTime = Number(progress.value) || 0; }
     });
-    state.magnet.items = (state.magnet.items || []).map(function (item) {
-      return item.id && byId[item.id] ? byId[item.id] : item;
-    }).concat(added);
   }
-  if (snapshot.page) {
-    state.magnet.page = Number(snapshot.page) || state.magnet.page;
-  }
-  if (snapshot.hasMore) {
-    state.magnet.hasMore = true;
-  }
-  if (snapshot.warning) {
-    state.magnet.warning = snapshot.warning;
-  }
-  renderMagnetAll();
-  if (fresh.length) {
-    probeMagnetDht(false);
-  }
+  var sleep = document.getElementById('ab-sleep');
+  if (sleep) { sleep.addEventListener('click', abCycleSleep); }
+  abSyncPlayer();
 }
 
-function renderMagnetAll() {
-  magnetBuildTabs();
-  renderMagnetTabs();
-  renderMagnetControls();
-  renderMagnetResults();
-}
-
-function submitMagnetSearch() {
-  var input = document.getElementById('magnet-query');
-  var query = input ? input.value.trim() : '';
-  if (!query) {
-    magnetSetStatus('请输入搜索关键词。', 'error');
-    return;
-  }
-  state.magnet.query = query;
-  state.magnet.page = 1;
-  state.magnet.items = [];
-  state.magnet.visible = [];
-  state.magnet.tabs = [];
-  state.magnet.activeTab = 0;
-  state.magnet.probeSeq += 1;
-  state.magnet.hasMore = false;
-  state.magnet.warning = '';
-  state.magnet.error = '';
-  state.magnet.searchSites = magnetSelectedSites();
-  var results = document.getElementById('magnet-results');
-  if (results) {
-    results.innerHTML = '';
-  }
-  var more = document.getElementById('magnet-more');
-  if (more) {
-    more.innerHTML = '';
-  }
-  loadMagnetPage(1);
-}
-
-function copyMagnetLink(magnet) {
-  if (!magnet) {
-    magnetSetStatus('该结果没有磁力链接。', 'error');
-    return;
-  }
-  if (navigator.clipboard && navigator.clipboard.writeText) {
-    navigator.clipboard.writeText(magnet).then(function () {
-      magnetSetStatus('已复制磁力链接到剪贴板。');
-    }).catch(function () {
-      window.prompt('复制失败，请手动复制磁力链接：', magnet);
-    });
-  } else {
-    window.prompt('浏览器不支持自动复制，请手动复制磁力链接：', magnet);
-  }
-}
-
-function startMagnetPlay(magnet, title) {
-  if (!magnet) {
-    magnetSetStatus('该结果没有磁力链接，无法播放。', 'error');
-    return Promise.resolve();
-  }
-  // 每次点击都作废旧任务：先立即终止上一条的加载，再用新序号启动。
-  var seq = ++state.magnet.playSeq;
-  magnetSetStatus('正在读取种子文件列表…');
-  return magnetCancel().catch(function () {}).then(function () {
-    return magnetFiles(magnet);
-  }).then(function (result) {
-    if (seq !== state.magnet.playSeq) {
-      return;
-    }
-    var files = result.items || [];
-    var videos = files.filter(function (file) { return !!file.video; });
-    if (videos.length > 1) {
-      showMagnetFilePicker(magnet, videos, title, seq);
-      return;
-    }
-    // 只有 1 个视频文件直接播；0 个时用 -1 让后端自动选最大的视频文件。
-    var file = videos.length === 1 ? videos[0] : null;
-    playMagnetFile(magnet, file ? file.index : -1, file ? file.name : '', title, seq);
-  }).catch(function (error) {
-    if (seq !== state.magnet.playSeq) {
-      return;
-    }
-    magnetSetStatus(
-      '读取种子文件失败：' + ((error && error.message) || '未知错误') +
-      '（常见于 DHT 获取元数据超时，可稍后重试）',
-      'error'
-    );
-  });
-}
-
-function showMagnetFilePicker(magnet, videos, title, seq) {
-  var rows = videos.map(function (file, i) {
-    return (
-      '<button type="button" class="btn mini magnet-file-pick" data-pick="' + i + '">' +
-      escapeHTML(file.name || ('文件 ' + (i + 1))) + ' · ' +
-      escapeHTML(magnetFormatSize(file.size)) + '</button>'
-    );
+function renderAudiobookToolbar() {
+  var toolbar = document.getElementById('ab-toolbar');
+  if (!toolbar) { return; }
+  var boards = audiobookBoards.map(function (board, index) {
+    return '<button type="button" class="btn mini ab-board' +
+      (index === audiobookState.board && !audiobookState.shelf ? ' active' : '') +
+      '" data-index="' + index + '">' + escapeHTML(board.name) + '</button>';
   }).join('');
-  magnetSetHTML(
-    '<div class="cross-warning">该种子包含多个视频文件，请选择要播放的一个：</div>' +
-    '<div style="display:flex;flex-wrap:wrap;gap:8px;margin:10px 0">' + rows + '</div>' +
-    '<div style="display:flex;gap:8px;flex-wrap:wrap">' +
-    '<button type="button" class="btn mini" id="magnet-file-auto">自动选最大视频</button>' +
-    '<button type="button" class="btn mini" id="magnet-file-cancel">取消</button>' +
-    '</div>'
-  );
-  var picks = view.querySelectorAll('.magnet-file-pick');
-  Array.prototype.forEach.call(picks, function (button) {
+  toolbar.innerHTML =
+    '<div class="ab-toolbar-row">' +
+      '<button type="button" class="btn mini ab-shelf' +
+        (audiobookState.shelf ? ' active' : '') + '" id="ab-shelf">书架</button>' +
+      boards +
+      '<form class="ab-search" id="ab-search-form">' +
+        '<input id="ab-search-input" type="search" placeholder="搜索书名 / 作者" value="' +
+          escapeHTML(audiobookState.query) + '" />' +
+        '<button type="submit" class="btn mini">搜索</button>' +
+      '</form>' +
+    '</div>';
+  Array.prototype.forEach.call(toolbar.querySelectorAll('.ab-board'), function (button) {
     button.addEventListener('click', function () {
-      var file = videos[Number(button.getAttribute('data-pick'))];
-      if (file) {
-        playMagnetFile(magnet, file.index, file.name, title, seq);
+      audiobookState.board = Number(button.getAttribute('data-index'));
+      audiobookState.query = '';
+      audiobookState.shelf = false;
+      abLoadBooks(1);
+    });
+  });
+  var shelf = document.getElementById('ab-shelf');
+  if (shelf) {
+    shelf.addEventListener('click', function () {
+      audiobookState.shelf = !audiobookState.shelf;
+      if (audiobookState.shelf) {
+        audiobookState.books = abShelf();
+        audiobookState.hasMore = false;
+        renderAudiobookToolbar();
+        renderAudiobookBody();
+      } else {
+        abLoadBooks(1);
       }
     });
-  });
-  var auto = document.getElementById('magnet-file-auto');
-  if (auto) {
-    auto.addEventListener('click', function () {
-      playMagnetFile(magnet, -1, '', title, seq);
-    });
   }
-  var cancel = document.getElementById('magnet-file-cancel');
-  if (cancel) {
-    cancel.addEventListener('click', function () {
-      magnetSetStatus('');
-    });
-  }
-}
-
-function playMagnetFile(magnet, fileIndex, name, title, seq) {
-  if (seq === undefined) {
-    seq = state.magnet.playSeq;
-  }
-  magnetSetStatus('正在准备播放…');
-  magnetPlay(magnet, fileIndex).then(function (plan) {
-    if (seq !== state.magnet.playSeq) {
-      return;
-    }
-    var url = plan && plan.url;
-    if (!url) {
-      magnetSetStatus('未取得播放地址。', 'error');
-      return;
-    }
-    mountMagnetVideo(url, name || title || '磁力播放');
-    magnetSetStatus('');
-  }).catch(function (error) {
-    if (seq !== state.magnet.playSeq) {
-      return;
-    }
-    magnetSetStatus('播放准备失败：' + ((error && error.message) || '未知错误'), 'error');
-  });
-}
-
-// 复用网页版观看页的 DOM 结构与 mountVideo()：它内部已经接好 hls.js / 原生
-// <video>、倍速、进度上报，这里不再另起一套播放器 UI，也不引入新播放器库。
-function mountMagnetVideo(url, title) {
-  var box = document.getElementById('magnet-player');
-  if (!box) {
-    return;
-  }
-  stopPlayback();
-  // 清掉观看页状态：reportProgress / scheduleAutoNext 见到 drama 为 null 会直接返回，
-  // 磁力播放不会往「播放记录」里写一条错剧集。
-  state.drama = null;
-  state.plan = null;
-  state.chapters = [];
-  state.index = 0;
-  box.innerHTML =
-    '<div class="watch" style="margin:14px 0">' +
-      '<div class="player-wrap">' +
-        '<div class="player-title">' + escapeHTML(title) + '</div>' +
-        '<div class="player-stage"><video id="player" controls autoplay playsinline></video></div>' +
-        '<div class="notice" id="play-note"></div>' +
-        '<div class="player-bar"><span class="spacer"></span>' +
-          '<button type="button" class="btn" id="magnet-player-close">关闭播放</button>' +
-        '</div>' +
-      '</div>' +
-    '</div>';
-  var close = document.getElementById('magnet-player-close');
-  if (close) {
-    close.addEventListener('click', function () {
-      stopPlayback();
-      box.innerHTML = '';
-    });
-  }
-  var video = document.getElementById('player');
-  if (video) {
-    // mountVideo 把 onerror 指向自动换线；磁力播放没有多线路，补一个直白提示。
-    video.addEventListener('error', function () {
-      showNotice('视频加载失败：种子可能尚未就绪，或浏览器不支持该格式。');
-    });
-  }
-  mountVideo(url, 0);
-  if (box.scrollIntoView) {
-    box.scrollIntoView();
-  }
-}
-
-function bindMagnetView() {
-  var form = document.getElementById('magnet-form');
+  var form = document.getElementById('ab-search-form');
   if (form) {
     form.addEventListener('submit', function (event) {
       event.preventDefault();
-      submitMagnetSearch();
+      var input = document.getElementById('ab-search-input');
+      var query = input ? input.value.trim() : '';
+      audiobookState.query = query;
+      audiobookState.shelf = false;
+      if (query) { abSearchBooks(1); } else { abLoadBooks(1); }
     });
-  }
-  // 搜索中「搜索」变「停止」：点一次立刻中断会话，不必等最慢的站超时。
-  var stop = document.getElementById('magnet-stop-btn');
-  if (stop) {
-    stop.addEventListener('click', function () {
-      stopMagnetSession();
-      magnetSetStatus('已停止搜索。');
-      syncMagnetSearchButtons();
-      renderMagnetAll();
-    });
-  }
-  // 磁力页打开就预热 BT 引擎，点播放时 DHT 已有节点。
-  magnetWarmup().catch(function () {});
-  var toggle = document.getElementById('magnet-sites-toggle');
-  var panel = document.getElementById('magnet-sites-panel');
-  if (toggle && panel) {
-    toggle.addEventListener('click', function () {
-      var open = panel.style.display !== 'none';
-      panel.style.display = open ? 'none' : 'block';
-      toggle.textContent = open ? '站源选择 ▾' : '站源选择 ▴';
-    });
-  }
-  var all = document.getElementById('magnet-sites-all');
-  if (all) {
-    all.addEventListener('change', function () {
-      var checked = all.checked;
-      (state.magnet.sites || []).forEach(function (item) {
-        state.magnet.selected[item.id] = checked;
-      });
-      renderMagnetSitesPanel();
-    });
-  }
-  // 结果区左右滑动也能换站源标签；桌面端可以直接点标签。
-  var results = document.getElementById('magnet-results');
-  if (results) {
-    var startX = null;
-    results.addEventListener('touchstart', function (event) {
-      startX = event.touches && event.touches.length ? event.touches[0].clientX : null;
-    }, { passive: true });
-    results.addEventListener('touchend', function (event) {
-      if (startX === null) {
-        return;
-      }
-      var endX = event.changedTouches && event.changedTouches.length
-        ? event.changedTouches[0].clientX
-        : startX;
-      var delta = endX - startX;
-      startX = null;
-      if (Math.abs(delta) < 60) {
-        return;
-      }
-      var next = state.magnet.activeTab + (delta < 0 ? 1 : -1);
-      if (next < 0 || next >= state.magnet.tabs.length) {
-        return;
-      }
-      state.magnet.activeTab = next;
-      renderMagnetTabs();
-      renderMagnetControls();
-      renderMagnetResults();
-      probeMagnetDht(false);
-    }, { passive: true });
   }
 }
 
-function renderMagnet() {
+function renderAudiobookView() {
   view.innerHTML =
-    '<div class="magnet-wrap" style="max-width:1000px;margin:0 auto">' +
-      '<div class="lib-toolbar" style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">' +
-        '<form id="magnet-form" style="display:flex;gap:8px;flex:1 1 320px;min-width:0">' +
-          '<input id="magnet-query" type="search" placeholder="输入关键词搜索磁力资源" ' +
-            'autocomplete="off" style="flex:1 1 auto;min-width:0" />' +
-          '<button type="submit" class="btn" id="magnet-search-btn">搜索</button>' +
-          '<button type="button" class="btn" id="magnet-stop-btn" style="display:none">停止</button>' +
-        '</form>' +
-        '<span id="magnet-sites-count" style="font-size:13px;color:var(--muted)"></span>' +
+    '<div class="ab-wrap">' +
+      '<div class="ab-toolbar" id="ab-toolbar"></div>' +
+      '<div class="ab-columns">' +
+        '<div class="ab-col ab-panel" id="ab-panel"></div>' +
+        '<div class="ab-col ab-main" id="ab-body"></div>' +
       '</div>' +
-      '<div class="section" style="margin-top:10px">' +
-        '<button type="button" class="btn mini" id="magnet-sites-toggle">站源选择 ▾</button>' +
-        '<div id="magnet-sites-panel" style="display:none;margin-top:10px;padding:10px 12px;' +
-          'border:1px solid var(--line);border-radius:10px;background:var(--panel)">' +
-          '<div style="font-size:12px;color:var(--muted);margin-bottom:8px">' +
-            '默认全选（即全部启用站源）；勾选变更后在下一次搜索时生效。' +
-            '站源较多，可折叠查看、面板内滚动。</div>' +
-          '<label style="display:inline-flex;align-items:center;gap:6px;font-size:13px;' +
-            'cursor:pointer;margin-bottom:8px"><input type="checkbox" id="magnet-sites-all" /> ' +
-            '全选 / 全不选</label>' +
-          '<div id="magnet-sites-list" style="display:flex;flex-wrap:wrap;gap:8px;' +
-            'max-height:220px;overflow-y:auto"></div>' +
-        '</div>' +
-      '</div>' +
-      '<div id="magnet-tabs" style="display:flex;gap:8px;overflow-x:auto;' +
-        'white-space:nowrap;padding:8px 0;scrollbar-width:thin"></div>' +
-      '<div id="magnet-controls"></div>' +
-      '<div id="magnet-player"></div>' +
-      '<div id="magnet-status" style="display:none"></div>' +
-      '<div id="magnet-results"></div>' +
-      '<div id="magnet-more"></div>' +
+      '<div class="ab-player" id="ab-player"></div>' +
     '</div>';
-  var input = document.getElementById('magnet-query');
-  if (input) {
-    input.value = state.magnet.query;
-  }
-  bindMagnetView();
-  // 结果/站源/标签状态都缓存在 state.magnet，切换 hash 回来时直接把上次结果画回来。
-  syncMagnetSearchButtons();
-  magnetBuildTabs();
-  renderMagnetTabs();
-  renderMagnetControls();
-  renderMagnetResults();
-  if (state.magnet.sitesLoaded) {
-    renderMagnetSitesPanel();
+  renderAudiobookToolbar();
+  renderAudiobookPanel();
+  renderAudiobookPlayer();
+  if (audiobookState.book) {
+    renderAudiobookBody();
     return Promise.resolve();
   }
-  magnetSetStatus('正在加载站源列表…');
-  return magnetSites().then(function (result) {
-    var items = result.items || [];
-    state.magnet.sites = items;
-    state.magnet.selected = {};
-    items.forEach(function (item) {
-      state.magnet.selected[item.id] = true;
+  return abLoadBooks(1);
+}
+
+function abLoadBooks(page) {
+  var board = audiobookBoards[audiobookState.board];
+  audiobookState.loading = true;
+  audiobookState.book = null;
+  audiobookState.chapters = [];
+  audiobookState.chapterIndex = -1;
+  renderAudiobookPanel();
+  renderAudiobookBody();
+  return abGet('ranks', { side: board.side, type: board.type, page: page })
+    .then(function (data) {
+      audiobookState.loading = false;
+      audiobookState.page = page;
+      audiobookState.books = (data.books || []).slice();
+      audiobookState.hasMore = !!data.hasMore;
+      renderAudiobookToolbar();
+      renderAudiobookBody();
+    })
+    .catch(function (error) {
+      audiobookState.loading = false;
+      var body = document.getElementById('ab-body');
+      if (body) { body.innerHTML = '<div class="empty">' + escapeHTML(error.message || '榜单加载失败') + '</div>'; }
     });
-    state.magnet.sitesLoaded = true;
-    renderMagnetSitesPanel();
-    magnetSetStatus('');
-  }).catch(function (error) {
-    state.magnet.error = (error && error.message) || '站源加载失败';
-    renderMagnetSitesPanel();
-    magnetSetStatus(
-      '站源加载失败：' + state.magnet.error + '（仍可搜索全部启用站源）',
-      'error'
-    );
+}
+
+function abSearchBooks(page) {
+  return abGet('search', { q: audiobookState.query, page: page })
+    .then(function (data) {
+      audiobookState.page = page;
+      audiobookState.books = (data.books || []).slice();
+      audiobookState.hasMore = !!data.hasMore;
+      audiobookState.book = null;
+      audiobookState.chapters = [];
+      audiobookState.chapterIndex = -1;
+      renderAudiobookPanel();
+      renderAudiobookToolbar();
+      renderAudiobookBody();
+    })
+    .catch(function (error) {
+      showNotice(error.message || '搜索失败');
+    });
+}
+
+function abOpenBook(book) {
+  if (!book) { return; }
+  audiobookState.book = book;
+  audiobookState.chapters = [];
+  audiobookState.chapterIndex = -1;
+  audiobookState.paragraphs = [];
+  audiobookState.chapterPage = 1;
+  audiobookState.chapterHasMore = false;
+  abRememberBook(book);
+  renderAudiobookPanel();
+  renderAudiobookBody();
+  abGet('chapters', { book: book.id, page: 1 })
+    .then(function (data) {
+      audiobookState.chapters = data.chapters || [];
+      audiobookState.chapterHasMore = !!data.hasMore;
+      renderAudiobookPanel();
+    })
+    .catch(function (error) {
+      showNotice(error.message || '目录加载失败');
+    });
+}
+
+function abLoadMoreChapters() {
+  var book = audiobookState.book;
+  if (!book || !audiobookState.chapterHasMore) { return; }
+  var page = audiobookState.chapterPage + 1;
+  abGet('chapters', { book: book.id, page: page })
+    .then(function (data) {
+      audiobookState.chapterPage = page;
+      audiobookState.chapters = audiobookState.chapters.concat(data.chapters || []);
+      audiobookState.chapterHasMore = !!data.hasMore;
+      renderAudiobookPanel();
+    })
+    .catch(function (error) { showNotice(error.message || '目录加载失败'); });
+}
+
+function abPlayChapter(index) {
+  var chapter = audiobookState.chapters[index];
+  if (!chapter) {
+    showNotice('已经是最后一章了');
+    return;
+  }
+  if (chapter.locked) {
+    showNotice('这一章需要付费，暂时无法播放');
+    return;
+  }
+  var book = audiobookState.book;
+  if (!book) { return; }
+  audiobookState.chapterIndex = index;
+  audiobookState.paragraphs = [];
+  audiobookState.timed = false;
+  audiobookState.duration = 0;
+  audiobookState.textLoading = true;
+  abStopAudio();
+  renderAudiobookPanel();
+  renderAudiobookPlayer();
+  renderAudiobookBody();
+  abGet('media', { book: book.id, chapter: chapter.id })
+    .then(function (data) {
+      audiobookState.duration = Number(data.duration) || 0;
+      if (data.message) { showNotice(data.message); }
+      var audio = abEnsureAudio();
+      audio.playbackRate = audiobookState.rate;
+      var target = data.url || '';
+      var saved = abReadProgress(chapter.id);
+      var applySaved = function () {
+        if (saved > 0) {
+          var limit = (audio.duration && isFinite(audio.duration)) ? audio.duration - 5 : Infinity;
+          if (saved < limit) { audio.currentTime = saved; }
+        }
+      };
+      audio.addEventListener('loadedmetadata', applySaved, { once: true });
+      if (/\.m3u8(\?|$)/.test(target) && window.Hls && window.Hls.isSupported()) {
+        audiobookHls = new window.Hls({ lowLatencyMode: false });
+        audiobookHls.loadSource(target);
+        audiobookHls.attachMedia(audio);
+        audiobookHls.on(window.Hls.Events.MANIFEST_PARSED, function () {
+          audio.play().catch(function () {});
+        });
+      } else {
+        audio.src = target;
+        audio.play().catch(function () {});
+      }
+      abLoadText(chapter.id);
+    })
+    .catch(function (error) {
+      audiobookState.textLoading = false;
+      renderAudiobookBody();
+      showNotice(error.message || '取音频地址失败');
+    });
+}
+
+function abLoadText(chapterId) {
+  abGet('text', { chapter: chapterId })
+    .then(function (data) {
+      var rows = data.paragraphs || [];
+      var duration = audiobookState.duration;
+      var total = 0;
+      rows.forEach(function (row) { total += (row.text || '').length || 1; });
+      var cursor = 0;
+      audiobookState.paragraphs = rows.map(function (row, index) {
+        var text = row.text || '';
+        var weight = text.length || 1;
+        var span = duration > 0 ? duration * weight / total : 0;
+        var start = (typeof row.start === 'number' && row.start >= 0) ? row.start : cursor;
+        var end = index === rows.length - 1
+          ? (duration > 0 ? duration : start + span)
+          : start + span;
+        cursor = end;
+        var raw = Array.isArray(row.segments) ? row.segments : [];
+        var segments = [];
+        raw.forEach(function (part) {
+          if (!part || typeof part.text !== 'string' || !part.text) { return; }
+          if (typeof part.start !== 'number' || part.start < 0) { return; }
+          segments.push({ text: part.text, start: part.start });
+        });
+        // 只要有一句缺时间戳，整段就退回按段高亮，避免高亮在句间乱跳。
+        if (segments.length !== raw.length) { segments = []; }
+        return { text: text, start: start, end: end, segments: segments };
+      });
+      audiobookState.timed = !!data.timed;
+      audiobookState.textLoading = false;
+      renderAudiobookBody();
+    })
+    .catch(function (error) {
+      audiobookState.textLoading = false;
+      audiobookState.paragraphs = [];
+      renderAudiobookBody();
+      showNotice(error.message || '正文加载失败');
+    });
+}
+
+// 根据播放位置高亮当前段 / 当前句并滚动到可见区域（跟读用）。
+function abActiveParagraph() {
+  var list = audiobookState.paragraphs;
+  var seconds = audiobookState.current;
+  for (var index = 0; index < list.length; index++) {
+    if (seconds < list[index].end || index === list.length - 1) { return index; }
+  }
+  return -1;
+}
+
+function abHighlightParagraph() {
+  var pane = document.getElementById('ab-body');
+  if (!pane) { return; }
+  var seconds = audiobookState.current;
+  var lines = pane.querySelectorAll('.ab-line');
+  if (!lines.length) { return; }
+  var active = abActiveParagraph();
+  Array.prototype.forEach.call(lines, function (line, index) {
+    line.classList.toggle('active', index === active);
   });
+  Array.prototype.forEach.call(pane.querySelectorAll('.ab-seg.active'), function (node) {
+    node.classList.remove('active');
+  });
+  var target = active >= 0 ? lines[active] : null;
+  if (active >= 0 && lines[active]) {
+    var spans = lines[active].querySelectorAll('.ab-seg');
+    for (var index = 0; index < spans.length; index++) {
+      var start = Number(spans[index].getAttribute('data-start')) || 0;
+      var next = index + 1 < spans.length
+        ? Number(spans[index + 1].getAttribute('data-start')) || start
+        : Infinity;
+      if (seconds >= start && seconds < next) {
+        spans[index].classList.add('active');
+        target = spans[index];
+        break;
+      }
+    }
+  }
+  if (target) {
+    var rect = target.getBoundingClientRect();
+    var box = pane.getBoundingClientRect();
+    if (rect.top < box.top || rect.bottom > box.bottom) {
+      target.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }
 }
 
 function render() {
   cancelAutoNext();
   // 换路由就放弃还在跑的全部源搜索，别让它的轮询继续往页面上画结果。
   cancelCrossSearch();
-  // 离开磁力页时停掉搜索会话，别让后台继续抓站。
-  if (location.hash.indexOf('#/magnet') !== 0 && state.magnet.session) {
-    stopMagnetSession();
-  }
   // 路由离开直播页时停掉直播播放器，避免后台继续拉流。
   if (location.hash.indexOf('#/live') !== 0 && (liveHlsInstance || liveFlvInstance || liveArtplayer)) {
     liveStopPlayer();
     liveReleaseArtplayer();
     liveState.playing = null;
+  }
+  // 离开听书页同样停掉音频，避免在别的页面继续出声。
+  if (location.hash.indexOf('#/audiobook') !== 0 && (audiobookAudio || audiobookHls)) {
+    abStopAudio();
   }
   var current = hashParams();
   var params = current.params;
@@ -4419,10 +4183,6 @@ function render() {
   if (visibilityButton) {
     visibilityButton.classList.toggle('active', current.path === 'source-visibility');
   }
-  var magnetButton = document.getElementById('magnet-btn');
-  if (magnetButton) {
-    magnetButton.classList.toggle('active', current.path === 'magnet');
-  }
   var task;
   // #/drama 与 #/play 统一渲染融合观看页（播放器在上、选集居中、详情沉底）；
   // 旧链接 #/play 继续兼容，落到同一页并带上 index。
@@ -4438,8 +4198,8 @@ function render() {
     task = renderSourceVisibility();
   } else if (current.path === 'live') {
     task = Promise.resolve().then(renderLiveView);
-  } else if (current.path === 'magnet') {
-    task = renderMagnet();
+  } else if (current.path === 'audiobook') {
+    task = Promise.resolve().then(renderAudiobookView);
   } else {
     state.category = params.get('category') || '';
     state.page = Number(params.get('page') || 1);
@@ -4449,12 +4209,16 @@ function render() {
   if (liveButton) {
     liveButton.classList.toggle('active', current.path === 'live');
   }
+  var audiobookButton = document.getElementById('audiobook-btn');
+  if (audiobookButton) {
+    audiobookButton.classList.toggle('active', current.path === 'audiobook');
+  }
   task.catch(function (error) {
     view.innerHTML = '<div class="empty">' + escapeHTML(error.message || '加载失败') + '</div>';
   });
 }
 
-// 顶栏「清理缓存」：调用核心统计/清理，删除磁力分片与播放临时文件。
+// 顶栏「清理缓存」：调用核心统计/清理，删除播放与转码临时文件。
 // 本地服务版没有「我的 → 设置」分组，入口直接放在顶栏。
 function readableCacheSize(bytes) {
   if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
@@ -4477,7 +4241,7 @@ function readableCacheSize(bytes) {
           return null;
         }
         if (!window.confirm(
-          '发现 ' + readableCacheSize(bytes) + ' 可清理缓存（磁力分片、播放与转码临时文件）。\n' +
+          '发现 ' + readableCacheSize(bytes) + ' 可清理缓存（播放与转码临时文件）。\n' +
           '已下载视频、剧库和设置不会受影响，是否清理？'
         )) {
           return null;

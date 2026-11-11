@@ -136,7 +136,7 @@ func TestNativeCastDirectURL(t *testing.T) {
 		{"重写过播放列表仍可直连原始清单", providerMedia{URL: "https://cdn.example.com/a.m3u8", Playlist: "#EXTM3U\n"}, "https://cdn.example.com/a.m3u8"},
 		{"AES-128 清单仍可直连", providerMedia{URL: "https://cdn.example.com/a.m3u8", HLSKey: []byte("0123456789abcdef")}, "https://cdn.example.com/a.m3u8"},
 		{"CENC 加密分片不可直连", providerMedia{URL: "https://cdn.example.com/a.m3u8", CENCKey: []byte("key")}, ""},
-		{"非 http 地址不可直连", providerMedia{URL: "magnet:?xt=urn:btih:x"}, ""},
+		{"非 http 地址不可直连", providerMedia{URL: "hongguo-cenc://x"}, ""},
 	}
 	for _, test := range cases {
 		if got := nativeCastDirectURL(test.media); got != test.want {

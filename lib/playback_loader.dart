@@ -17,16 +17,6 @@ class PlaybackLoader {
     bool adBlock = true,
     int route = 0,
   }) => _load(() async {
-    // 磁力搜索结果会把 magnet:?xt=... 放在分集的 raw 里，直接走 Go 侧
-    // 「磁力 → 本机 HTTP 流」，拿到的 PlaybackPlan 与站源取流完全一致，
-    // 后面的播放器、弹幕、进度、选集逻辑一行都不用改。
-    final magnet = episode.raw['magnet'] as String? ?? '';
-    if (magnet.startsWith('magnet:')) {
-      return repository.magnetPlay(
-        magnet,
-        fileIndex: (episode.raw['fileIndex'] as num?)?.toInt() ?? -1,
-      );
-    }
     if (online) {
       return repository.resolveOnline(
         drama,

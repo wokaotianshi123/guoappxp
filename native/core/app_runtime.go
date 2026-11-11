@@ -3,6 +3,7 @@ package core
 import (
 	"context"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -159,20 +160,7 @@ type nativeInput struct {
 	Force           bool                    `json:"force"`
 	AdBlock         *bool                   `json:"adBlock"`
 	Account         soraniAccountInput      `json:"account"`
-	// 磁力：搜索关键词 / 页码 / 勾选的站源，播放用的磁力链接与种子内文件序号。
-	// fileIndex < 0 表示自动挑最大的视频文件；hashes 用于批量探测 DHT 节点数。
-	Magnet    string   `json:"magnet"`
-	FileIndex *int     `json:"fileIndex"`
-	Sites     []int    `json:"sites"`
-	Hashes    []string `json:"hashes"`
-	// 磁力源管理：SiteID 指定要编辑/删除的站源，SiteState 用于启停。
-	SiteID    int   `json:"siteId"`
-	SiteState *bool `json:"siteState"`
-	// 磁力播放页从站点首页抓到的真实分类：CategoryURL 是列表地址，
-	// CategorySiteID 限定这个地址只作用于它所属的站源。
-	CategoryURL    string `json:"categoryUrl"`
-	CategorySiteID int    `json:"categorySiteId"`
-	CacheDirectory string `json:"cacheDirectory"`
+	CacheDirectory  string                  `json:"cacheDirectory"`
 	// 下载列表增量：Since 是上次拿到的列表指纹，列表没变化时核心只回指纹。
 	Since string `json:"since"`
 }
@@ -329,8 +317,6 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	transport.MaxIdleConnsPerHost = 8
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
-	// 磁力「云端种子缓存」也走同一套代理与 CA 配置，手动代理 / 系统代理下可用。
-	configureMagnetOnlineMetaHTTP(transport)
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
 	// 浏览器指纹传输必须留住引用：自定义源新增/读取时要把自己的 host 登记进
 	// 白名单（registerCustomBrowserHost），这里不赋值的话白名单永远是空的，
@@ -356,8 +342,6 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	// registry 为 nil 时那次查询会直接空指针 panic（表现为「本地核心处理失败」）。
 	engine.customRegistry = newCustomMaccmsRegistry(directory)
 	engine.customRegistry.load()
-	// 用户新增/删除的磁力站源也放在应用数据目录，必须在第一次 magnetSites 之前就绪。
-	magnetInitSources(directory)
 	// 已存在的自定义源也要登记进浏览器指纹传输白名单，保证重启后
 	// 其目录/页面请求与运行时新增路径一致。
 	for _, record := range engine.customMaccmsSources() {
@@ -440,31 +424,6 @@ func nativeDispatch(input nativeInput) (any, error) {
 		duration = 10 * time.Second
 	} else if input.Action == "preload" {
 		duration = 15 * time.Second
-	} else if input.Action == "magnetSearch" || input.Action == "magnetBrowse" ||
-		input.Action == "magnetFiles" || input.Action == "magnetPlay" {
-		// 磁力搜索要并发抓多个站源，播放要等 DHT / tracker 返回种子元数据；
-		// 两个实现内部各有 40 秒硬预算，这里留出余量避免外层先超时。
-		duration = 90 * time.Second
-	} else if input.Action == "magnetSearchStart" {
-		// start 只建会话并立刻返回，真正的抓取在会话内异步跑（自身 45 秒预算）。
-		duration = 20 * time.Second
-	} else if input.Action == "magnetSearchPoll" {
-		// 长轮询最多等 2 秒，留出余量即可。
-		duration = 15 * time.Second
-	} else if input.Action == "magnetWarmup" {
-		duration = 20 * time.Second
-	} else if input.Action == "magnetAnalyzeSite" {
-		// 自动识别只抓一次首页，但要留出站点的响应余量。
-		duration = 45 * time.Second
-	} else if input.Action == "magnetHotWords" {
-		// 内部 6 秒硬预算抓站，外面留一点序列化余量即可。
-		duration = 20 * time.Second
-	} else if input.Action == "magnetCategories" {
-		// 内部 10 秒硬预算并发抓各站首页导航。
-		duration = 30 * time.Second
-	} else if input.Action == "magnetPeers" {
-		// 一轮 DHT 探测窗口 6 秒，另留启动 BT 引擎与并发 AddMagnet 的余量。
-		duration = 30 * time.Second
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), duration)
 	defer cancel()
@@ -509,6 +468,36 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "suggestions":
 		items, err := engine.suggestions(ctx, input.Query)
 		return map[string]any{"items": items}, err
+	case "audiobookFetch":
+		body, err := engine.downloader.fetchAudiobookRaw(ctx, input.Query, input.Content)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"body": body}, nil
+	case "audiobookText":
+		paragraphs, err := engine.downloader.fetchAudiobookText(ctx, input.Category)
+		if err != nil {
+			return nil, err
+		}
+		timed := false
+		for _, paragraph := range paragraphs {
+			if paragraph.Start >= 0 {
+				timed = true
+				break
+			}
+		}
+		return map[string]any{"paragraphs": paragraphs, "timed": timed}, nil
+	case "audiobookMedia":
+		media, err := engine.downloader.resolveNovelfmAudio(ctx, input.Query, input.Category)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{
+			"url":           media.URL,
+			"decryptionKey": hex.EncodeToString(media.CENCKey),
+			"duration":      int(media.Duration.Seconds()),
+			"headers":       map[string]string{"Referer": media.Referer, "User-Agent": "com.dragon.read"},
+		}, nil
 	case "downloadDirectory":
 		engine.downloads.mu.Lock()
 		root := engine.downloads.root
@@ -610,69 +599,6 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 只返回规则文本与诊断说明，不写盘；是否保存仍由用户在表单里点「保存」决定。
 	case "analyzeCustomSourceSite":
 		return engine.downloader.analyzeCustomSourceSite(ctx, input.Base)
-	// 磁力：cisou 的站源规则表 + cibo 等价的「磁力 → 本机 HTTP 流」播放。
-	// 这四个 action 不属于站源白名单，nativeAuthorizeInput 不拦截。
-	case "magnetSites":
-		return magnetSiteList()
-	case "magnetSearch":
-		return magnetSearch(ctx, input.Query, input.Page, input.Sites)
-	// 磁力播放页：热词、按分类浏览站内列表、以及磁力源管理（含自动识别）。
-	// 这些 action 同样与站源白名单无关，nativeAuthorizeInput 不拦截。
-	case "magnetHotWords":
-		return magnetHotWords(ctx, input.Force)
-	case "magnetCategories":
-		return magnetCategories(ctx, input.Force, input.Sites)
-	case "magnetBrowse":
-		if input.CategoryURL != "" {
-			return magnetBrowseCategory(ctx, input.Query, input.Page, input.Sites, input.CategoryURL, input.CategorySiteID)
-		}
-		return magnetBrowse(ctx, input.Query, input.Page, input.Sites)
-	case "magnetAnalyzeSite":
-		return magnetAnalyzeSite(ctx, input.Base)
-	case "magnetAddSite":
-		return magnetAddCustomSite(input.Name, input.Base, input.Rule)
-	case "magnetUpdateSite":
-		return magnetUpdateCustomSite(input.SiteID, input.Name, input.Rule, input.SiteState)
-	case "magnetRemoveSite":
-		return true, magnetRemoveSite(input.SiteID)
-	case "magnetResetSites":
-		removed, err := magnetResetSites()
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"removed": removed}, nil
-	// 导入导出：导出给的是当前「生效配置」（含改过的内置源），导入支持 merge / replace。
-	case "magnetExportSites":
-		return magnetExportSites()
-	case "magnetImportSites":
-		return magnetImportSites(input.Content, input.Command)
-	// 搜索会话：start 立刻返回全部站标签，poll 增量取回结果，stop 立即中断。
-	case "magnetSearchStart":
-		return magnetSessionBegin(ctx, input.Query, input.Page, input.Sites,
-			input.Command == "browse", input.CategoryURL, input.CategorySiteID)
-	case "magnetSearchPoll":
-		return magnetSessionPoll(input.Session, input.Force)
-	case "magnetSearchStop":
-		magnetSessionStop(input.Session)
-		return true, nil
-	// 磁力页一打开就预热 BT 引擎与 DHT，点播放时省掉冷启动。
-	case "magnetWarmup":
-		return map[string]any{"ready": magnetWarmup(engine.directory)}, nil
-	case "magnetFiles":
-		return magnetFileList(ctx, input.Magnet, engine.directory, engine.magnetMetaFetchEnabled())
-	case "magnetPlay":
-		wanted := -1
-		if input.FileIndex != nil {
-			wanted = *input.FileIndex
-		}
-		return magnetPlaybackPlan(ctx, input.Magnet, wanted, engine.directory, engine.magnetMetaFetchEnabled())
-	// magnetPeers 批量探测每条结果当前能连上的 DHT / tracker 节点数；
-	// magnetCancel 在用户点另一条磁力时立即掐掉上一条的加载与下载。
-	case "magnetPeers":
-		return magnetPeers(ctx, input.Hashes, engine.directory, input.Force)
-	case "magnetCancel":
-		magnetCancelAll()
-		return true, nil
 	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
 	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
 	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。

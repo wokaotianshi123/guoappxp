@@ -265,7 +265,7 @@ class SettingsSection extends StatelessWidget {
         SettingsTile(
           icon: Icons.cleaning_services_outlined,
           title: '清理缓存',
-          subtitle: '查看占用，清除磁力下载缓存与播放临时文件',
+          subtitle: '查看占用，清除播放缓存与临时文件',
           onTap: () => open('清理缓存', (_) => const CacheView()),
         ),
       ],
@@ -359,23 +359,6 @@ class SettingsSection extends StatelessWidget {
               enabled: editable,
               onTap: () => _editProxy(context, settings),
             ),
-        ],
-      ),
-      SettingsCard(
-        children: [
-          SwitchTile(
-            title: '磁力云端种子缓存',
-            subtitle: !admin
-                ? adminOnly
-                : '按 infohash 从公开种子库快速取得文件列表，省去等待 DHT；关闭后完全本地解析，不向第三方发送 infohash',
-            value: settings?.magnetMetaFetch ?? true,
-            onChanged: admin && editable
-                ? (value) => _saveResource(
-                    context,
-                    settings.copyWith(magnetMetaFetch: value),
-                  )
-                : null,
-          ),
         ],
       ),
     ];

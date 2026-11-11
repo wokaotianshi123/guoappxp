@@ -45,6 +45,10 @@ class _LivePageState extends State<LivePage> {
   bool _failed = false;
   String? _error;
   int _generation = 0;
+  // 房间型源（斗鱼 / 哔哩哔哩 / 虎牙）按页返回，一页 30 个房间。
+  int _page = 1;
+  bool _hasMore = false;
+  bool _loadingMore = false;
 
   List<LiveSource> get _sources => LiveSource.visible(widget.greenMode);
 
@@ -109,33 +113,64 @@ class _LivePageState extends State<LivePage> {
     }
   }
 
-  Future<void> _loadChannels(LivePlatform platform) async {
+  Future<void> _loadChannels(
+    LivePlatform platform, {
+    bool append = false,
+  }) async {
     final source = _source;
     if (source == null) return;
+    if (append && (!_hasMore || _loadingMore)) return;
     final token = _generation;
+    final page = append ? _page + 1 : 1;
     setState(() {
-      _loading = true;
-      _failed = false;
-      _error = null;
-      _platform = platform.id;
+      if (append) {
+        _loadingMore = true;
+      } else {
+        _loading = true;
+        _failed = false;
+        _error = null;
+        _platform = platform.id;
+      }
     });
     try {
-      final channels = await widget.repository.channels(source, platform);
+      final channels = await widget.repository.channels(
+        source,
+        platform,
+        page: page,
+      );
       if (!mounted || token != _generation) return;
       setState(() {
-        _channels = channels;
-        _lastGood = channels;
-        _lastGoodPlatform = platform.id;
-        _loading = false;
+        _page = page;
+        if (append) {
+          final seen = {for (final item in _channels) item.key};
+          _channels = [
+            ..._channels,
+            for (final item in channels)
+              if (seen.add(item.key)) item,
+          ];
+          _loadingMore = false;
+        } else {
+          _channels = channels;
+          _lastGood = channels;
+          _lastGoodPlatform = platform.id;
+          _loading = false;
+        }
+        // 不足一页说明后面没有了；房间型源没有总数接口，只能用页长判断。
+        _hasMore = source.paginated && channels.length >= 24;
       });
     } catch (error) {
       if (!mounted || token != _generation) return;
       setState(() {
-        _loading = false;
-        // 同一分类重新加载失败时保留上一次的内容，避免闪回空态。
-        _channels = _lastGoodPlatform == platform.id ? _lastGood : const [];
-        _failed = _channels.isEmpty;
-        _error = '$error';
+        if (append) {
+          _loadingMore = false;
+          _hasMore = false;
+        } else {
+          _loading = false;
+          // 同一分类重新加载失败时保留上一次的内容，避免闪回空态。
+          _channels = _lastGoodPlatform == platform.id ? _lastGood : const [];
+          _failed = _channels.isEmpty;
+          _error = '$error';
+        }
       });
     }
   }
@@ -150,6 +185,9 @@ class _LivePageState extends State<LivePage> {
       _channels = const [];
       _lastGood = const [];
       _lastGoodPlatform = '';
+      _page = 1;
+      _hasMore = false;
+      _loadingMore = false;
     });
     unawaited(_loadPlatforms());
   }
@@ -164,6 +202,8 @@ class _LivePageState extends State<LivePage> {
         _loading = false;
         _failed = false;
         _error = null;
+        _hasMore = false;
+        _loadingMore = false;
       });
       return;
     }
@@ -301,14 +341,74 @@ class _LivePageState extends State<LivePage> {
         crossAxisSpacing: 10,
         mainAxisSpacing: 10,
       ),
-      itemCount: _channels.length,
+      itemCount: _channels.length + (_hasMore ? 1 : 0),
       itemBuilder: (context, index) {
+        if (index >= _channels.length) {
+          final platform = _platforms
+              .where((item) => item.id == _platform)
+              .firstOrNull;
+          return _MoreTile(
+            loading: _loadingMore,
+            onTap: platform == null
+                ? null
+                : () => unawaited(_loadChannels(platform, append: true)),
+          );
+        }
         final channel = _channels[index];
         return _ChannelTile(
           channel: channel,
           onTap: () => unawaited(_open(index)),
         );
       },
+    );
+  }
+}
+
+class _MoreTile extends StatelessWidget {
+  const _MoreTile({required this.loading, required this.onTap});
+
+  final bool loading;
+  final VoidCallback? onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return FocusRing(
+      radius: 16,
+      child: Material(
+        color: colors.surfaceContainerHigh,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: loading ? null : onTap,
+          child: Center(
+            child: loading
+                ? const SizedBox(
+                    width: 20,
+                    height: 20,
+                    child: CircularProgressIndicator(strokeWidth: 2),
+                  )
+                : Row(
+                    mainAxisSize: MainAxisSize.min,
+                    spacing: 6,
+                    children: [
+                      Icon(
+                        Icons.expand_more_rounded,
+                        size: 20,
+                        color: colors.onSurfaceVariant,
+                      ),
+                      Text(
+                        '加载更多',
+                        style: TextStyle(
+                          fontSize: 13,
+                          color: colors.onSurfaceVariant,
+                        ),
+                      ),
+                    ],
+                  ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -375,6 +475,10 @@ class _ChannelTile extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
+    // 房间型直播源把「主播 · 房间标题 · 热度」放在 subtitle 里。
+    final secondary = channel.number.isNotEmpty
+        ? channel.number
+        : channel.subtitle;
     return FocusRing(
       radius: 16,
       child: Material(
@@ -398,9 +502,11 @@ class _ChannelTile extends StatelessWidget {
                         overflow: TextOverflow.ellipsis,
                         style: const TextStyle(fontWeight: FontWeight.w600),
                       ),
-                      if (channel.number.isNotEmpty)
+                      if (secondary.isNotEmpty)
                         Text(
-                          channel.number,
+                          secondary,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
                           style: TextStyle(
                             fontSize: 12,
                             color: colors.onSurfaceVariant,

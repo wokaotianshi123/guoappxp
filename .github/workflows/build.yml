@@ -66,14 +66,12 @@ jobs:
         continue-on-error: true
       - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true --dart-define=ALL_SOURCES=true
         continue-on-error: true
-      # 和出包脚本用同一组标签：不加的话 cgo=1 的测试会去编 go-libutp 的 C++，
-      # 既慢又可能在 runner 上直接失败。
       - name: 校验 Go 核心不含 C++ 后端
         working-directory: native
         run: |
           set -uo pipefail
           if ! cxx=$(GOOS=android GOARCH=arm64 CGO_ENABLED=1 go list \
-            -tags=disable_libutp,nosqlite -deps \
+            -deps \
             -f '{{if .CXXFiles}}{{.ImportPath}}{{end}}' ./bridge | sed '/^$/d'); then
             echo "::warning::go list 未能完成（多为模块下载抖动），本次跳过 C++ 依赖检查"
             exit 0
@@ -83,10 +81,10 @@ jobs:
             exit 1
           fi
           echo "android/arm64 依赖图无 C++ 目标文件"
-      - run: go test -race -tags=disable_libutp,nosqlite ./...
+      - run: go test -race ./...
         working-directory: native
         continue-on-error: true
-      - run: go test -race -tags=disable_libutp,nosqlite -ldflags="-X duanjuapp/native/core.buildAllSources=true" ./...
+      - run: go test -race -ldflags="-X duanjuapp/native/core.buildAllSources=true" ./...
         working-directory: native
         continue-on-error: true
 
