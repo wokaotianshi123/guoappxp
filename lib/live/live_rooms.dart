@@ -287,7 +287,9 @@ class LiveRoomClient {
     _accept(json, 'status', 200);
     final url = huyaBestFlv(liveJsonMap(json['data'])?['stream']);
     if (url == null) throw AppFailure('该直播间当前没有可播放的地址');
-    return _playback(url, huyaReferer);
+    // 这条地址的 anti-code 是 `ctype=tars_mp`，必须配虎牙客户端 UA 才不会被
+    // 秒断，详见 huyaLiveUserAgent。
+    return _playback(url, huyaReferer, userAgent: huyaLiveUserAgent);
   }
 
   Future<Map<String, dynamic>> _object(
@@ -342,15 +344,16 @@ class LiveRoomClient {
     return channels;
   }
 
-  LivePlayback _playback(String url, String referer) {
+  LivePlayback _playback(String url, String referer, {String? userAgent}) {
     if (!isPlayableLiveUrl(url)) throw AppFailure('该直播间当前没有可播放的地址');
-    return LivePlayback(url: url, headers: _headers(referer));
+    return LivePlayback(
+      url: url,
+      headers: _headers(referer, userAgent: userAgent),
+    );
   }
 
-  Map<String, String> _headers(String referer) => {
-    'Referer': referer,
-    'User-Agent': liveUserAgent,
-  };
+  Map<String, String> _headers(String referer, {String? userAgent}) =>
+      livePlaybackHeaders(referer, userAgent: userAgent);
 
   void _accept(Map<String, dynamic> json, String key, int ok) {
     if (!json.containsKey(key) || liveJsonInt(json[key]) == ok) return;

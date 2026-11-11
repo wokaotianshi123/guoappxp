@@ -192,6 +192,7 @@ class LivePlaybackController extends ChangeNotifier {
       final plan = await _resolve(source, channel);
       if (_disposed || token != _generation) return;
       _frames = false;
+      await _applyUserAgent(plan.headers);
       await player.open(
         Media(
           plan.url,
@@ -212,6 +213,32 @@ class LivePlaybackController extends ChangeNotifier {
       _loading = false;
       _error = '$error';
       notifyListeners();
+    }
+  }
+
+  /// 把媒体头里的 User-Agent 同步给 mpv。
+  ///
+  /// media_kit 只把 headers 塞进 mpv 的 `http-header-fields`，而 mpv 自己还会
+  /// 按 `user-agent` 选项（默认 libmpv）再发一个 UA 并覆盖前者。虎牙 CDN 校验
+  /// 请求方身份，UA 不对就只给几秒画面，所以这里显式设置一次。
+  Future<void> _applyUserAgent(Map<String, String> headers) async {
+    final platform = _player?.platform;
+    if (platform is! NativePlayer) return;
+    var agent = liveUserAgent;
+    for (final entry in headers.entries) {
+      if (entry.key.toLowerCase() != 'user-agent') continue;
+      final value = entry.value.trim();
+      if (value.isNotEmpty) agent = value;
+      break;
+    }
+    try {
+      await platform.setProperty(
+        'user-agent',
+        agent,
+        waitForInitialization: true,
+      );
+    } catch (_) {
+      // 个别平台的 mpv 构建把 user-agent 当只读选项，失败时沿用默认值。
     }
   }
 

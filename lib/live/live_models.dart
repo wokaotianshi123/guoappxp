@@ -165,6 +165,20 @@ const liveUserAgent =
     'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
     '(KHTML, like Gecko) Chrome/135.0.0.0 Safari/537.36';
 
+/// 虎牙取流专用的客户端标识。
+///
+/// `mp.huya.com` 下发的取流地址带 `ctype=tars_mp`，CDN 只认虎牙自家客户端。
+/// 用浏览器 UA 去拉仍然返回 200，但只吐出几百 KB（约 3 秒画面）就主动断开，
+/// 表现就是「播几秒断流」；换成虎牙客户端的 UA 后同一条地址可以稳定拉满。
+const huyaLiveUserAgent =
+    'HYSDK(Windows,30000002)_APP(pc_exe&50108&official)'
+    '_SDK(android,6.8.0)_PLATFORM(internal)_OS(micromac)';
+
+/// 房间型直播源的取流头。Referer 决定防盗链，User-Agent 决定 CDN 认不认这个
+/// 客户端——虎牙必须带客户端标识，否则只能播几秒。
+Map<String, String> livePlaybackHeaders(String referer, {String? userAgent}) =>
+    {'Referer': referer, 'User-Agent': (userAgent ?? liveUserAgent).trim()};
+
 bool isPlayableLiveUrl(String url) {
   final text = url.trim();
   if (!text.contains('://')) return false;

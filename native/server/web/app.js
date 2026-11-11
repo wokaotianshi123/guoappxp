@@ -2948,6 +2948,7 @@ function liveMountChannel(channel, startIndex) {
   liveState.playing = channel;
   liveState.urlList = urls;
   liveState.urlIndex = startRoute;
+  liveSyncControls();
   liveStopPlayer();
   liveEnsureArtplayer();
   var idle = document.getElementById('live-idle');
@@ -2969,6 +2970,78 @@ function liveMountChannel(channel, startIndex) {
   }
   livePlayRoute(urls, startRoute);
   renderLiveChannels();
+}
+
+// 已存在的直播 <video>：这里只读不建，避免为了同步按钮状态凭空多出一个空播放器。
+function liveExistingVideo() {
+  if (liveArtplayer && liveArtplayer.video) { return liveArtplayer.video; }
+  return document.getElementById('live-player');
+}
+
+// 同步换台控制条：没有频道时禁用上一台/下一台，文案跟随真实播放状态，
+// 用户点 ArtPlayer 自带控件暂停时也要同步。
+function liveSyncControls() {
+  var hasChannels = !!(liveState.channels && liveState.channels.length);
+  var prev = document.getElementById('live-prev');
+  var next = document.getElementById('live-next');
+  if (prev) { prev.disabled = !hasChannels; }
+  if (next) { next.disabled = !hasChannels; }
+  var video = liveExistingVideo();
+  var toggle = document.getElementById('live-toggle');
+  if (toggle) {
+    toggle.disabled = !video || !liveState.playing;
+    toggle.textContent = video && !video.paused ? '暂停' : '播放';
+  }
+  if (video && !video.__liveControlsBound) {
+    video.__liveControlsBound = true;
+    video.addEventListener('play', liveSyncControls);
+    video.addEventListener('pause', liveSyncControls);
+    video.addEventListener('emptied', liveSyncControls);
+  }
+}
+
+function liveTogglePlay() {
+  var video = liveExistingVideo();
+  if (!video) { return; }
+  if (video.paused) {
+    var started = video.play();
+    if (started && started.catch) { started.catch(function () {}); }
+  } else {
+    video.pause();
+  }
+  liveSyncControls();
+}
+
+// 上一台 / 下一台：在当前频道列表里环绕切换，与 App 端 switchBy 一致。
+function liveStepChannel(delta) {
+  var list = liveState.channels || [];
+  if (!list.length) {
+    showNotice('当前分类还没有频道');
+    return;
+  }
+  var index = -1;
+  var playing = liveState.playing;
+  if (playing) {
+    index = list.indexOf(playing);
+    if (index < 0) {
+      // 收藏视图里的对象与列表项不是同一个引用，按频道标识兜底匹配。
+      var key = liveFavouriteKey(playing);
+      for (var i = 0; i < list.length; i++) {
+        if (liveFavouriteKey(list[i]) === key) { index = i; break; }
+      }
+    }
+  }
+  var next = index < 0 ? 0 : (index + delta + list.length) % list.length;
+  liveMountChannel(list[next], 0);
+  liveScrollToChannel(next);
+}
+
+// 换台后把播放列表滚到当前项，长列表下不至于「换了却看不出选中哪个」。
+function liveScrollToChannel(index) {
+  var body = document.getElementById('live-channels-body');
+  if (!body) { return; }
+  var item = body.querySelector('[data-index="' + index + '"]');
+  if (item && item.scrollIntoView) { item.scrollIntoView({ block: 'nearest' }); }
 }
 
 // 取直播播放用的 <video>：ArtPlayer 存在时用它的 video 元素，
@@ -3090,6 +3163,8 @@ function liveStopPlayer() {
 function renderLiveChannels() {
   var body = document.getElementById('live-channels-body');
   if (!body) { return; }
+  // 列表变化（换源/换分类/加载更多）后换台按钮的可用状态跟着变。
+  liveSyncControls();
   if (liveState.showFavs) {
     var favourites = liveFavourites();
     if (!favourites.length) {
@@ -3140,9 +3215,11 @@ function renderLiveChannels() {
       groups[key].map(function (channel) {
         var active = liveFavouriteKey(channel) === currentKey ? ' active' : '';
         var count = (channel.urls || []).length;
+        var index = liveState.channels.indexOf(channel);
         return '<button type="button" class="live-channel' + active +
           '" data-group="' + escapeHTML(channel.group || '') +
-          '" data-name="' + escapeHTML(channel.name) + '">' +
+          '" data-name="' + escapeHTML(channel.name) +
+          '" data-index="' + index + '">' +
           '<span class="live-name">' + escapeHTML(channel.name) + '</span>' +
           (count > 1 ? '<span class="live-count">' + count + ' 路</span>' : '') +
           '</button>';
@@ -3458,10 +3535,23 @@ function renderLiveView() {
       '<div class="live-artplayer" id="live-artplayer"></div>' +
       '<div class="live-idle" id="live-idle">选择频道开始观看</div>' +
     '</div>' +
+    // 与 App 播放页一致的换台控制：上一台 / 暂停·继续 / 下一台，按当前列表环绕。
+    '<div class="live-controls">' +
+      '<button type="button" class="btn mini" id="live-prev" title="上一个频道">◀ 上一台</button>' +
+      '<button type="button" class="btn mini" id="live-toggle" title="暂停或继续播放">暂停</button>' +
+      '<button type="button" class="btn mini" id="live-next" title="下一个频道">下一台 ▶</button>' +
+    '</div>' +
     '<div class="live-title" id="live-title"></div>' +
     '<div class="live-panel"><div id="live-panel-body"></div></div>' +
     '</div>';
   liveEnsureArtplayer();
+  var prevButton = document.getElementById('live-prev');
+  if (prevButton) { prevButton.addEventListener('click', function () { liveStepChannel(-1); }); }
+  var nextButton = document.getElementById('live-next');
+  if (nextButton) { nextButton.addEventListener('click', function () { liveStepChannel(1); }); }
+  var toggleButton = document.getElementById('live-toggle');
+  if (toggleButton) { toggleButton.addEventListener('click', liveTogglePlay); }
+  liveSyncControls();
   return liveLoadSources().then(function (list) {
     if (list.length && !liveState.source) { liveState.source = list[0].id; }
     renderLivePanel();

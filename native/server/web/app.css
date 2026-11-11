@@ -299,6 +299,13 @@ body {
   display: flex; align-items: center; justify-content: center;
   color: #ff8b90; font-size: 14px; text-align: center; padding: 20px;
 }
+/* 换台控制条：上一台 / 暂停·播放 / 下一台，位于播放器与标题之间。 */
+.live-controls {
+  display: flex; gap: 8px; align-items: center; margin-top: 10px;
+}
+.live-controls .btn { flex: 0 0 auto; min-width: 92px; }
+.live-controls #live-toggle { min-width: 76px; }
+.live-controls .btn:disabled { opacity: .45; cursor: not-allowed; }
 .live-title {
   display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
   font-size: 15px; margin: 10px 0; min-height: 24px;

@@ -22,6 +22,10 @@ const (
 	liveDouyuDeviceID = "10000000000000000000000000001501"
 	liveDouyuMobileUA = "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) " +
 		"AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.0 Mobile/15E148 Safari/604.1"
+	// 虎牙 mp 接口下发的取流地址带 ctype=tars_mp，CDN 只认虎牙客户端；
+	// 用浏览器 UA 拉会在几秒后被动断开，详见 App 端 huyaLiveUserAgent。
+	liveHuyaUserAgent = "HYSDK(Windows,30000002)_APP(pc_exe&50108&official)" +
+		"_SDK(android,6.8.0)_PLATFORM(internal)_OS(micromac)"
 )
 
 var liveRoomReferers = map[string]string{
@@ -30,12 +34,21 @@ var liveRoomReferers = map[string]string{
 	"huya":     "https://www.huya.com/",
 }
 
+// 取流时必须伪装成对应平台客户端的源。
+var liveRoomUserAgents = map[string]string{
+	"huya": liveHuyaUserAgent,
+}
+
 func liveRoomHeaders(sourceID string) map[string]string {
 	referer := liveRoomReferers[sourceID]
 	if referer == "" {
 		return nil
 	}
-	return map[string]string{"Referer": referer, "User-Agent": liveUserAgentValue}
+	agent := liveUserAgentValue
+	if custom := liveRoomUserAgents[sourceID]; custom != "" {
+		agent = custom
+	}
+	return map[string]string{"Referer": referer, "User-Agent": agent}
 }
 
 // —— JSON 取值助手（上游字段类型不稳定，统一走宽松转换）——
