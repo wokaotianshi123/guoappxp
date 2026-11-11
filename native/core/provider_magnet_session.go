@@ -219,7 +219,11 @@ func magnetSessionResolveDetails(ctx context.Context, session *magnetSearchSessi
 				return
 			}
 			defer func() { <-limit }()
-			link := magnetFromDetail(ctx, site, j.detail, j.title)
+			// 详情页只用来补磁力，属于可降级信息：给它一个比列表更短的独立
+			// 超时，慢详情快速让出并发槽，不拖住其它站与其它条目。
+			detailCtx, cancel := context.WithTimeout(ctx, magnetDetailTimeout)
+			defer cancel()
+			link := magnetFromDetail(detailCtx, site, j.detail, j.title)
 			if link == "" {
 				return
 			}

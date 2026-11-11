@@ -96,10 +96,16 @@ type magnetSearchResult struct {
 }
 
 const (
-	magnetMaxPage       = 10
-	magnetSiteWorkers   = 6
-	magnetDetailWorkers = 4
-	magnetFetchTimeout  = 12 * time.Second
+	magnetMaxPage = 10
+	// 内置站源有 35 个且默认全开。原来的 6 并发意味着最慢的那批站能把整轮
+	// 搜索拖到 3~6 轮（每轮最多 9 秒），快站明明早就返回了却排在后面一起等。
+	// 提高并发后一轮能覆盖三分之一站点，首屏结果来自快站、不再被慢站堵住。
+	magnetSiteWorkers   = 12
+	magnetDetailWorkers = 12
+	// 列表页 9 秒足够；详情补磁力是「锦上添花」，用更短的 5 秒单独限制，
+	// 避免某站的详情页慢响应占着整个会话预算（见 magnetSessionResolveDetails）。
+	magnetFetchTimeout  = 9 * time.Second
+	magnetDetailTimeout = 5 * time.Second
 	magnetSearchBudget  = 40 * time.Second
 )
 

@@ -329,6 +329,8 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 	transport.MaxIdleConnsPerHost = 8
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
+	// 磁力「云端种子缓存」也走同一套代理与 CA 配置，手动代理 / 系统代理下可用。
+	configureMagnetOnlineMetaHTTP(transport)
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
 	// 浏览器指纹传输必须留住引用：自定义源新增/读取时要把自己的 host 登记进
 	// 白名单（registerCustomBrowserHost），这里不赋值的话白名单永远是空的，
@@ -657,13 +659,13 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "magnetWarmup":
 		return map[string]any{"ready": magnetWarmup(engine.directory)}, nil
 	case "magnetFiles":
-		return magnetFileList(ctx, input.Magnet, engine.directory)
+		return magnetFileList(ctx, input.Magnet, engine.directory, engine.magnetMetaFetchEnabled())
 	case "magnetPlay":
 		wanted := -1
 		if input.FileIndex != nil {
 			wanted = *input.FileIndex
 		}
-		return magnetPlaybackPlan(ctx, input.Magnet, wanted, engine.directory)
+		return magnetPlaybackPlan(ctx, input.Magnet, wanted, engine.directory, engine.magnetMetaFetchEnabled())
 	// magnetPeers 批量探测每条结果当前能连上的 DHT / tracker 节点数；
 	// magnetCancel 在用户点另一条磁力时立即掐掉上一条的加载与下载。
 	case "magnetPeers":

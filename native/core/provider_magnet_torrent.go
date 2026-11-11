@@ -255,7 +255,7 @@ func magnetPickFile(files []magnetFileItem, wanted int) (int, error) {
 // prepare 添加磁力、等待元数据并登记文件索引。
 // 每次 prepare 都会先取消其它 infohash 仍在等待的加载：用户点另一条磁力时，
 // 旧任务立刻退出并释放连接，不必等它 40 秒超时。
-func (state *magnetStreamEngineState) prepare(ctx context.Context, link string) (string, []magnetFileItem, error) {
+func (state *magnetStreamEngineState) prepare(ctx context.Context, link string, onlineMeta bool) (string, []magnetFileItem, error) {
 	hash := magnetInfoHash(link)
 	if hash == "" {
 		return "", nil, errors.New("磁力链接无效，未找到 infohash")
@@ -263,6 +263,17 @@ func (state *magnetStreamEngineState) prepare(ctx context.Context, link string) 
 	loadCtx, finish := magnetLoads.begin(ctx, hash, state.dropTorrent)
 	defer finish()
 	state.beginTask(hash)
+
+	// 本地缓存没命中、开关允许时，先花最多 5 秒按 infohash 从公开种子库取回
+	// .torrent。成功后 addMagnetFast 会用 InfoBytes 直接建任务，跳过 DHT 等元数据；
+	// 失败（端点挂了 / 返回 HTML / hash 不符 / 用户取消）静默走原来的 DHT 路径。
+	// 用 loadCtx 而不是外层 ctx：点另一条磁力时这 5 秒等待也必须立刻中断。
+	if onlineMeta && !state.isTask(hash) && loadCtx.Err() == nil {
+		magnetCacheOnlineMeta(loadCtx, hash, state.metaDir)
+	}
+	if loadCtx.Err() != nil {
+		return hash, nil, errors.New("已取消上一条磁力的加载")
+	}
 
 	state.mu.Lock()
 	task, exists := state.tasks[hash]
@@ -353,12 +364,12 @@ func (state *magnetStreamEngineState) serve(writer http.ResponseWriter, request 
 	http.ServeContent(writer, request, name, time.Time{}, reader)
 }
 
-func magnetFileList(ctx context.Context, link, dataDir string) (map[string]any, error) {
+func magnetFileList(ctx context.Context, link, dataDir string, onlineMeta bool) (map[string]any, error) {
 	state, err := magnetEngine(dataDir)
 	if err != nil {
 		return nil, err
 	}
-	hash, items, err := state.prepare(ctx, link)
+	hash, items, err := state.prepare(ctx, link, onlineMeta)
 	if err != nil {
 		return nil, err
 	}
@@ -366,12 +377,12 @@ func magnetFileList(ctx context.Context, link, dataDir string) (map[string]any, 
 }
 
 // magnetPlaybackPlan 返回 guoappxp 播放器能直接吃的 PlaybackPlan。
-func magnetPlaybackPlan(ctx context.Context, link string, wanted int, dataDir string) (nativePlan, error) {
+func magnetPlaybackPlan(ctx context.Context, link string, wanted int, dataDir string, onlineMeta bool) (nativePlan, error) {
 	state, err := magnetEngine(dataDir)
 	if err != nil {
 		return nativePlan{}, err
 	}
-	hash, items, err := state.prepare(ctx, link)
+	hash, items, err := state.prepare(ctx, link, onlineMeta)
 	if err != nil {
 		return nativePlan{}, err
 	}

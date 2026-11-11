@@ -20,12 +20,28 @@ type nativeResourceSettings struct {
 	CatalogIntervalMS   int    `json:"catalogIntervalMs"`
 	DownloadConcurrency int    `json:"downloadConcurrency"`
 	DownloadBySource    bool   `json:"downloadBySource"`
-	Warning             string `json:"warning,omitempty"`
-	SystemProxyStatus   string `json:"systemProxyStatus,omitempty"`
+	// 磁力「云端种子缓存」开关。用指针是为了让旧版 settings 文件里没有该字段时
+	// 保持默认开启；用户一旦保存过设置，就会写成明确的 true / false。
+	MagnetMetaFetch   *bool  `json:"magnetMetaFetch,omitempty"`
+	Warning           string `json:"warning,omitempty"`
+	SystemProxyStatus string `json:"systemProxyStatus,omitempty"`
 }
 
 func defaultResourceSettings() nativeResourceSettings {
 	return nativeResourceSettings{ProxyMode: "auto", CatalogConcurrency: 3, CatalogIntervalMS: 250, DownloadConcurrency: 2}
+}
+
+// magnetMetaFetchEnabled 用指针区分「旧版配置文件里没有这个字段」和「用户明确关掉」：
+// 前者保持默认开启，后者必须被尊重。
+func (settings nativeResourceSettings) magnetMetaFetchEnabled() bool {
+	return settings.MagnetMetaFetch == nil || *settings.MagnetMetaFetch
+}
+
+// 请求时读一次当前设置：用户在设置里关掉后，下一次点播立即生效，不用重启。
+func (engine *nativeEngine) magnetMetaFetchEnabled() bool {
+	engine.settingsMu.Lock()
+	defer engine.settingsMu.Unlock()
+	return engine.settings.magnetMetaFetchEnabled()
 }
 
 func (settings nativeResourceSettings) validate() error {

@@ -15,6 +15,9 @@
 - **动画体系统一**：新增 `ui/theme/motion.dart`（`Motion.short / medium / long`、`enter / exit / standard`、`reduced()` 读系统「减弱动态效果」、`pageTransitions()`、`fadeRoute()`）与 `ui/widgets/motion/motion_widgets.dart`（`FadeSwitcher`、`ToggleIconSwitcher`、`fadeInFrameBuilder`、`EnterOnce`、`coverHeroTag`）；`AppTheme` 的 `pageTransitionsTheme` 改用这套：Android 上是「缩放 0.92 + 淡入」，电视端纯淡入。
 - **新增站源「笔盒」（beabox.cc）**：默认关闭，可在站源管理里打开。站点域名经常更换，当前线路失效时会从发布页自动发现可用域名并记住上次可用的线路（落盘 `beabox-sites.json`，重启直接使用）；「全部」列出最新视频，分类取站点热门标签，支持翻页、详情、分集与在线搜索，`needParse` 的线路会自动向站点接口换取播放地址。
 - **磁力搜索页：没有结果的站源标签暂时隐藏**：抓完却一条都没搜到的站源不再占一行标签（还在抓的站仍显示「…」保留进度），免得一排「0 条 / ✕」把有结果的标签挤进「更多」。计数行补一句「N 个站源没有结果（标签已收起）」，下次搜索 / 翻页时标签会重新出现。
+- **磁力搜索发现提速**：内置 35 个站源默认全开，而列表页并发只有 6、单请求 12 秒，慢站占着 worker 会把整批搜索拖成 3~6 轮。现在列表并发 12、详情并发 12，列表请求 9 秒、详情补磁力单独限 5 秒（详情只是可降级信息，短超时让慢站快速让位），首屏结果由快站决定，不再被最慢的站拖住。会话预算与 40 秒元数据预算保持不变，慢站仍有出结果的机会。
+- **磁力播放解析提速（首屏预取）**：搜索结束后 `_probeDht` 本来就会对可见的前 24 条逐个建 torrent 并探测 6 秒 DHT 节点，这窗口里热门种子的元数据其实已经到了，但结束时直接 `Drop()` 丢掉。现在在 Drop 之前把已到达的元数据写进 `magnet-meta/<hash>.torrent` 缓存；用户随后点播时 `addMagnetFast` 直接命中本地种子、跳过 DHT 等待，把「首次点播等元数据」变成秒开。没有拿到元数据的种子行为不变，不增加任何网络请求。
+- **磁力播放解析提速（云端种子缓存，可关）**：本地 `magnet-meta` 没命中时，`magnetFiles` / `magnetPlay` 会先花最多 5 秒按 infohash 向公开 `.torrent` 缓存端点取种子，校验 bencode 且 infohash 完全一致才落盘，之后 `addMagnetFast` 用 `InfoBytes` 直接建任务——首次点播也不必等最多 40 秒的 DHT 元数据。端点只保留实测对真实 infohash 返回种子的 `itorrents.org`（带浏览器 UA）；返回 HTML、404、超 2MB、hash 不符、超时或用户点另一条磁力而取消，一律静默降级回原来的 DHT 路径，不写成新卡点。「我的 → 设置 → 代理」新增「磁力云端种子缓存」开关，默认开启、仅管理员可改、下次点播立即生效；**关闭后完全本地解析，不会把 infohash 发给第三方**。旧版设置文件没有该字段时按开启处理，显式关闭会持久化。
 
 ### 修复
 - **修复 Android 返回键一次退两级**：`ui/app.dart` 的 `_escape` 原来同时处理 `LogicalKeyboardKey.goBack` 与系统 `popRoute`（`PopScope` → `Navigator.maybePop`），Android 手机上物理返回键、三键导航、侧滑手势、电视遥控器返回都会两路同时触发，一次退两层页面。现在键盘只处理 `Esc`，返回键统一交给系统路由；桌面 Esc 行为不变。`player_page.dart` 的同类分支一并收敛，`AndroidManifest.xml` 打开 `enableOnBackInvokedCallback` 以走预测返回。
@@ -31,6 +34,7 @@
 - **电视端按钮焦点更易辨认**：TV 主题里聚焦只叠 12% 的 `onSurface`，在已经是主色底的「播放」等实心按钮上几乎看不出颜色变化，遥控器移过去判断不了有没有选中。现在标准按钮聚焦时加主色描边与更明显的叠色，实心按钮直接反色（`onSurface` 底 + `surface` 图标文字）；非电视主题不变。
 
 ### 实现与约束
+- **磁力云端种子缓存的边界**：只对 `magnetFiles` / `magnetPlay` 的首次解析生效；`magnetPeers` 的 DHT 节点探测、BT 分片下载、站源搜索都不发这类请求，不会一次把整页 infohash 广播出去。请求复用核心的代理与 CA 配置（含手动代理），只有 infohash 会出现在 URL 里，不含用户搜索词、观看记录或设备标识；响应只写进既有的 `magnet-meta/` 可清理缓存，受 30 天 / 2000 条淘汰策略约束。公开端点为第三方服务，可用性不受本项目控制，失效时自动回退 DHT。
 - **笔盒站源的取数与线路发现**：新增 `provider_beabox.go`。发布页的 `__ENC_DOMAINS` 是异或过的 base64 域名池、`__KEY` 是异或密钥，解析后按主机名白名单校验（https、无端口无路径）；接口返回的信封 `data` 是 `AES-128-CBC` 十六进制密文（固定 key + 前置 IV + PKCS#7），解码后才是业务 JSON。线路尝试顺序是「上次可用 → 内置线路 → 发布页发现」，发现结果 30 分钟内复用、失败 1 分钟后重试；站点状态写在 `<dataDir>/beabox-sites.json`，只接受 `https://host` 形式的地址，最多 256 条。
 - **笔盒接入点**：`sourceBeabox` 常量与 `canonicalProviderSource` / `isHuangguoProviderSource`、`GetHuangguoDetail` 分发、`providerBaseURL`、`resolveBeaboxMedia`（播放地址解析）、`nativeCategories` / `validNativeCategory`、`app_cover_metadata`、`nativeCatalog`（分类 + 空列表不报错）、`nativeSourceSupportsSearch` / `nativeSearchSource`（在线搜索）逐处接入；Dart 侧只加一条 `SourceSite('beabox', '笔盒', ...)` 到 `restrictedValues`（默认关闭）与 `pagedSearch`。
 - **笔盒封面是文本文件**：部分线路把封面存成 `.txt`，内容是异或 18 的 `data:image/...;base64` 文本。`app_covers.go` 的 `nativeDecodeCover` 增加 `nativeDecodeTextCover` 一步先试这类封面，失败再走原来的 AES / 异或兜底。

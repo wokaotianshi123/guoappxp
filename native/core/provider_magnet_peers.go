@@ -177,6 +177,12 @@ func (state *magnetStreamEngineState) probePeers(ctx context.Context, hashes []s
 			Peers:     len(swarm),
 			Connected: len(task.PeerConns()),
 		})
+		// 探测窗口里 BT 客户端本来就会顺带向 DHT / tracker 请求种子元数据，
+		// 热门种子通常几秒内 GotInfo 就到了。以前这些 torrent 直接 Drop，
+		// 到手的元数据白白丢掉；现在落进 magnet-meta 缓存，用户随后点播时
+		// addMagnetFast 会直接命中，省掉一次完整的元数据冷启动等待。
+		// rememberMeta 只在 GotInfo 已关闭时写，没拿到的种子不受影响。
+		state.rememberMeta(hash, task)
 		// 播放登记过的 torrent 要留着，否则会把正在看的流掐断。
 		if !state.isTask(hash) {
 			task.Drop()

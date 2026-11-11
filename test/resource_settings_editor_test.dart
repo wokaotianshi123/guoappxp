@@ -54,4 +54,26 @@ void main() {
     expect(editor.settings?.downloadConcurrency, 2);
     expect(editor.saving, isFalse);
   });
+
+  test('magnet cloud cache is on by default and survives a round trip', () {
+    const defaults = ResourceSettings();
+    expect(defaults.magnetMetaFetch, isTrue);
+    expect(defaults.toJson()['magnetMetaFetch'], isTrue);
+
+    final disabled = defaults.copyWith(magnetMetaFetch: false);
+    expect(disabled.magnetMetaFetch, isFalse);
+    expect(disabled.toJson()['magnetMetaFetch'], isFalse);
+    expect(
+      disabled.copyWith(proxyMode: 'direct').magnetMetaFetch,
+      isFalse,
+      reason: '改其它设置不能把这个开关偷偷打开',
+    );
+
+    // 老版本核心不返回该字段，按默认开启；明确 false 则必须尊重。
+    expect(ResourceSettings.fromJson({}).magnetMetaFetch, isTrue);
+    expect(
+      ResourceSettings.fromJson({'magnetMetaFetch': false}).magnetMetaFetch,
+      isFalse,
+    );
+  });
 }

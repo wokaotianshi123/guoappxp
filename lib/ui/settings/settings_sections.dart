@@ -361,6 +361,23 @@ class SettingsSection extends StatelessWidget {
             ),
         ],
       ),
+      SettingsCard(
+        children: [
+          SwitchTile(
+            title: '磁力云端种子缓存',
+            subtitle: !admin
+                ? adminOnly
+                : '按 infohash 从公开种子库快速取得文件列表，省去等待 DHT；关闭后完全本地解析，不向第三方发送 infohash',
+            value: settings?.magnetMetaFetch ?? true,
+            onChanged: admin && editable
+                ? (value) => _saveResource(
+                    context,
+                    settings.copyWith(magnetMetaFetch: value),
+                  )
+                : null,
+          ),
+        ],
+      ),
     ];
   }
 
