@@ -3727,7 +3727,7 @@ function abChaptersHTML() {
     return '<button type="button" class="ab-chapter' + active + '" data-index="' + index + '">' +
       '<span class="ab-order">' + chapter.order + '</span>' +
       '<span class="ab-chapter-title">' + escapeHTML(chapter.title) + '</span>' +
-      (chapter.locked ? '<span class="ab-lock">付费</span>' : '') +
+      (chapter.locked ? '<span class="ab-lock">可能付费</span>' : '') +
       '</button>';
   }).join('') + (audiobookState.chapterHasMore
     ? '<button type="button" class="btn mini" id="ab-more-chapters">加载更多章节</button>'
@@ -4005,10 +4005,8 @@ function abPlayChapter(index) {
     showNotice('已经是最后一章了');
     return;
   }
-  if (chapter.locked) {
-    showNotice('这一章需要付费，暂时无法播放');
-    return;
-  }
+  // 标着「可能付费」的章节照样尝试播放：多数付费标记只影响正文，音频本身是
+  // 可取的；真的取不到时再按接口返回的原因提示，不能在这里直接拦掉。
   var book = audiobookState.book;
   if (!book) { return; }
   audiobookState.chapterIndex = index;
@@ -4241,8 +4239,8 @@ function readableCacheSize(bytes) {
           return null;
         }
         if (!window.confirm(
-          '发现 ' + readableCacheSize(bytes) + ' 可清理缓存（播放与转码临时文件）。\n' +
-          '已下载视频、剧库和设置不会受影响，是否清理？'
+          '发现 ' + readableCacheSize(bytes) + ' 可清理缓存（播放、封面、目录、日志与转码临时文件）。\n' +
+          '已下载视频、听书离线音频、剧库和设置不会受影响，是否清理？'
         )) {
           return null;
         }

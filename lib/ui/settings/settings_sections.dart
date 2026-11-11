@@ -265,7 +265,7 @@ class SettingsSection extends StatelessWidget {
         SettingsTile(
           icon: Icons.cleaning_services_outlined,
           title: '清理缓存',
-          subtitle: '查看占用，清除播放缓存与临时文件',
+          subtitle: '查看占用，清除播放、封面、目录缓存与日志',
           onTap: () => open('清理缓存', (_) => const CacheView()),
         ),
       ],

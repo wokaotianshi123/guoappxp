@@ -392,6 +392,38 @@ func nativeIsCoverImage(data []byte) bool {
 	return false
 }
 
+// refresh 按磁盘上的实际文件重建索引。「清理缓存」删掉封面文件后调用，
+// 否则内存里仍记着已删除条目的尺寸，下次取封面会拿到不存在的路径。
+// 仍然存在的封面保留原来的 usedAt，清理不会把冷热顺序彻底打乱。
+func (cache *nativeCoverCache) refresh() {
+	cache.mu.Lock()
+	defer cache.mu.Unlock()
+	entries := map[string]nativeCoverEntry{}
+	var size int64
+	files, _ := os.ReadDir(cache.directory)
+	for _, file := range files {
+		key, valid := strings.CutSuffix(file.Name(), ".img")
+		if !valid || len(key) != 64 || file.IsDir() {
+			continue
+		}
+		if _, err := hex.DecodeString(key); err != nil {
+			continue
+		}
+		info, err := file.Info()
+		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > nativeCoverMaxBytes {
+			continue
+		}
+		usedAt := info.ModTime()
+		if old, ok := cache.entries[key]; ok {
+			usedAt = old.usedAt
+		}
+		entries[key] = nativeCoverEntry{size: info.Size(), updatedAt: info.ModTime(), usedAt: usedAt}
+		size += info.Size()
+	}
+	cache.entries = entries
+	cache.size = size
+}
+
 func (cache *nativeCoverCache) prune(keep string) {
 	if cache.size <= cache.limit && len(cache.entries) <= nativeCoverCacheEntries {
 		return

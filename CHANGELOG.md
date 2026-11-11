@@ -2,6 +2,26 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.4.1+117
+
+修两个 1.4.0 遗留问题：缓存清理在磁力缓存下线后统计不到实际占用；本地服务版听书打不开带付费标记的章节。
+
+### 修复
+- **清理缓存失效**：`cacheInfo` / `clearCache` 只统计 `<dataDir>/playback-cache`、播放器缓存目录与临时文件，1.4.0 删掉磁力缓存后数据目录里真正占空间的三类文件都不在范围内，设置页长期显示「0 B / 没有需要清理的缓存」。
+  - 封面缓存：`covers-v1/*.img` 以及 App 端把 HEIC 等格式转出来的 `covers-v1/compatible-v1/*.jpg`（这部分之前永远不会被回收）。
+  - 目录缓存：`catalogs.json`（榜单 / 分类 / 推荐，内存中的目录不受影响，下一轮浏览会重新落盘）。
+  - 日志：`logs/*.log`（含轮转出来的 `app.log.1` / `native_stderr.log.1`）；文件正被写入（Windows 句柄占用）时退化为清空，不再整体失败。
+  - 新增 `coverBytes` / `catalogBytes` / `logBytes` 三个字段，设置页改为「播放缓存 / 封面缓存 / 目录缓存 / 日志与临时文件」四行分类。
+  - 清理封面后调用 `nativeCoverCache.refresh()` 按磁盘重建索引，避免内存里留着已删除条目的尺寸、下次取封面拿到不存在的路径。
+  - 仍然不动：`shared_preferences.json`、`sources.json`、`audiobooks/`（听书书架、进度与离线音频）、`downloads/`（已下载与断点续传分片）。
+- **本地服务版「清理缓存」统计不到转码产物**：转码目录是系统临时目录下的 `duanjuweb-<slug>-live`，不在核心数据目录里，顶栏按钮只能看到 0。新增 `native/server/cache.go`，在 `cacheInfo` / `clearCache` 的回包里合并转码目录的占用与释放量，`clearCache` 跳过仍在播放的任务目录，删不掉的会写进 `warning`。
+- **本地服务版听书打不开「可能付费」章节**：`abPlayChapter` 里对 `chapter.locked` 直接 `showNotice('这一章需要付费，暂时无法播放')` 并返回。实测这类章节的 `/api/audiobook/text` 与 `/api/audiobook/media` 都能正常返回（付费标记只代表可能收费，不阻断接口），因此去掉硬拦截、照常尝试播放，失败时再按接口原因提示；徽标文案与 App 端统一为「可能付费」。
+
+### 测试
+- `app_cache_clean_test.go` 新增 `TestClearCacheRemovesAppGeneratedCaches`：覆盖封面（含 `compatible-v1` 的 JPEG）、目录、日志与临时文件的统计 / 清理，并断言设置、站源、听书离线音频、已下载视频不被删除，封面索引随清理归零。
+- `go vet ./core ./server`、`go test -count=1 ./core ./server`、`node --check native/server/web/app.js`、`dart analyze lib/ui/settings test` 全部通过。
+- 实测（真实数据副本）：`cacheInfo` 报 13.1 MB / 160 文件，`clearCache` 后 `covers-v1` 清空、`catalogs.json` 删除、其余用户数据完好；转码临时目录 `2048 B` 能统计并释放；锁定章节的 `text` 返回逐句时间轴、`media` 返回音频地址与解密 key。
+
 ## 1.4.0+116
 
 把 `guoapplu` 的听书与直播模块移植进本项目，并按需求把磁力板块整体下线。Windows / Android / iOS / macOS / 本地服务版同步生效。

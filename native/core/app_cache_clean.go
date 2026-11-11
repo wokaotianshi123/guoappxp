@@ -10,9 +10,15 @@ import (
 	"time"
 )
 
-// 「清理缓存」只处理可再生的播放缓存与临时文件。剧库、设置、追剧、
-// 观看记录、会话凭据和已完成下载一律不动。
-const playbackCacheDirName = "playback-cache"
+// 「清理缓存」只处理应用自己生成、随时可以再生的缓存：播放缓存、封面缓存、
+// 目录缓存、日志和临时文件。剧库、设置、追剧、观看记录、会话凭据、
+// 已完成的下载与听书离线音频一律不动。
+const (
+	playbackCacheDirName = "playback-cache"
+	coverCacheDirNameV1  = "covers-v1"
+	catalogCacheName     = "catalogs.json"
+	logCacheDirName      = "logs"
+)
 
 // 播放器（media_kit / libmpv / ExoPlayer 系）在应用 cache 目录里常用的复用名。
 // 只按名字白名单进入，不整目录递归删除应用 cache。
@@ -25,6 +31,9 @@ type nativeCacheInfo struct {
 	Bytes         int64  `json:"bytes"`
 	Files         int64  `json:"files"`
 	PlaybackBytes int64  `json:"playbackBytes"`
+	CoverBytes    int64  `json:"coverBytes"`
+	CatalogBytes  int64  `json:"catalogBytes"`
+	LogBytes      int64  `json:"logBytes"`
 	TempBytes     int64  `json:"tempBytes"`
 	ClearedBytes  int64  `json:"clearedBytes"`
 	ClearedFiles  int64  `json:"clearedFiles"`
@@ -88,6 +97,34 @@ func nativeCacheMediaTempName(name string) bool {
 	return false
 }
 
+// nativeCacheCoverName 只认封面缓存正文：封面写入走临时文件 + 原子改名，
+// 所以 *.img 一定是写完整的；同目录下的 .decode-* / .cache-write-* 不动。
+// compatible-v1 是 App 端把 HEIC 等格式转成 JPEG 后另存的一份，同样可再生。
+func nativeCacheCoverName(path string) bool {
+	base := filepath.Base(path)
+	if strings.HasPrefix(base, ".") {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(base)) {
+	case ".img":
+		return true
+	case ".jpg":
+		return strings.Contains(filepath.ToSlash(path), "/compatible-v1/")
+	default:
+		return false
+	}
+}
+
+// nativeCacheLogName 只认日志文件（app.log / native_stderr.log / crash.log）。
+// 日志不属于用户数据，删掉只会少一份排查材料。轮转出来的 app.log.1 也要算上。
+func nativeCacheLogName(name string) bool {
+	lower := strings.ToLower(name)
+	if strings.HasSuffix(lower, ".log") {
+		return true
+	}
+	return strings.HasPrefix(lower, "app.log.") || strings.HasPrefix(lower, "native_stderr.log.")
+}
+
 // nativeCacheFiles 收集当前可清理的缓存文件。临时文件只挑 30 分钟前的，
 // 不碰正在写入的下载分片和正在播放的转码中间文件。
 func (engine *nativeEngine) nativeCacheFiles(extra string) []nativeCacheFile {
@@ -113,6 +150,29 @@ func (engine *nativeEngine) nativeCacheFiles(extra string) []nativeCacheFile {
 				return nil
 			}
 			if entry.IsDir() {
+				return nil
+			}
+			if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
+				add(path, info.Size(), kind)
+			}
+			return nil
+		})
+	}
+	collectMatched := func(dir string, match func(string) bool, kind string) {
+		_ = filepath.WalkDir(dir, func(path string, entry fs.DirEntry, err error) error {
+			if err != nil {
+				return nil
+			}
+			if entry.Type()&os.ModeSymlink != 0 {
+				if entry.IsDir() {
+					return fs.SkipDir
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				return nil
+			}
+			if !match(path) {
 				return nil
 			}
 			if info, err := entry.Info(); err == nil && info.Mode().IsRegular() {
@@ -151,6 +211,14 @@ func (engine *nativeEngine) nativeCacheFiles(extra string) []nativeCacheFile {
 		})
 	}
 	collectDir(playbackDir, "playback")
+	// 封面缓存是应用自己下载的图片，删掉只会让下次浏览重新取一遍。
+	collectMatched(filepath.Join(engine.directory, coverCacheDirNameV1), nativeCacheCoverName, "cover")
+	// 目录缓存（榜单 / 分类 / 推荐）同样可再生；内存里的目录不受影响。
+	if info, err := os.Stat(filepath.Join(engine.directory, catalogCacheName)); err == nil && info.Mode().IsRegular() {
+		add(filepath.Join(engine.directory, catalogCacheName), info.Size(), "catalog")
+	}
+	collectMatched(filepath.Join(engine.directory, logCacheDirName),
+		func(path string) bool { return nativeCacheLogName(filepath.Base(path)) }, "log")
 	collectTemp(engine.directory, false, false)
 	if cache := nativeCacheExtraDirectory(extra, engine.directory); cache != "" {
 		for _, name := range playbackCacheSubdirs {
@@ -169,6 +237,12 @@ func nativeCacheTotals(files []nativeCacheFile) nativeCacheInfo {
 		switch file.kind {
 		case "playback":
 			info.PlaybackBytes += file.size
+		case "cover":
+			info.CoverBytes += file.size
+		case "catalog":
+			info.CatalogBytes += file.size
+		case "log":
+			info.LogBytes += file.size
 		default:
 			info.TempBytes += file.size
 		}
@@ -193,30 +267,55 @@ func nativePruneEmptyDirs(dir string) {
 	}
 }
 
+// nativeClearLogFile 先尝试删除；日志正被写入（Windows 上句柄占用）时退化成清空。
+// 返回是否真的释放了内容。
+func nativeClearLogFile(path string) bool {
+	if err := os.Remove(path); err == nil || errors.Is(err, os.ErrNotExist) {
+		return true
+	}
+	// 清空后文件还在，但原内容已经释放，尺寸仍按清理前的值计。
+	return os.Truncate(path, 0) == nil
+}
+
 func (engine *nativeEngine) cacheInfo(extra string) nativeCacheInfo {
 	return nativeCacheTotals(engine.nativeCacheFiles(extra))
 }
 
-// clearCache 先关闭 BT 客户端释放分片句柄，再逐个删除白名单缓存文件。
-// 被进程占用的文件会跳过并给出提示，其余照常清理。
+// clearCache 先关掉正在写的缓存句柄（封面走原子改名，无需等待），
+// 再逐个删除白名单缓存文件。被进程占用的文件会跳过并给出提示，其余照常清理。
 func (engine *nativeEngine) clearCache(extra string) (nativeCacheInfo, error) {
 	files := engine.nativeCacheFiles(extra)
 	info := nativeCacheInfo{}
 	failed := 0
+	clearedCover := false
 	for _, file := range files {
-		if err := os.Remove(file.path); err != nil {
-			if !errors.Is(err, os.ErrNotExist) {
-				failed++
-			}
+		var cleared bool
+		if file.kind == "log" {
+			cleared = nativeClearLogFile(file.path)
+		} else {
+			err := os.Remove(file.path)
+			cleared = err == nil || errors.Is(err, os.ErrNotExist)
+		}
+		if !cleared {
+			failed++
 			continue
+		}
+		if file.kind == "cover" {
+			clearedCover = true
 		}
 		info.ClearedBytes += file.size
 		info.ClearedFiles++
+	}
+	// 封面索引在内存里记着文件名与尺寸：清完必须跟着磁盘重扫，
+	// 否则下次取封面会以为本地还有文件，直接返回一个不存在的路径。
+	if clearedCover && engine.covers != nil {
+		engine.covers.refresh()
 	}
 	nativePruneEmptyDirs(filepath.Join(engine.directory, playbackCacheDirName))
 	remaining := nativeCacheTotals(engine.nativeCacheFiles(extra))
 	info.Bytes, info.Files = remaining.Bytes, remaining.Files
 	info.PlaybackBytes, info.TempBytes = remaining.PlaybackBytes, remaining.TempBytes
+	info.CoverBytes, info.CatalogBytes, info.LogBytes = remaining.CoverBytes, remaining.CatalogBytes, remaining.LogBytes
 	if failed > 0 {
 		info.Warning = fmt.Sprintf("%d 个文件正在使用中，未能删除；关闭播放或下载后可再清理一次", failed)
 	}

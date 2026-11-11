@@ -6,8 +6,8 @@ import '../widgets/group_card.dart';
 import '../widgets/status_view.dart';
 import 'storage_view.dart' show storageSize;
 
-/// 「我的 → 设置 → 缓存」：统计并清理播放缓存与临时文件。
-/// 已完成下载、剧库、追剧和设置都不在清理范围内。
+/// 「我的 → 设置 → 缓存」：统计并清理播放缓存、封面缓存、目录缓存、日志与临时文件。
+/// 已完成下载、听书离线音频、剧库、追剧和设置都不在清理范围内。
 class CacheView extends StatefulWidget {
   const CacheView({super.key});
 
@@ -60,8 +60,8 @@ class _CacheViewState extends State<CacheView> {
       builder: (context) => AlertDialog(
         title: const Text('清理缓存？'),
         content: const Text(
-          '将删除播放与转码临时文件。\n'
-          '已下载的视频、剧库、追剧记录和设置不会受影响。\n'
+          '将删除播放缓存、封面缓存、目录缓存、日志和转码临时文件。\n'
+          '已下载的视频、听书离线音频、剧库、追剧记录和设置不会受影响。\n'
           '正在播放的视频建议先退出。',
         ),
         actions: [
@@ -153,15 +153,27 @@ class _CacheViewState extends State<CacheView> {
             ),
             const Divider(indent: 16, endIndent: 16),
             SettingsTile(
-              title: '临时文件',
-              subtitle: '下载与转码留下的过期临时文件',
-              value: storageSize(bytes('tempBytes')),
+              title: '封面缓存',
+              subtitle: '海报图片，清理后浏览时会重新下载',
+              value: storageSize(bytes('coverBytes')),
+            ),
+            const Divider(indent: 16, endIndent: 16),
+            SettingsTile(
+              title: '目录缓存',
+              subtitle: '榜单、分类与推荐列表，清理后会自动重新拉取',
+              value: storageSize(bytes('catalogBytes')),
+            ),
+            const Divider(indent: 16, endIndent: 16),
+            SettingsTile(
+              title: '日志与临时文件',
+              subtitle: '运行日志、下载与转码留下的过期临时文件',
+              value: storageSize(bytes('logBytes') + bytes('tempBytes')),
             ),
             const Divider(indent: 16, endIndent: 16),
             SettingsTile(
               icon: Icons.cleaning_services_outlined,
               title: _busy ? '正在清理…' : '清理缓存',
-              subtitle: '释放空间；不影响已下载视频与账号资料',
+              subtitle: '释放空间；不影响已下载视频、听书离线音频与账号资料',
               enabled: !_busy && bytes('bytes') > 0,
               onTap: _clear,
             ),
@@ -182,7 +194,7 @@ class _CacheViewState extends State<CacheView> {
         Padding(
           padding: const EdgeInsets.fromLTRB(16, 12, 16, 0),
           child: Text(
-            '清理后再次播放会重新生成所需缓存。',
+            '清理后再次播放、浏览会重新生成所需缓存。',
             style: text.bodyMedium?.copyWith(color: colors.onSurfaceVariant),
           ),
         ),

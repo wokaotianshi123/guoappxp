@@ -144,6 +144,14 @@ func handleRequest(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	reply := rewriteLocalMedia(core.NativeRequest(string(encoded)))
+	// 顶栏「清理缓存」：核心只认识数据目录里的缓存，转码产物在系统临时目录，
+	// 这里把两边合并成一份结果，避免统计永远是 0。
+	switch payload["action"] {
+	case "cacheInfo":
+		reply = mergeTranscodeCache(reply, false)
+	case "clearCache":
+		reply = mergeTranscodeCache(reply, true)
+	}
 	writer.Header().Set("Content-Type", "application/json; charset=utf-8")
 	writer.Header().Set("Cache-Control", "no-store")
 	_, _ = io.WriteString(writer, reply)
