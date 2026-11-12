@@ -1,9 +1,16 @@
 import 'dart:async';
 
+import 'package:flutter/foundation.dart'
+    show defaultTargetPlatform, TargetPlatform;
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:media_kit_video/media_kit_video.dart';
+import 'package:window_manager/window_manager.dart';
 
+import '../app_device.dart';
+import '../ui/player/player_gestures.dart' show GestureHud;
 import '../ui/widgets/focus_ring.dart';
+import 'live_gestures.dart';
 import 'live_models.dart';
 import 'live_playback.dart';
 import 'live_repository.dart';
@@ -13,7 +20,7 @@ import 'live_store.dart';
 /// 直播全屏播放页。
 ///
 /// 与点播播放器分开实现：直播没有进度、集数与清晰度概念，控制项只有换台、
-/// 换线路、暂停与收藏，避免把点播那一套状态机套到直播流上。
+/// 换线路、暂停、收藏与全屏，避免把点播那一套状态机套到直播流上。
 class LivePlayerPage extends StatefulWidget {
   const LivePlayerPage({
     super.key,
@@ -35,14 +42,20 @@ class LivePlayerPage extends StatefulWidget {
 
 class _LivePlayerPageState extends State<LivePlayerPage> {
   late final LivePlaybackController _playback;
+  late final LiveGestureController _gestures;
   Timer? _hide;
   var _visible = true;
+  bool _fullscreen = false;
+
+  /// 当前已下发给原生层的全屏方向，用于画面比例变化时判断要不要重新锁定。
+  PlayerOrientation? _appliedOrientation;
 
   @override
   void initState() {
     super.initState();
     _playback = LivePlaybackController(repository: widget.repository)
       ..addListener(_changed);
+    _gestures = LiveGestureController(playback: _playback);
     unawaited(
       _playback.load(widget.source, widget.channels, index: widget.index),
     );
@@ -53,12 +66,83 @@ class _LivePlayerPageState extends State<LivePlayerPage> {
   void dispose() {
     _hide?.cancel();
     _playback.removeListener(_changed);
+    _gestures.dispose();
     _playback.dispose();
+    _restorePresentation();
     super.dispose();
   }
 
+  /// 按视频真实宽高比决定全屏方向：宽于高的画面锁横屏，竖屏/方形画面锁竖屏。
+  /// 用 locked 变体而不是可随传感器解除的 landscape/portrait，保证 Flutter 的
+  /// 全屏状态与原生方向始终一致。
+  PlayerOrientation get _targetOrientation => _playback.aspectRatio > 1
+      ? PlayerOrientation.lockedLandscape
+      : PlayerOrientation.lockedPortrait;
+
+  String get _orientationText {
+    final ratio = _playback.aspectRatio;
+    final label = ratio > 1 ? '横屏' : '竖屏';
+    return '$label画面 · ${ratio.toStringAsFixed(2)} : 1';
+  }
+
+  String get _fullscreenTooltip {
+    if (_fullscreen) return '退出全屏';
+    return _playback.aspectRatio > 1 ? '横屏全屏' : '竖屏全屏';
+  }
+
   void _changed() {
-    if (mounted) setState(() {});
+    if (!mounted) return;
+    // 换台后画面比例可能从横屏切成竖屏（或反过来）：全屏状态跟着重新锁定，
+    // 不必先退出全屏再点一次。
+    if (_fullscreen) {
+      final target = _targetOrientation;
+      if (target != _appliedOrientation) {
+        _appliedOrientation = target;
+        unawaited(AppDevice.setPlayerOrientation(target));
+      }
+    }
+    setState(() {});
+  }
+
+  /// 切换全屏时同步系统方向栏与状态栏。Windows 走窗口全屏，不碰屏幕方向。
+  void _applyPresentation(bool full) {
+    _appliedOrientation = full ? _targetOrientation : null;
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      unawaited(windowManager.setFullScreen(full).catchError((Object _) {}));
+      return;
+    }
+    if (full) {
+      unawaited(AppDevice.setPlayerOrientation(_targetOrientation));
+    } else {
+      unawaited(AppDevice.releaseOrientation());
+    }
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(
+        full ? SystemUiMode.immersiveSticky : SystemUiMode.edgeToEdge,
+      ).catchError((Object _) {}),
+    );
+  }
+
+  /// 离开页面时还原方向栏与系统栏，避免把横屏/沉浸式状态带回列表页。
+  void _restorePresentation() {
+    if (!_fullscreen) return;
+    if (defaultTargetPlatform == TargetPlatform.windows) {
+      unawaited(windowManager.setFullScreen(false).catchError((Object _) {}));
+      return;
+    }
+    unawaited(AppDevice.releaseOrientation());
+    unawaited(
+      SystemChrome.setEnabledSystemUIMode(
+        SystemUiMode.edgeToEdge,
+      ).catchError((Object _) {}),
+    );
+  }
+
+  void _toggleFullscreen() {
+    final full = !_fullscreen;
+    setState(() => _fullscreen = full);
+    _applyPresentation(full);
+    _reveal();
   }
 
   void _scheduleHide() {
@@ -87,15 +171,19 @@ class _LivePlayerPageState extends State<LivePlayerPage> {
   @override
   Widget build(BuildContext context) {
     final channel = _channel;
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _toggleControls,
-        child: Stack(
+    // 全屏时先按返回键退出全屏，第二次返回才离开播放页。
+    return PopScope(
+      canPop: !_fullscreen,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _toggleFullscreen();
+      },
+      child: Scaffold(
+        backgroundColor: Colors.black,
+        body: Stack(
           fit: StackFit.expand,
           children: [
-            Center(child: _video()),
+            _video(),
+            Positioned.fill(child: _gestureLayer()),
             if (_playback.loading)
               const Center(
                 child: SizedBox(
@@ -106,6 +194,13 @@ class _LivePlayerPageState extends State<LivePlayerPage> {
               ),
             if (_playback.error case final error? when !_playback.loading)
               Center(child: _errorPanel(error)),
+            // HUD 本身不接收点击，整层再包一层 IgnorePointer 保证事件穿透到手势层。
+            IgnorePointer(
+              child: AnimatedBuilder(
+                animation: _gestures,
+                builder: (context, _) => GestureHud(state: _gestures.hud),
+              ),
+            ),
             AnimatedOpacity(
               opacity: _visible ? 1 : 0,
               duration: const Duration(milliseconds: 180),
@@ -120,16 +215,42 @@ class _LivePlayerPageState extends State<LivePlayerPage> {
     );
   }
 
+  /// 手势层：原始指针事件交给 [LiveGestureController]，单击与长按交给
+  /// GestureDetector。长按成立后才允许竖向滑动改亮度/音量。
+  Widget _gestureLayer() => LayoutBuilder(
+    builder: (context, constraints) => Listener(
+      onPointerDown: (event) => _gestures.pointerDown(
+        event,
+        width: constraints.maxWidth,
+        height: constraints.maxHeight,
+      ),
+      onPointerMove: _gestures.pointerMove,
+      onPointerUp: _gestures.pointerUp,
+      onPointerCancel: _gestures.pointerCancel,
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          if (_gestures.suppressTap) return;
+          _toggleControls();
+        },
+        onLongPressStart: (details) => _gestures.hold(details.localPosition),
+      ),
+    ),
+  );
+
   Widget _video() {
     final controller = _playback.controller;
     if (controller == null) return const SizedBox.shrink();
-    return AspectRatio(
-      aspectRatio: _playback.aspectRatio,
-      child: Video(
-        controller: controller,
-        controls: NoVideoControls,
-        pauseUponEnteringBackgroundMode: false,
-      ),
+    final video = Video(
+      controller: controller,
+      controls: NoVideoControls,
+      pauseUponEnteringBackgroundMode: false,
+    );
+    // 全屏时让画面铺满屏幕（Video 内部按原始比例居中，不会拉伸）；未全屏时
+    // 按视频比例居中，与频道列表的预览观感一致。
+    if (_fullscreen) return SizedBox.expand(child: video);
+    return Center(
+      child: AspectRatio(aspectRatio: _playback.aspectRatio, child: video),
     );
   }
 
@@ -201,16 +322,37 @@ class _LivePlayerPageState extends State<LivePlayerPage> {
               ),
               const SizedBox(width: 4),
               Expanded(
-                child: Text(
-                  channel?.label ?? '直播',
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: const TextStyle(
-                    color: Colors.white,
-                    fontSize: 20,
-                    fontWeight: FontWeight.w700,
-                    shadows: [Shadow(color: Color(0x66000000), blurRadius: 3)],
-                  ),
+                child: Column(
+                  mainAxisSize: MainAxisSize.min,
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      channel?.label ?? '直播',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        color: Colors.white,
+                        fontSize: 20,
+                        fontWeight: FontWeight.w700,
+                        shadows: [
+                          Shadow(color: Color(0x66000000), blurRadius: 3),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 2),
+                    // 实时标出画面比例与将进入的全屏方向，方便判断横竖屏。
+                    Text(
+                      _orientationText,
+                      maxLines: 1,
+                      style: const TextStyle(
+                        color: Colors.white70,
+                        fontSize: 12,
+                        shadows: [
+                          Shadow(color: Color(0x66000000), blurRadius: 3),
+                        ],
+                      ),
+                    ),
+                  ],
                 ),
               ),
               _round(
@@ -219,6 +361,14 @@ class _LivePlayerPageState extends State<LivePlayerPage> {
                 channel == null
                     ? null
                     : () => unawaited(widget.store.toggleFavourite(channel)),
+              ),
+              // 全屏按钮的目标方向由当前视频比例决定，比例变化时 tooltip 同步更新。
+              _round(
+                _fullscreen
+                    ? Icons.fullscreen_exit_rounded
+                    : Icons.fullscreen_rounded,
+                _fullscreenTooltip,
+                _toggleFullscreen,
               ),
             ],
           ),
