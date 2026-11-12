@@ -76,6 +76,22 @@ class ExplorePageState extends State<ExplorePage> {
     (_) => DetailPage(store: widget.store, drama: drama),
   );
 
+  /// 点已选中的分类不再重复加载，而是回到列表顶部；已在顶部则不动。
+  void _selectTab(String id) {
+    if (id != _explore!.tab.id) {
+      _explore!.select(id);
+      return;
+    }
+    if (!_scroll.hasClients || _scroll.offset <= 0) return;
+    unawaited(
+      _scroll.animateTo(
+        0,
+        duration: Motion.of(context, Motion.long),
+        curve: Motion.enter,
+      ),
+    );
+  }
+
   Future<void> _pickCategory(BuildContext anchor) async {
     final explore = _explore!;
     final value = await showChoicePanel<String>(
@@ -148,7 +164,7 @@ class ExplorePageState extends State<ExplorePage> {
             for (final tab in explore.tabs) ChoiceOption(tab.id, tab.name),
           ],
           selected: explore.tab.id,
-          onSelected: explore.select,
+          onSelected: _selectTab,
           onShowAll: _pickCategory,
         ),
       );

@@ -2,6 +2,152 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.6.0+123
+
+补齐上一批暂缓的三项：红果听书、黄果 AI 取流、红果系列剧。
+
+### 红果听书（听书双书源）
+- 听书页顶部新增「红果听书 / 番茄听书」书源切换，**默认红果听书**；两个书源各自独立，不再把官方书城混进榜单。
+- 红果听书的书池来自番茄畅听 / 红果同一后端的官方书城听书专辑（`api.novelfm.com` 的 `tab_type=12` 与各 tab 的 `genre=4` 书目），带主播、总集数、评分、真实分类。
+- 详情页新增「真人录音 / AI 朗读」标签与主播名：有真人主播名的标「真人录音」，官方 AI 音色账号（含 `AI`、`智能`、`TTS`、`番茄畅听` 等）或没有主播名的标「AI 朗读」。
+- 红果专辑的目录已验证可用（`fanqienovel.com/api/reader/directory/detail`，实测 965 章 / 342 章），逐章下载与播放沿用现有音频链路，无需登录。
+- 网页端同步：`/api/audiobook/library` 新增 `origin=hongguo|fanqie`（默认 `hongguo`），书本回包新增 `anchor` / `voiceMode`；旧接口保持「榜单 + 官方书城合并」行为。
+
+### 黄果 AI 取流（#103）
+- 播放地址解析改为宽松读取：字段改名、嵌套 `data` / `play_info`、多线路数组都能取到地址，并支持 base64 / hex / URL 编码混淆的地址还原。
+- 会话失效（返回「会话已失效 / 登录过期 / token 无效」等）时自动清掉记住的域名并换镜像重建一次；剧集不存在这类业务失败不会白白重试。
+- 黄果域名展开修正：配置里填的是镜像域名时，也会展开到全部备选域名，并让配置域名优先，避免单个域名挂掉就整源不可播。
+
+### 红果系列剧（#62）
+- 详情页选集上方新增「系列多季」卡片条：显示各季集数 / 观看进度（看至第 N 集）/ 上线日期（含「待上线」），点击切换，当前季高亮并自动滚到可见位置。
+- 季列表按「归一化基础名 + 季单位」从红果同名剧分组，`第X季` 与 `第X部` 不混，同名但基础名不同的剧（如「X之Y」）也不会并进来；缺失的季按「基础名第X季」补搜。
+- 本季最后一集播完自动接下一季第 1 集；详情页取到季列表后会同步给已打开的播放会话。
+- 新增 Go RPC `seasons`，只对红果返回数据，其它站源返回空列表（界面不显示卡片条）。
+
+### 验证
+- `go build ./core ./server`、`go vet ./core ./server`、`go test ./core ./server` 全绿。
+- `dart analyze lib test` No issues；Flutter 听书相关测试 17 例通过（含新增 `test/audiobook_voice_mode_test.dart`）。
+- 新增单测：`provider_hongguo_seasons_test.go`（4 例）、`provider_huangguo_api_session_test.go`（4 例）、`TestAbLibraryQuerySeparatesOrigins`。
+- 本地服务版实测：红果听书 77 本（全部带主播，标「真人录音」）、番茄听书 2030 本、官方池 92 本 / 68 个分类。
+
+### 站源外置（PoC）
+- `native/core` 新增 `source_api.go`：`SourceProvider`、`SourceHost`、`SourceDescriptor`、`RegisterSource`、`RegisteredSources`；站源只经 Host 访问运行时，core 不再直接调用具体站源。
+- `scripts/build_native.py`、`scripts/build_windows.py` 新增 `--sources <目录>`（可多次指定），生成不入库的 `native/go.work` 与 `native/bridge/sources_gen.go`（带 `sources` 编译标签）；不传时删掉这两个文件，构建不含站源的版本。
+- 已迁出 **A123**、**鬼片网**、**爱看机器人**、**XChina** 到独立模块 `../guoapp-sources`（`module guoapp/sources`）。分类校验、分类列表、目录分页、搜索、详情、取流、封面修复全部改为查注册表，未编入时返回「该站源未编入当前版本」。
+- 站源状态随实现一起外移：爱看机器人的线路缓存与单飞、XChina 的会话与详情缓存都从 `Downloader` 搬到站源实例；`SourceHost` 新增 `DoPrepared`（经运行时限流/超时执行请求），并导出 `MediaCredentials`、`NewMediaCredentials`、`WithMediaCredentials` 供站源挂播放凭证。
+- 运行时的共用逻辑收回 core：`XChinaEVPKey`（XChina / Theporny 共用的 EVP_BytesToKey 派生）、`HTMLEntityUnescape`（鬼片转义，韩小圈也在用）、`AnyList`、`DecodeHongguoBase64`、`PKCS7Unpad`。
+- 站源接口只保留 `Categories` / `ValidCategory` / `CatalogPage` / `Detail` / `ResolveMedia` 五个方法；`ValidCategory` 要求是纯函数——core 校验分类时用不带 Host 的探针实例调用。
+- 已验证：带站源与不带站源两种组合均可编译，`go test ./core`（23s）与 `go test guoapp/sources` 全绿。其余站源仍在 `native/core`，可按同一模式分批迁出。
+
+### 站源外置（第三批：短剧家族）
+- **全部短剧站源迁出**：芽果、猫果、饭果、观果、星果、牛果、河果（API 系），以及花果、发果、伍果、网果（MacCMS 系）共 11 个站源移入 `../guoapp-sources`；外置站源总数 15。
+- `SourceHost` 扩充：`DuanjuBaseURL` / `DuanjuJSON` / `DuanjuDo`（短剧接口）、`MaccmsCatalogPage` / `MaccmsDetail` / `MaccmsSearch`（MacCMS 引擎）、`DuanjuResolveMedia`（通用取流）；新增 `core/source_duanju.go` 导出站源 ID、站点地址与 `NativeText`、`DuanjuEpisodeNumber`。
+- 站源状态随实现外移：芽果的登录令牌缓存（`sync.Mutex` + 过期表）从 `Downloader` 搬到 `yaguoSource`；牛果的 AES 解密、星果/饭果的解析全部就地保留。
+- 派发改为一律查注册表：`fetchDuanjuCategories` / `CatalogPage` / `Detail` / `searchDuanju`、`GetHuangguoDetail` 顶部先查注册表，未编入统一返回「该站源未编入当前版本」；自定义 MacCMS 源仍由运行时引擎处理。
+- 运行时保留的共用件：`sortDuanjuChapters`、`duanjuFindBool`、`duanjuFormatCount`（`provider_duanju_shared.go`），站源经导出包装使用。
+- **按需求保留**：XBPQ 引擎（`provider_xbpq*`）、自定义源导入与设置（`provider_custom_maccms.go`）、站点分析器（`provider_site_analyzer*`）、MacCMS 引擎（`provider_maccms_*`、`provider_duanju_maccms.go`）全部留在 core；XBPQ 仍可导入外部网址或源文件。
+- 测试：随实现迁出 9 个 core 用例（芽果/观果/牛果/猫果/星果的解析与签名），在 sources 侧补 `duanju_test.go`（牛果解密、猫果签名、星果查询、芽果登录地址、饭果分类校验）；`TestNativeDetailKeepsWebSourceDescription` 改为注册假站源验证简介透传。
+- 验证：`go build ./core`（带/不带 `-tags sources`）、`go build guoapp/sources`、`go build ./server` 全过；`go test ./core`（38.9s）与 `go test guoapp/sources` 全绿。
+
+### 站源外置（第四批：网页源与接口源）
+- 迁出 **黑桃、韩小圈、Theporny、剧果、野果** 五个站源，外置总数达 20；`native/core` 里对应 `provider_*.go` 全部删除。
+- 派发统一为「注册表优先」：`nativeCatalog` / `nativeDetail` / `nativeCategories` / `nativeCoverAddress` / 跨源搜索 / `resolveProviderMedia` 都在原 `switch` 外层加注册表分支，未编入的源不再有专用代码路径；`validNativeCategory` 也先问注册表。
+- `SourceHost` 新增一组网络原语：`HTTPClient`（代理/DoH/TLS 已就位的标准客户端）、`Limiter`（`Acquire`/`Observe`）、`CatalogResponseError`、`ConfigURL` / `ConfigAPIURL`（设置里的站点与接口地址）、`FetchPage`（抓页并返回最终地址）、`BrowserPostJSON`（Chrome 指纹 + 独立 Cookie 会话，按序写头部），以及 `ProviderMediaOrigin`、`PublicError`、`CatalogBlockedReason`、`IsBackoffError`、`BackgroundCatalogContext` / `IsBackgroundCatalogContext`、`NoCacheContext`、`SourceForURL`、`HTMLAttr` / `HTMLClass` / `HTMLNodes` / `HTMLFirstClass` / `HTMLText`、`CoverAddress`、`DsdRouteParameters`、`ResolveProviderURL`、`WebProviderInteger`、`NormalizeViews`、`ProviderReleaseDate`、`CleanText`、`UserAgent` 等导出。
+- 状态外移：剧果的访客令牌与设备 ID、野果的线路发现缓存与 HTTP 客户端、Theporny 的登录令牌与详情缓存，全部搬进对应站源实例；`Downloader` 删掉 `huangju*`、`yeguo*`、`theporny*` 字段。
+- 取流：剧果改为用 `PrepareWebMedia` + `MediaCredentials`（签名 Cookie / m3u8 预取全交给运行时），野果与黑桃沿用各自解析后交 `PrepareWebMedia`。
+- **坑**：`ValidCategory` 若调 `core.ValidNativeCategory` 会经注册表绕回自身导致栈溢出；站源内必须用本地规则。空分类一律返回 true。
+- 测试：core 删除已迁实现的用例（剧果取流、野果解析/线路发现/分页），sources 新增 `sources_batch_test.go`（剧果分类、野果默认线路、空分类语义、无 Host 可构造）。
+- 验证：`go build ./core`（两标签）、`guoapp/sources`、`./server` 全过；`go test ./core` 与 `go test guoapp/sources` 全绿。
+
+### 站源外置（第五批：禁果 / 禁果短剧 / 青空）
+- 迁出 **禁果（jinguo）、禁果短剧（jinguoduanju）、青空（sorani）**，外置总数达 23；`native/core` 删除 `provider_jinguo*`、`provider_jinguoduanju*`、`provider_sorani*` 共 10 个文件（含 3 个测试）。
+- `SourceHost` 新增 `StateDir()`：站源的访客会话 / 登录态改为自己落盘（`jinguo-session.json`、`sorani-session.json`），运行时只提供应用数据目录，不再替站源保存凭据。
+- 新增可选接口 `SourceAccount`（`Account(ctx, command, input json.RawMessage)`）：`soraniAccount` 动作改为「按站源查注册表 → 断言 `SourceAccount` → 原样转发 command/account」，`nativeInput.Account` 相应改为 `json.RawMessage`，登录/验证码/登出的语义全部归站源所有。
+- 新增 `ErrSourceLoginRequired` / `ErrSourceLoginExpired` 两个标准错误：站源把「需要登录 / 登录失效」包上去，运行时据此回 `code=source_login`，前端弹登录提示的行为不变。
+- 导出 legacy 家族共用件：`LegacyCipher`（`EncryptParams` / `DecryptResponse` / `Valid`）、`LegacyEnvelope` / `LegacyEnvelopeCode` / `LegacyEnvelopeEncrypted`、`IsLegacySessionExpired`、`LegacyDetail`、`LegacyTabList`、`LegacyCoverURL`、`ChapterEpisodeNumber`、`MapString` / `MapStringSlice`、`NormalizeProviderMediaURL`；禁果因此不必把 AES 协议与宽松解码再写一遍。
+- 取流：禁果的 m3u8 走自己的播放列表抓取（要认出业务码 5005 的会话失效），禁果短剧与青空改交 `PrepareWebMedia`（m3u8 预取与时长统计由运行时做）。
+- **坑**：`compat.go` 原来的 `mapString` 只认字符串，遇到接口把 ID 给成数字就返回空（禁果短剧目录整页解析失败）；已改为转调 `core.MapString`，与运行时语义一致。
+- 测试：三个 core 用例（禁果目录/详情/会话复用、禁果短剧目录/取流、青空登录续期/登出）随实现迁入 sources，并在 `sources_batch_test.go` 增加注册表、登录错误码、账号能力断言；测试用 `testHost` 补上 `StateDir` 与真实的 `PrepareWebMedia`。
+- 验证：`go build ./core`（带/不带 `-tags sources`）、`go build guoapp/sources`、`go build -tags sources ./server`、`go vet ./core` 全过；`go test ./core`（37.9s）与 `go test guoapp/sources` 全绿。
+
+### 站源外置（第六批：帝果 / 笔盒 / 黄豆）
+- 迁出 **帝果（DSD）、笔盒（beabox）、黄豆（huangdou）**，外置总数达 26；`native/core` 删除 `provider_dsd_*`、`provider_beabox*`、`provider_huangdou*` 共 8 个文件（含 2 个测试）。
+- `SourceHost` 新增 `RememberHost(source, host)`：站源换线后把可用站点回报给运行时，封面 referer 与取流兜底才能跟着走（黄豆的域名池轮换用它）。
+- 新增两个可选接口：`SourceRankings`（榜单，黄豆 `/drama/rank` 走它，名次与热度文案仍由运行时组装）、`SourceCategoryLess`（站源本来就没有分类，如黄豆只有「全部」，运行时不报「暂未返回内容分类」）。
+- 派生小件：`ReleaseStatusFromRemark` 导出（黄豆解析更新状态用）；黄豆的主机池与 `isHuangdouHost` 留在 `native/core`（`SourceForURL` 反查要用），`randomHex` / `uuidLike` 也从黄豆实现里收回 core（红果设备号在用）。
+- 元数据补全改为通用兜底：`nativeExtraMetadata` 的黄豆专用分支换成「已外置站源一律调 `provider.Detail` 补元数据」，黄豆的热度补齐逻辑搬进它自己的详情。
+- **坑**：黄豆的签名头原本靠 `doPreparedCatalogRequest` 的 prepare 回调在请求发出前写入；站源只能拿 `DoPrepared`，签名改在组请求时算好（时间戳取到秒，提前几十毫秒无影响）。
+- 测试：帝果 5 例（aaencode 解码、vplayer 路径、签名失败透传、分类校验、路由解析与运行时一致）；笔盒 6 例（发布页域名池、hex 加密信封、故障只从不可达线路切换、重启复用站点、详情多线路映射、高亮清理、分类校验）；黄豆 10 例（域名池一致性/轮转顺序/走完整池/显式站点不轮转/业务错误不轮转/保留业务错误/ctx 取消/预算分配），榜单用例改写为站源侧 `RankingPage`。
+- 验证：`go build ./core ./server`（两标签）、`guoapp/sources`、`go vet ./core ./server`、`go vet -tags sources ./core` 全过；`go test ./core`（33.8s）与 `go test guoapp/sources` 全绿。
+
+### 站源外置（第七批：番茄 / 黄果旧版）
+- 迁出 **番茄（fanqie）、黄果旧版（legacy，cloudfront）**，外置总数达 28；`native/core` 删除 `provider_fanqie.go`、`provider_legacy_session.go`、`provider_legacy_app.go` 及对应测试，`provider_legacy.go` 只留数据形状与 AES 协议（`LegacyCipher` / `LegacyEnvelope` / `LegacyDetail` / `LegacyTabList` 与 `legacyAPIError` 仍被取流与弹幕链路使用）。
+- `SourceHost` 新增四项 legacy 家族能力：`LegacySettings()`（令牌、协议参数、CDN、AES 密钥、重试与页大小、会话作用域）、`APIEndpoint(ctx)` / `ResetAPIEndpoint(base)`（接口域名的健康度轮换仍归运行时）、`FetchMediaPlaylist(ctx, url, referer)`（解开旧接口的 JSON 信封并取播放列表，5005 会被包成 `ErrSourceLoginExpired` 可识别的错误）。
+- 导出 `core.LegacyFrontendURL`、`core.RandomHex`、`core.M3U8Duration`；访客会话文件（`huangguo-session.json`）改由站源经 `StateDir()` 自管，运行时不再保存凭据。
+- 番茄：引擎拉起时序、loopback 直连兜底、离线提示文案全部随实现搬进站源；`app_categories` 的固定两频道、`app_search_across` 的搜索分派、`app_runtime` 的目录/详情分支一并删除，走注册表。
+- **坑**：迁移脚本按 `^\s*import \(` 抓 import 块时抓到了 `package` 之后注释里的第二段 import，导致 `imports must appear before other declarations`；改为一律先定位 `
+import (
+` 再整体搬移。
+- **坑**：`provider_legacy_session.go` 删掉后，`legacyProtocol` 类型与 `validLegacyToken` 仍被 `LegacyCipher.Valid` 与 `network_media.go` 使用，需要在 `provider_legacy.go` 保留（否则 core 编译不过）。
+- 测试：番茄 9 例（卡片映射、档位去重排序、固定分类、离线提示三平台文案 + URL 脱敏、直连取文、401 透传、代理绕过、统一传输失败后直连兜底、冷启动退避）；黄果旧版 7 例（匿名会话复用与文件权限、单飞与取消、5005 续期一次、显式令牌不被续期、协议校验与两种 tab 形态、单集 404 不牵连域名、取流地址带 token/CDN 且回填 HLS 密钥与时长）。原 `TestLegacyPlaybackAndDownloadUseAuthenticatedPlaylistAndSourceKey` 的下载半段依赖运行时下载队列，站源侧改测 `ResolveMedia` 的产物。
+- 验证：`go build ./core ./server`（两标签）、`go build guoapp/sources`、`go vet ./core ./server`、`go vet -tags sources ./core` 全过；`go test ./core`（37.6s）与 `go test guoapp/sources`（1.6s）全绿。
+
+### 站源外置（第八批：黄果视频）
+- 迁出 **黄果视频（huangguo.video）**，外置总数达 29；`native/core` 删除 `fetchHuangguoVideoDetail`，以及目录 / 详情 / 分类 / 封面 / 取流五处分支。
+- `SourceHost` 新增 `FetchTextFinal(ctx, address, referer, userAgent, cookie)`：返回跟随重定向后的最终地址。黄果视频的播放页会跳到别的域名，m3u8 与密钥都校验 Referer，必须用跳转后的地址。
+- 新增 `native/core/source_huangguo_parsers.go`：导出 `HuangguoDetailMetadata`、`ParseHuangguoVideoCards`、`ParseHuangguoVideoEpisodes`、`ParseHuangguoVideoCategories`、`ParseDataHLS` 与 `ProviderEpisode` 类型。黄果家族的 HTML 解析仍留在 core —— 黄果 AI（尚未外置）与「排序详情」模块共用同一套正则助手，复制一份反而会分叉。
+- 取流逻辑（含旧任务刷新：只存了剧集 ID 和集号、没有播放页地址时按详情重新匹配章节）整体搬进站源，`resolveProviderMedia` 里的视频分支删除，`chapter.PageURL == ""` 的刷新条件收窄为只服务黄果 AI。
+- **坑**：`parseHuangguoVideoCategories` 内部原本调用 `validNativeCategory(sourceHuangguoVideo, id)`；分类校验随站源外置后这条返回 false，导致分类解析全部被过滤（`TestNativeCategoryDiscoveryUsesSourceLinks` 抓到）。改为直接判数字 ID。
+- **坑**：`network_media_test.go` 的黄果媒体用例原本走 `resolveProviderMedia`，站源外置后落到通用兜底而失败。改为直接验证运行时原语（`FetchTextFinal` + `prepareWebProviderMedia`），保留浏览器传输、Cookie 会话、签名查询串与预览令牌的断言。
+- 测试：黄果视频 3 例（分类校验、详情 ID 三种写法的路径归一与分集身份、跳转后用最终地址当 Referer）；core 侧原有的卡片 / 详情解析用例继续覆盖导出的解析器。
+- 验证：`go build ./core ./server`（两标签）、`go build guoapp/sources`、`go vet ./core ./server`、`go vet -tags sources ./core` 全过；`go test ./core`（32.1s）与 `go test guoapp/sources`（1.6s）全绿。
+
+### 站源外置（第九批：黄果 AI）
+- 迁出 **黄果 AI（huangguoai）**，外置总数达 30；`native/core` 删除 `provider_huangguo_api.go` 与两套测试，以及目录 / 详情 / 分类 / 封面 / 搜索 / 榜单 / 取流七处分支。
+- `SourceHost` 新增 `PostJSON(ctx, address, referer, payload)`（站点信封接口要 POST JSON）与 `ForgetHost(source)`（会话失效时忘掉当前镜像，下次请求重选）。
+- 新增可选接口 `SourceRankingEntries{ RankingEntries(ctx, board, page) ([]RankingEntry, bool, error) }` 与 `RankingEntry{Rank, Drama, Metric}`：黄果的榜单名次与「热度 1.2万」这类文案来自站点，不能按返回顺序重排。`fetchRankingPage` 现在优先用它，`SourceRankings` 仍服务只关心位置的站源。
+- 导出 `core.ParseHuangguoAIJSONCards`、`core.DramaFromAIMap`（目录与搜索共用卡片解析）。
+- **坑**：core 里有四个用例（目录缓存、持久化、分类分页、源更新）拿黄果 AI 当「能跑通的网页源」夹具，站源外置后它们全部落到 `errSourceNotCompiled`。解法是加一个仅测试用的最小 provider（`native_ai_fixture_test.go`，`//go:build !sources`），并给这些用例插 `installAIFixture(t)`；另加 `//go:build sources` 的空实现，`go vet -tags sources ./core` 才能过。
+- **坑**：信封编解码辅助（`huangguoEdgeTarget` / `huangguoEdgeReply`）原本和站源测试写在同一文件里，删文件时连带删掉，多个无关用例编译失败。已抽到无构建标签的 `huangguo_edge_fixture_test.go`。
+- 口径说明：黄果家族的 HTML 正则助手仍留在 core（黄果 AI 的详情元数据与「排序详情」共用），站源通过导出的高层解析入口调用；**网络流程、端点、分类聚合、取流、榜单语义全部在 `guoapp-sources/huangguoai.go`**。
+- 测试：黄果 AI 5 例（四个固定分类、混淆播放地址解码、会话失效换镜像重建一次、业务失败不重试、榜单保留站点名次与文案）；core 侧保留镜像候选与信封编解码用例。
+- 验证：两标签 build/vet 全过；`go test ./core` 7.8s、`go test guoapp/sources` 1.6s 全绿。
+- 剩余 1 个（红果）与运行时子系统耦合较深：剧库缓存、推荐流、弹幕与设备库都在 `nativeEngine` 里。下一步要先抽 `CatalogState` / `Danmaku` / 设备注册等运行态接口。
+
+## 1.5.0+122
+
+从 `guoappxpx-main` 移植播放与导航相关的一批功能（第一批）。
+
+### 画面比例（两侧各端）
+- 新增 `VideoFit` 八档：自动、拉伸、裁切、等宽、等高、原始、4:3、16:9（4 / 16 指长边，竖屏视频按 3:4、9:16 显示），带像素比换算，全局记住（`PlaybackPreferences.videoFit`）。
+- 入口：手机在「播放设置」面板新增「画面比例」；横屏全屏、平板 / 电脑在播放条新增比例按钮；电视在播放条新增「比例」菜单项。
+- `PlayerVideo` 改为按比例算出画面显示尺寸，再用 `OverflowBox` + `ClipRect` 裁切；Windows 的渲染缓冲按 `max` 计算，裁切时不会变糊。
+- 弹幕层新增 `video` / `fit` 参数，弹幕区域跟随画面比例，不再固定按原比例。
+- 手机竖屏双指张开 / 捏合改为在「裁切」和「自动」之间切换，结果写入偏好，退出播放页仍保持。
+
+### 播放设置
+- 设置 › 播放新增「上下滑动切换剧集」（手机 / 平板，默认关闭）：开启后横屏全屏竖滑直接切集，竖滑不再调亮度 / 音量。
+- 设置 › 播放新增「横屏底部进度线」（默认开启）：横屏播控隐藏后，画面底边保留一条细进度线。
+- 设置 › 弹幕新增「显示弹幕」总开关，与播放页的弹幕开关同步。
+
+### 发现与导航
+- 发现页再点一次当前分类标签回到列表顶部，已在顶部时不动（`_selectTab`）。
+- 手机底栏 / 平板侧栏新增「历史」标签，可在 设置 › 外观 ›「在主页底栏显示历史」关闭；电视端保持原来的四栏。历史页仍可从「我的」进入。
+
+### 设备注册与渲染
+- 修复部分电视盒和网络下红果提示「设备注册失败」：当路由或系统「去广告」规则把域名解析到 0.0.0.0 / 回环，或系统 DNS 直接报域名不存在时，`cdnTransport` 改用 DoH 解析出的真实地址重连；设置了代理时不受影响。
+- Intel Mac 改用 Skia 渲染（`macos/Runner/MainFlutterWindow.swift` 关闭 `enableImpeller`，仅 x86_64 生效，未实机验证）。
+
+### Windows 便携版
+- 程序旁存在 `userdata` 文件夹时，设置、记录、缓存、日志与默认下载都存到这里（`lib/portable_data.dart` 重定向 `PathProvider` 与 `SharedPreferences`）；不带该文件夹时行为不变。
+
+### 验证
+- `dart analyze lib test`、`go build ./core ./server`、`go vet ./core`、`go test ./core` 全部通过。
+- Flutter 回归：电视端外壳焦点 4 例、播放偏好 / 手势 / 会话 / 电视播放页、发现页、弹幕、历史、分类条等共 **55 例**通过。
+
+### 说明
+源项目里的「红果听书」「黄果 AI」站源实现与「红果系列剧」的季数据接口位于独立的官方站源模块，本仓库未包含；这三项需要按接口单独对接，放在下一批处理。
+
 ## 1.4.5+121
 
 听书分类改成与视频分类一致的交互：点击后内容跟随加载、分类条跟随选中项滚动，并提供常驻的「全部分类」入口一次看全所有类别。

@@ -182,6 +182,7 @@ func TestNativeCoverRedirectAndBoundedDiskCache(t *testing.T) {
 }
 
 func TestNativeCatalogCacheFreshnessPagingAndRefresh(t *testing.T) {
+	installAIFixture(t)
 	var calls atomic.Int32
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		target := huangguoEdgeTarget(t, r)

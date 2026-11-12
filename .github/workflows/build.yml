@@ -196,12 +196,35 @@ jobs:
       fail-fast: false
       matrix:
         include:
+          # 红果鉴：只用 core 里的内置源（红果、XBPQ、红果听书、番茄听书、直播），
+          # 不检出外置站源仓库，包体与以前一致。
           - edition: hongguojian
             arguments: ''
+            sources: ''
+          # 真果鉴：core 内置源 + 外置站源仓库（guoapp-sources）里的全部站源。
           - edition: zhenguojian
             arguments: '--all-sources'
+            sources: '--sources guoapp-sources'
     steps:
       - uses: actions/checkout@v4
+      - name: 检查外置站源凭据
+        if: matrix.edition == 'zhenguojian'
+        shell: bash
+        env:
+          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
+        run: |
+          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
+            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
+            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            exit 1
+          fi
+      - name: 检出外置站源（真果鉴）
+        if: matrix.edition == 'zhenguojian'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
+          path: guoapp-sources
       - &setup-python
         uses: actions/setup-python@v5
         with:
@@ -274,7 +297,7 @@ jobs:
         run: |
           set -euo pipefail
           for attempt in 1 2; do
-            if python scripts/build_android.py ${{ matrix.arguments }}; then
+            if python scripts/build_android.py ${{ matrix.arguments }} ${{ matrix.sources }}; then
               exit 0
             fi
             if [ "$attempt" -ge 2 ]; then
@@ -332,6 +355,24 @@ jobs:
     strategy: *editions
     steps:
       - uses: actions/checkout@v4
+      - name: 检查外置站源凭据
+        if: matrix.edition == 'zhenguojian'
+        shell: bash
+        env:
+          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
+        run: |
+          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
+            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
+            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            exit 1
+          fi
+      - name: 检出外置站源（真果鉴）
+        if: matrix.edition == 'zhenguojian'
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
+          path: guoapp-sources
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -382,7 +423,7 @@ jobs:
             "DUANJU_MPV_ARCHIVE=$dir\mpv-dev-x86_64-20260920-git-e76a35ec95.7z",
             "DUANJU_ANGLE_ARCHIVE=$dir\ANGLE-v1.0.1.7z"
           )) { [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$line`n") }
-      - run: python scripts/build_windows.py ${{ matrix.arguments }}
+      - run: python scripts/build_windows.py ${{ matrix.arguments }} ${{ matrix.sources }}
       - uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.edition }}-windows
@@ -407,6 +448,24 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: 检查外置站源凭据
+        if: true
+        shell: bash
+        env:
+          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
+        run: |
+          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
+            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
+            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            exit 1
+          fi
+      - name: 检出外置站源（真果鉴）
+        if: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
+          path: guoapp-sources
       - *setup-python
       - *setup-go
       - *setup-flutter
@@ -446,7 +505,7 @@ jobs:
         if: ${{ inputs.full_variants }}
         run: python scripts/build_ios.py
       - name: Build unsigned iOS packages (真果鉴)
-        run: python scripts/build_ios.py --all-sources
+        run: python scripts/build_ios.py --all-sources --sources guoapp-sources
       - name: 提示 iOS 未出包
         if: failure() || cancelled()
         run: |
@@ -470,6 +529,24 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
+      - name: 检查外置站源凭据
+        if: true
+        shell: bash
+        env:
+          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
+        run: |
+          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
+            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
+            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            exit 1
+          fi
+      - name: 检出外置站源（真果鉴）
+        if: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
+          path: guoapp-sources
       - uses: actions/download-artifact@v4
         continue-on-error: true
         with:
@@ -499,7 +576,7 @@ jobs:
         if: ${{ inputs.full_variants }}
         run: python scripts/build_macos.py
       - name: Build macOS packages (真果鉴)
-        run: python scripts/build_macos.py --all-sources
+        run: python scripts/build_macos.py --all-sources --sources guoapp-sources
       - name: 提示 macOS 未出包
         if: failure() || cancelled()
         run: |
@@ -518,6 +595,24 @@ jobs:
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
+      - name: 检查外置站源凭据
+        if: true
+        shell: bash
+        env:
+          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
+        run: |
+          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
+            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
+            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            exit 1
+          fi
+      - name: 检出外置站源（真果鉴）
+        if: true
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
+          path: guoapp-sources
       # 本地服务版要带齐三个平台的番茄引擎；缺哪个平台就跳过哪个平台的引擎，
       # 包仍然能出，只是那个平台的番茄源会提示引擎未就绪。
       - uses: actions/download-artifact@v4
@@ -546,7 +641,7 @@ jobs:
       # 交叉编译 4 个平台的本地服务二进制（CGO_ENABLED=0，无需各平台 SDK），
       # 随包带上 Windows 静态 ffmpeg.exe。产物：dist/web/zhenguoweb.zip
       - name: Build local service edition (红果鉴 / 真果鉴)
-        run: python scripts/build_web.py
+        run: python scripts/build_web.py --sources guoapp-sources
       # 「编过 + 打进 zip」不等于能用：把两个二进制真跑起来打一遍接口，顺带校验
       # 内嵌网页与仓库里的 native/server/web 逐字节一致、站源裁剪确实生效。
       # 失败就让 web job 红掉，别等用户解压之后才发现打不开。

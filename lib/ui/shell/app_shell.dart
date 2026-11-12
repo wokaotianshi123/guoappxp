@@ -13,6 +13,7 @@ import '../theme/motion.dart';
 import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
+import '../history/history_page.dart';
 import '../audiobook/audiobook_screen.dart';
 import '../mine/mine_page.dart';
 import '../widgets/bar_button.dart';
@@ -23,6 +24,7 @@ enum AppTab {
   explore('发现', Icons.explore_outlined, Icons.explore),
   audiobook('听书', Icons.headphones_outlined, Icons.headphones),
   follow('追剧', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
+  history('历史', Icons.history_rounded, Icons.history_rounded),
   mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
 
   const AppTab(this.label, this.icon, this.selectedIcon);
@@ -160,7 +162,9 @@ class _AppShellState extends State<AppShell> {
   /// 顶栏这一行的遥控器顺序：发现 → 听书 → 追剧 → 我的 → 切换站源 → 搜索。
   /// 站源为空时 SourceBar 不渲染，两个按钮的 context 也就为空，自动出列。
   List<FocusNode> get _televisionHeaderNodes => [
-    ..._tabFocus,
+    // 只看当前显示的标签：历史被隐藏时它的 FocusNode 不在树里，
+    // 遥控器往右会停在一个没有 context 的节点上。
+    for (final tab in _visibleTabs) _tabFocus[tab.index],
     if (_sourceFocus.context != null) _sourceFocus,
     if (_searchFocus.context != null) _searchFocus,
   ];
@@ -177,6 +181,7 @@ class _AppShellState extends State<AppShell> {
     if (event.logicalKey == LogicalKeyboardKey.arrowDown) {
       final entry = switch (_tab) {
         AppTab.follow => _followEntry,
+        AppTab.history => null,
         AppTab.mine => _mineEntry,
         // 听书页与发现页一样由页面自己接管内容区焦点。
         AppTab.explore => null,
@@ -279,6 +284,7 @@ class _AppShellState extends State<AppShell> {
 
   Widget _root(AppTab tab) => switch (tab) {
     AppTab.explore => ExplorePage(key: _explore, store: widget.store),
+    AppTab.history => HistoryPage(store: widget.store),
     AppTab.follow => FollowPage(
       store: widget.store,
       entryFocus: _followEntry,
@@ -342,10 +348,10 @@ class _AppShellState extends State<AppShell> {
           bottomNavigationBar: covered
               ? null
               : NavigationBar(
-                  selectedIndex: _tab.index,
-                  onDestinationSelected: (index) => _tap(AppTab.values[index]),
+                  selectedIndex: _navIndex,
+                  onDestinationSelected: (index) => _tap(_visibleTabs[index]),
                   destinations: [
-                    for (final tab in AppTab.values)
+                    for (final tab in _visibleTabs)
                       NavigationDestination(
                         key: ValueKey('nav-${tab.name}'),
                         icon: _badged(tab, Icon(tab.icon)),
@@ -394,6 +400,24 @@ class _AppShellState extends State<AppShell> {
     );
   }
 
+  /// 手机底栏 / 平板侧栏 / 电视顶栏实际显示的标签：历史可在设置里关掉，
+  /// 电视端始终不显示（保持原来的四栏）。
+  List<AppTab> get _visibleTabs {
+    final television = AppScope.of(context).television;
+    return [
+      for (final tab in AppTab.values)
+        if (tab != AppTab.history ||
+            (widget.store.historyTab && !television))
+          tab,
+    ];
+  }
+
+  /// 底栏 / 侧栏按下标高亮：隐藏历史后编号会前移，不能用枚举自带的 index。
+  int get _navIndex {
+    final index = _visibleTabs.indexOf(_tab);
+    return index < 0 ? 0 : index;
+  }
+
   Widget _badged(AppTab tab, Widget icon) => tab == AppTab.mine
       ? _DownloadBadge(downloads: _downloads!, child: icon)
       : icon;
@@ -403,7 +427,7 @@ class _AppShellState extends State<AppShell> {
       key: _televisionTabs,
       spacing: 6,
       children: [
-        for (final tab in AppTab.values)
+        for (final tab in _visibleTabs)
           _TelevisionTab(
             tab: tab,
             selected: tab == _tab,
@@ -437,6 +461,7 @@ class _AppShellState extends State<AppShell> {
       body: Row(
         children: [
           _SideBar(
+            tabs: _visibleTabs,
             selected: _tab,
             expanded: expanded,
             badged: _badged,
@@ -497,12 +522,14 @@ _SideMetrics _sideMetrics({required bool desktop, required bool expanded}) =>
 
 class _SideBar extends StatelessWidget {
   const _SideBar({
+    required this.tabs,
     required this.selected,
     required this.expanded,
     required this.badged,
     required this.onSelect,
     this.onToggle,
   });
+  final List<AppTab> tabs;
   final AppTab selected;
   final bool expanded;
   final Widget Function(AppTab tab, Widget icon) badged;
@@ -552,7 +579,7 @@ class _SideBar extends StatelessWidget {
                     ),
                   ),
                 ),
-                for (final tab in AppTab.values)
+                for (final tab in tabs)
                   _SideItem(
                     tab: tab,
                     selected: tab == selected,

@@ -6,14 +6,18 @@ import subprocess
 from pathlib import Path
 
 from app_build import BuildVariant, add_variant_argument, go_build_tag_args
+from source_module import add_source_argument, configure
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--platform', choices=['android', 'windows', 'darwin'], required=True)
 parser.add_argument('--abi', action='append', choices=['arm64-v8a', 'armeabi-v7a', 'x86_64'])
 add_variant_argument(parser)
+add_source_argument(parser)
 options = parser.parse_args()
 variant = BuildVariant(options.all_sources)
+# 生成 native/go.work 与 native/bridge/sources_gen.go；不传 --sources 时把它们删掉。
+source_tags = configure(root / 'native', options.sources)
 
 environment = os.environ.copy()
 # CI 的默认值是 proxy.golang.org（偶发流中断）；setdefault 不覆盖已设值，
@@ -40,7 +44,7 @@ def build(goos, architecture, compiler, output, extra=None):
     if extra:
         build_env.update(extra)
     print('Building ' + str(output.relative_to(root)), flush=True)
-    args = [go, 'build', '-trimpath', '-buildmode=c-shared', *go_build_tag_args(),
+    args = [go, 'build', '-trimpath', '-buildmode=c-shared', *go_build_tag_args(), *source_tags,
             '-ldflags=' + variant.linker_flags, '-o', str(output), './bridge']
     attempt = 0
     while True:
@@ -112,7 +116,7 @@ else:
         build_env = environment | {'GOOS': 'darwin', 'GOARCH': architecture, 'CC': str(compiler),
                                    'CGO_CFLAGS': '-target ' + triple,
                                    'CGO_LDFLAGS': '-target ' + triple}
-        subprocess.run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(),
+        subprocess.run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(), *source_tags,
                         '-ldflags=' + variant.linker_flags, '-o', str(library), './bridge'],
                        cwd=root / 'native', env=build_env, check=True)
         slices.append(str(library))

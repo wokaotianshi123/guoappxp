@@ -120,7 +120,10 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 
 func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
-	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian, sourceHanxiaoquan, sourceHeitao, sourceBeabox, sourceIkanbot, sourceA123, sourceFanqie, sourceXChina, sourceTheporny:
+	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo,
+		sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian,
+		sourceHanxiaoquan, sourceHeitao, sourceBeabox, sourceIkanbot, sourceA123, sourceFanqie,
+		sourceXChina, sourceTheporny:
 		return true
 	}
 	return isDuanjuProviderSource(source)
@@ -273,46 +276,11 @@ func valueEmpty(v any) bool {
 // 返回完整 Drama，其它调用方仍可只用标题。
 func (d *Downloader) GetHuangguoDetail(ctx context.Context, source, sourceID string) (Drama, []Chapter, error) {
 	source = canonicalProviderSource(source)
+	// 编译期接入的站源自己实现详情，不再往下面按站源列分支。
+	if provider, ok := d.sourceProvider(source); ok {
+		return provider.Detail(ctx, sourceID)
+	}
 	switch source {
-	case sourceHuangguoAI:
-		return d.fetchHuangguoAIDetail(ctx, sourceID)
-	case sourceHuangguoVideo:
-		return d.fetchHuangguoVideoDetail(ctx, sourceID)
-	case sourceCloudFront:
-		return d.fetchLegacyDetail(ctx, sourceID)
-	case sourceHuangju:
-		return d.fetchHuangjuDetail(ctx, sourceID)
-	case sourceYeguo:
-		return d.fetchYeguoDetail(ctx, sourceID)
-	case sourceJinguoDuanju:
-		return d.fetchJinguoDuanjuDetail(ctx, sourceID)
-	case sourceJinguo:
-		return d.fetchJinguoDetail(ctx, sourceID)
-	case sourceHeitao:
-		return d.fetchHeitaoDetail(ctx, sourceID)
-	case sourceBeabox:
-		return d.fetchBeaboxDetail(ctx, sourceID)
-	case sourceDSD:
-		return d.fetchDSDDetail(ctx, sourceID)
-	case sourceSorani:
-		return d.fetchSoraniDetail(ctx, sourceID)
-	case sourceGuipian:
-		return d.fetchGuipianDetail(ctx, sourceID)
-	case sourceHanxiaoquan:
-		return d.fetchHanxiaoquanDetail(ctx, sourceID)
-	case sourceIkanbot:
-		return d.fetchIkanbotDetail(ctx, sourceID)
-	case sourceFanqie:
-		return d.fetchFanqieDetail(ctx, sourceID)
-	case sourceA123:
-		return d.fetchA123Detail(ctx, sourceID)
-	case sourceXChina:
-		return d.fetchXChinaDetail(ctx, sourceID)
-	case sourceTheporny:
-		return d.fetchThepornyDetail(ctx, sourceID)
-	case sourceHuangdou:
-		title, chapters, err := d.fetchHuangdouChapters(ctx, sourceID)
-		return plainProviderDrama(source, sourceID, title), chapters, err
 	case sourceHongguo:
 		// 网页详情带 episode_cnt（真实总集数），不能退化成只有标题的
 		// plainProviderDrama，否则详情页会把可访问的试看集当成总集数。
@@ -338,56 +306,6 @@ func plainProviderDrama(source, sourceID, title string) Drama {
 func (d *Downloader) GetHuangguoChapters(ctx context.Context, source, sourceID string) (string, []Chapter, error) {
 	drama, chapters, err := d.GetHuangguoDetail(ctx, source, sourceID)
 	return drama.DisplayTitle(), chapters, err
-}
-
-func (d *Downloader) fetchHuangguoVideoDetail(ctx context.Context, sourceID string) (Drama, []Chapter, error) {
-	sourceID = strings.Trim(strings.TrimSpace(sourceID), "/")
-	if sourceID == "" {
-		return Drama{}, nil, fmt.Errorf("empty huangguo-video sourceID")
-	}
-	detailPath := sourceID
-	if !strings.HasPrefix(detailPath, "series/") && !strings.HasPrefix(detailPath, "video/") {
-		detailPath = "series/" + detailPath
-	}
-	detailURL := strings.TrimRight(huangguoVideoBaseURL, "/") + "/" + detailPath
-	body, err := d.fetchProviderText(ctx, detailURL, huangguoVideoBaseURL+"/")
-	if err != nil {
-		return Drama{}, nil, err
-	}
-	drama := huangguoDetailMetadata(body, detailURL, sourceHuangguoVideo, sourceID)
-	title := drama.DisplayTitle()
-	var episodes []providerEpisode
-	if strings.HasPrefix(detailPath, "video/") {
-		if hls := parseDataHLS(body, detailURL); hls != "" {
-			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: hls}}
-		}
-	} else {
-		episodes = parseHuangguoVideoEpisodes(body, detailURL)
-	}
-	if len(episodes) == 0 {
-		if hls := parseDataHLS(body, detailURL); hls != "" {
-			episodes = []providerEpisode{{Key: "1", Title: title, URL: detailURL, Index: 1, HLS: hls}}
-		}
-	}
-	var chapters []Chapter
-	for _, ep := range episodes {
-		hlsURL := ep.HLS
-		idx := ep.Index
-		if idx <= 0 {
-			idx = len(chapters) + 1
-		}
-		chapterTitle := strings.TrimSpace(ep.Title)
-		if chapterTitle == "" {
-			chapterTitle = fmt.Sprintf("第%d集", idx)
-		}
-		key := ep.Key
-		if key == "" {
-			key = strconv.Itoa(idx)
-		}
-		chapters = append(chapters, Chapter{ID: providerChapterID(sourceHuangguoVideo, sourceID, key), Source: sourceHuangguoVideo, Title: chapterTitle, VideoURL: hlsURL, PageURL: ep.URL, CurrentEpisode: rawEpisode(idx)})
-	}
-	sortProviderChapters(chapters)
-	return drama, uniqueChapters(chapters), nil
 }
 
 func (d *Downloader) fetchProviderText(ctx context.Context, rawURL, referer string) (string, error) {
@@ -515,7 +433,13 @@ func (d *Downloader) fetchProviderRequest(ctx context.Context, rawURL, referer s
 
 func providerURLCandidates(rawURL string) []string {
 	u, err := url.Parse(rawURL)
-	if err != nil || u.Hostname() != "huangguoai.com" {
+	if err != nil {
+		return []string{rawURL}
+	}
+	// 配置里填的也可能就是某个镜像域名：只要是黄果这一族，就展开全部备选，
+	// 不能只有配置的那一个域名，否则它挂了整个源都取不到流。
+	host := strings.ToLower(u.Hostname())
+	if host != "huangguoai.com" && !isHuangguoAIMirrorHost(host) {
 		return []string{rawURL}
 	}
 	out := make([]string, 0, len(huangguoAIBaseMirrors)+8)
@@ -527,6 +451,8 @@ func providerURLCandidates(rawURL string) []string {
 		seen[candidate] = true
 		out = append(out, candidate)
 	}
+	// 用户配置 / 当前生效的域名优先，再退到内置镜像与随机生成的域名。
+	add(rawURL)
 	for i, mirror := range huangguoAIBaseMirrors {
 		if i == 1 {
 			for _, generated := range generatedHuangguoAIMirrors(rawURL, 8) {

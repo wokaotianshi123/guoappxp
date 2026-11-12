@@ -11,6 +11,7 @@ import 'app_device.dart';
 import 'core_bridge.dart';
 import 'diary_service.dart';
 import 'local_store.dart';
+import 'portable_data.dart';
 import 'ui/app.dart';
 import 'ui/theme/app_theme.dart';
 
@@ -24,6 +25,8 @@ Future<void> main() async {
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
   }
   if (Platform.isWindows) {
+    // 便携版（程序旁有 userdata 文件夹）要赶在读取设置、创建缓存之前生效。
+    enablePortableData();
     await windowManager.ensureInitialized();
   }
   if (Platform.isMacOS) {

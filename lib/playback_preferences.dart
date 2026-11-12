@@ -1,3 +1,6 @@
+import 'dart:math' as math;
+import 'dart:ui' show Size;
+
 import 'catalog_sort.dart';
 import 'video_enhancement_preferences.dart';
 
@@ -21,6 +24,42 @@ enum DanmakuCoverage {
 
   final double fraction;
   final String label;
+}
+
+/// 画面比例：4:3 / 16:9 里的 4 和 16 指长边，竖屏视频按 3:4、9:16 显示。
+enum VideoFit {
+  auto('自动'),
+  stretch('拉伸'),
+  crop('裁切'),
+  fitWidth('等宽'),
+  fitHeight('等高'),
+  original('原始'),
+  ratio4x3('4:3'),
+  ratio16x9('16:9');
+
+  const VideoFit(this.label);
+
+  final String label;
+
+  Size size(Size box, Size video, double pixelRatio) {
+    final aspect = video.width / video.height;
+    double long(double ratio) => aspect < 1 ? 1 / ratio : ratio;
+    Size fit(double aspect, double Function(double, double) pick) {
+      final height = pick(box.height, box.width / aspect);
+      return Size(height * aspect, height);
+    }
+
+    return switch (this) {
+      auto => fit(aspect, math.min),
+      stretch => box,
+      crop => fit(aspect, math.max),
+      fitWidth => Size(box.width, box.width / aspect),
+      fitHeight => Size(box.height * aspect, box.height),
+      original => video / pixelRatio,
+      ratio4x3 => fit(long(4 / 3), math.min),
+      ratio16x9 => fit(long(16 / 9), math.min),
+    };
+  }
 }
 
 const danmakuScaleMin = .6;
@@ -53,6 +92,9 @@ class PlaybackPreferences {
     this.adBlock = true,
     this.enhancement = const VideoEnhancementPreferences(),
     this.televisionDecoder = TelevisionDecoder.optimized,
+    this.swipeEpisodes = false,
+    this.progressLine = true,
+    this.videoFit = VideoFit.auto,
   });
 
   final double speed;
@@ -74,6 +116,15 @@ class PlaybackPreferences {
   final VideoEnhancementPreferences enhancement;
   final TelevisionDecoder televisionDecoder;
 
+  /// 手机 / 平板横屏全屏时上下滑动切集；需先关闭「滑动调节亮度 / 音量」。
+  final bool swipeEpisodes;
+
+  /// 横屏播放时底部是否显示一条随进度走的细进度线。
+  final bool progressLine;
+
+  /// 画面比例，切换后全局记住。
+  final VideoFit videoFit;
+
   PlaybackPreferences copyWith({
     double? speed,
     int? quality,
@@ -91,6 +142,9 @@ class PlaybackPreferences {
     bool? adBlock,
     VideoEnhancementPreferences? enhancement,
     TelevisionDecoder? televisionDecoder,
+    bool? swipeEpisodes,
+    bool? progressLine,
+    VideoFit? videoFit,
   }) => PlaybackPreferences(
     speed: speed ?? this.speed,
     quality: quality ?? this.quality,
@@ -108,6 +162,9 @@ class PlaybackPreferences {
     adBlock: adBlock ?? this.adBlock,
     enhancement: enhancement ?? this.enhancement,
     televisionDecoder: televisionDecoder ?? this.televisionDecoder,
+    swipeEpisodes: swipeEpisodes ?? this.swipeEpisodes,
+    progressLine: progressLine ?? this.progressLine,
+    videoFit: videoFit ?? this.videoFit,
   );
 
   Map<String, dynamic> toJson() => {
@@ -127,6 +184,9 @@ class PlaybackPreferences {
     'adBlock': adBlock,
     'enhancement': enhancement.toJson(),
     'televisionDecoder': televisionDecoder.name,
+    'swipeEpisodes': swipeEpisodes,
+    'progressLine': progressLine,
+    'videoFit': videoFit.name,
   };
 
   factory PlaybackPreferences.fromJson(Map<String, dynamic> value) {
@@ -174,6 +234,10 @@ class PlaybackPreferences {
       televisionDecoder:
           TelevisionDecoder.values.asNameMap()[value['televisionDecoder']] ??
           TelevisionDecoder.optimized,
+      swipeEpisodes: value['swipeEpisodes'] as bool? ?? false,
+      progressLine: value['progressLine'] as bool? ?? true,
+      videoFit:
+          VideoFit.values.asNameMap()[value['videoFit']] ?? VideoFit.auto,
     );
   }
 }

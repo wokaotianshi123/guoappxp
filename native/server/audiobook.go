@@ -143,7 +143,7 @@ func handleAudiobookRanks(writer http.ResponseWriter, request *http.Request) {
 		board = 1
 	}
 	page, _ := strconv.Atoi(params.Get("page"))
-	data := abLibrary.query(board, "", "", page, audiobookPageSize)
+	data := abLibrary.query(abOriginAll, board, "", "", page, audiobookPageSize)
 	data["hasMore"] = abQueryHasMore(data)
 	writeJSON(writer, map[string]any{"ok": true, "data": data})
 }
@@ -158,7 +158,7 @@ func handleAudiobookSearch(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	page, _ := strconv.Atoi(request.URL.Query().Get("page"))
-	data := abLibrary.query(0, "", query, page, audiobookLibraryPage)
+	data := abLibrary.query(abOriginAll, 0, "", query, page, audiobookLibraryPage)
 	data["hasMore"] = abQueryHasMore(data)
 	writeJSON(writer, map[string]any{"ok": true, "data": data})
 }

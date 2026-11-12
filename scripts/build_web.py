@@ -10,12 +10,14 @@ import zipfile
 from pathlib import Path
 
 from app_build import go_build_tag_args
+from source_module import add_source_argument, configure
 
 root = Path(__file__).resolve().parents[1]
 native = root / 'native'
 parser = argparse.ArgumentParser(description='构建红果鉴 / 真果鉴本地服务版')
 parser.add_argument('--edition', action='append', choices=['hongguojian', 'zhenguojian'],
                     help='只构建指定版本；默认两个版本都构建')
+add_source_argument(parser)
 options = parser.parse_args()
 
 version = re.search(r'^version:\s*(\S+)', (root / 'pubspec.yaml').read_text(), re.MULTILINE).group(1)
@@ -57,7 +59,7 @@ def binary_name(slug, goos, goarch):
     return slug + '-macos-arm' if goarch == 'arm64' else slug + '-macos-intel'
 
 
-def build_binary(slug, all_sources, goos, goarch):
+def build_binary(slug, all_sources, goos, goarch, source_tags=()):
     name = binary_name(slug, goos, goarch)
     destination = root / 'build' / 'web' / name
     destination.parent.mkdir(parents=True, exist_ok=True)
@@ -65,7 +67,7 @@ def build_binary(slug, all_sources, goos, goarch):
         ' -X main.editionSlug=' + slug + ' -X main.appVersion=' + version
     build_environment = dict(environment, GOOS=goos, GOARCH=goarch)
     print('Building ' + name, flush=True)
-    subprocess.run([go, 'build', '-trimpath', *go_build_tag_args(), '-ldflags=' + flags,
+    subprocess.run([go, 'build', '-trimpath', *go_build_tag_args(), *source_tags, '-ldflags=' + flags,
                     '-o', str(destination), './server'],
                    cwd=native, env=build_environment, check=True)
     return destination, name
@@ -334,8 +336,10 @@ def package_edition(slug):
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
+    # 外置站源只接进真果鉴：红果鉴必须保持「红果 + 番茄」两个内置源。
+    source_tags = configure(native, options.sources) if is_all_sources(slug) else configure(native, [])
     for goos, goarch in targets:
-        source, name = build_binary(slug, is_all_sources(slug), goos, goarch)
+        source, name = build_binary(slug, is_all_sources(slug), goos, goarch, source_tags)
         target = staging / name
         shutil.copy2(source, target)
         target.chmod(0o755)
@@ -365,6 +369,8 @@ def package_edition(slug):
 
 
 archives = [package_edition(slug) for slug in editions]
+# 收尾清掉 go.work 与 sources_gen.go，避免残留影响后续的普通构建。
+configure(native, [])
 output = root / 'dist' / 'web'
 bundle_path = output / 'zhenguoweb.zip'
 bundle_path.unlink(missing_ok=True)

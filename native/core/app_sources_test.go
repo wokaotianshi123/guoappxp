@@ -49,6 +49,7 @@ func sourceFixtureEngine(t *testing.T, transport sourceFixtureTransport) *native
 }
 
 func TestSourceUpdatesPreservePagesOtherSourcesAndMetadata(t *testing.T) {
+	installAIFixture(t)
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		target := huangguoEdgeTarget(t, request)
 		if !strings.Contains(target.Path, "/api/videos/category/") {

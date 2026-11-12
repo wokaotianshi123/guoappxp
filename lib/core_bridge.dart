@@ -238,6 +238,9 @@ abstract class AppRepository {
   bool coverCached(Drama drama) => false;
   Future<DramaDetail> detail(Drama drama);
 
+  /// 同一系列的各季（按季号升序）。站源没有系列剧数据时返回空列表。
+  Future<List<DramaSeason>> seasons(Drama drama) async => const [];
+
   /// [route] 是上一次选中的线路序号（0 起）：切集、换清晰度时沿用它，
   /// 只有这一集没有这条线路时核心才会回落到第一条线路。
   Future<PlaybackPlan> resolve(
@@ -927,6 +930,14 @@ class NativeRepository extends AppRepository {
   Future<DramaDetail> detail(Drama drama) async => DramaDetail.fromJson(
     await _call({'action': 'detail', 'drama': drama.toJson()}),
   );
+  @override
+  Future<List<DramaSeason>> seasons(Drama drama) async {
+    final json = await _call({'action': 'seasons', 'drama': drama.toJson()});
+    return [
+      for (final row in json['items'] as List? ?? const [])
+        DramaSeason.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
+  }
   @override
   Future<PlaybackPlan> resolve(
     Drama drama,

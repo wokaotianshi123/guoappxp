@@ -430,6 +430,16 @@ body {
   width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
 }
 .ab-list-head .btn.mini.active { border-color: var(--accent); background: var(--accent); color: #fff; }
+/* 书源切换：红果听书（官方书城听书专辑）/ 番茄听书（畅听男女榜）。 */
+.ab-origin-row { display: flex; gap: 8px; margin-bottom: 8px; }
+.ab-origin-row .btn.mini { white-space: nowrap; }
+/* 有声书来源标签：真人录制 / AI 音色朗读。 */
+.ab-voice {
+  align-self: flex-start; margin: 2px 0 3px; padding: 1px 7px;
+  border-radius: 999px; font-size: 11px; border: 1px solid var(--line);
+}
+.ab-voice.real { color: #6ee7b7; border-color: rgba(110, 231, 183, .45); }
+.ab-voice.ai { color: #93c5fd; border-color: rgba(147, 197, 253, .45); }
 .ab-pager-row {
   display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
   justify-content: space-between; margin-top: 8px;

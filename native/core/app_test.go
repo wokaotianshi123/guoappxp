@@ -294,17 +294,22 @@ func TestHongguoDetailAndPlayableQuality(t *testing.T) {
 // 网页源（含 XBPQ 自定义源）/ 爱看机器人 / A123 都走 nativeDetail 的
 // default 分支。以前这条分支只从 GetHuangguoChapters 拿标题，详情层已经
 // 解析出的简介被丢掉，播放页「简介」与详情页资料区一直是「暂无简介」。
+// 站源外置后这条分支改由注册表转入站源实现，这里用一个假站源盯住透传。
 func TestNativeDetailKeepsWebSourceDescription(t *testing.T) {
-	d, server := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(writer, `<html><head><title>五五样本 - 在线观看</title>`+
-			`<meta name="description" content="网页源剧情简介"></head><body>`+
-			`<ul class="content__playlist playlink clearfix">`+
-			`<li><a href="/play/100-1-1.html">第1集</a></li>`+
-			`<li><a href="/play/100-1-2.html">第2集</a></li>`+
-			`</ul></body></html>`)
+	d, _ := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {})
+	RegisterSource(SourceDescriptor{ID: sourceWuguo, Name: "伍果"}, func(SourceHost) SourceProvider {
+		return stubDetailProvider{
+			drama: Drama{
+				ID: providerDramaID(sourceWuguo, "100"), Source: sourceWuguo, SourceID: "100",
+				Title: "五五样本", Name: "五五样本", Desc: "网页源剧情简介",
+			},
+			chapters: []Chapter{
+				{ID: providerChapterID(sourceWuguo, "100", "1"), Source: sourceWuguo, Title: "第1集", VideoURL: "https://media.example.test/1.mp4"},
+				{ID: providerChapterID(sourceWuguo, "100", "2"), Source: sourceWuguo, Title: "第2集", VideoURL: "https://media.example.test/2.mp4"},
+			},
+		}
 	})
-	d.providerHosts[sourceWuguo] = server.URL
+	t.Cleanup(func() { unregisterSource(sourceWuguo) })
 	engine := &nativeEngine{
 		downloader: d,
 		directory:  t.TempDir(),
@@ -341,6 +346,28 @@ func TestNativeDetailKeepsWebSourceDescription(t *testing.T) {
 	}
 }
 
+// stubDetailProvider 是测试用站源：只实现详情，其余方法不参与断言。
+type stubDetailProvider struct {
+	drama    Drama
+	chapters []Chapter
+}
+
+func (s stubDetailProvider) Categories() []NativeCategory { return nil }
+
+func (s stubDetailProvider) ValidCategory(string) bool { return true }
+
+func (s stubDetailProvider) CatalogPage(context.Context, int, string, string) ([]Drama, bool, error) {
+	return nil, false, nil
+}
+
+func (s stubDetailProvider) Detail(context.Context, string) (Drama, []Chapter, error) {
+	return s.drama, s.chapters, nil
+}
+
+func (s stubDetailProvider) ResolveMedia(context.Context, Task) (ProviderMedia, error) {
+	return ProviderMedia{}, nil
+}
+
 // XBPQ 规则里的「简介」等详情字段必须落到 Drama.Desc / Intro，
 // 否则 nativeNormalize 拿不到内容，播放器显示层再怎么改也没用。
 func TestXBPQDetailIntroFeedsDrama(t *testing.T) {
@@ -375,86 +402,5 @@ func TestXBPQDetailIntroFeedsDrama(t *testing.T) {
 	}
 	if got := nativeNormalize(drama).Description; got != "这是规则里的剧情简介" {
 		t.Fatalf("nativeNormalize 丢掉简介: %q", got)
-	}
-}
-
-// A123 的 w4 模板没有专门的简介字段，兜底用详情正文 / meta description。
-func TestA123DetailExtractsIntro(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(writer, `<html><head>`+
-			`<meta name="description" content="A123 剧情简介内容"></head><body>`+
-			`<h1>样本影片</h1>`+
-			`<div class="w4-player" data-poster="https://img.test/p.jpg" `+
-			`data-title="样本影片 - HD国语 - 线路1" data-src="https://cdn.test/1.m3u8"></div>`+
-			`<div class="w4-episode-list">`+
-			`<a href="/v/sample-slug/1.html" title="第1集">第1集</a>`+
-			`<a href="/v/sample-slug/2.html" title="第2集">第2集</a>`+
-			`</div></body></html>`)
-	}))
-	t.Cleanup(server.Close)
-	previous := a123SiteBaseURL
-	a123SiteBaseURL = server.URL
-	t.Cleanup(func() { a123SiteBaseURL = previous })
-	d := xbpqHeadersTestDownloader(t, server.Client())
-	drama, chapters, err := d.fetchA123Detail(context.Background(), "sample-slug")
-	if err != nil {
-		t.Fatalf("A123 详情失败: %v", err)
-	}
-	if len(chapters) != 2 {
-		t.Fatalf("A123 分集数 = %d, 期望 2", len(chapters))
-	}
-	if got := nativeNormalize(drama).Description; got != "A123 剧情简介内容" {
-		t.Fatalf("A123 简介没取到: %q", got)
-	}
-}
-
-// 爱看机器人同样走 default 分支：它的详情层本来就解析出了简介，
-// 修复前被 GetHuangguoChapters 丢掉，播放器只显示「暂无简介」。
-func TestNativeDetailKeepsIkanbotDescription(t *testing.T) {
-	token := strings.Repeat("abcdef0123", 7)
-	server := httptest.NewServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
-		if strings.HasPrefix(request.URL.Path, "/api/getResN") {
-			writer.Header().Set("Content-Type", "application/json")
-			_, _ = io.WriteString(writer, `{"state":1,"data":{"list":[{"siteId":1,"id":1,`+
-				`"resData":"[{\"flag\":\"q1\",\"url\":\"第1集$https://cdn.test/1.m3u8`+
-				`#第2集$https://cdn.test/2.m3u8\"}]"}]}}`)
-			return
-		}
-		writer.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = io.WriteString(writer, `<html><body>`+
-			`<h1 id="video_title">爱看样本</h1>`+
-			`<input type="hidden" id="current_id" value="12345"/>`+
-			`<input type="hidden" id="e_token" value="`+token+`"/>`+
-			`<h3 class="meta">爱看机器人剧情简介</h3>`+
-			`</body></html>`)
-	}))
-	t.Cleanup(server.Close)
-	previous := ikanbotSiteBaseURL
-	ikanbotSiteBaseURL = server.URL
-	t.Cleanup(func() { ikanbotSiteBaseURL = previous })
-	d := xbpqHeadersTestDownloader(t, server.Client())
-	engine := &nativeEngine{
-		downloader: d, directory: t.TempDir(), catalogs: map[string][]nativeDrama{},
-	}
-	reply, err := engine.nativeDetail(context.Background(), nativeDrama{
-		ID: "ikanbot:12345", Source: sourceIkanbot, SourceID: "12345",
-	})
-	if err != nil {
-		t.Fatalf("爱看机器人详情失败: %v", err)
-	}
-	result, ok := reply.(map[string]any)
-	if !ok {
-		t.Fatalf("详情返回类型 = %T", reply)
-	}
-	drama, ok := result["drama"].(nativeDrama)
-	if !ok {
-		t.Fatalf("drama 字段类型 = %T", result["drama"])
-	}
-	if !strings.Contains(drama.Description, "爱看机器人剧情简介") {
-		t.Fatalf("爱看机器人简介没传出来: %q", drama.Description)
-	}
-	if len(result["chapters"].([]Chapter)) != 2 {
-		t.Fatalf("爱看机器人分集丢失: %v", result["chapters"])
 	}
 }

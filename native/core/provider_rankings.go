@@ -144,31 +144,46 @@ func (d *Downloader) loadRankingPage(ctx context.Context, board rankingBoard, pa
 }
 
 func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, page int) (rankingPage, error) {
+	// 站源自带名次与指标文案时优先用它：站点榜单的名次未必等于返回顺序。
+	if provider, ok := d.sourceProvider(board.Source); ok {
+		if ranker, ok := provider.(SourceRankingEntries); ok {
+			key := firstNonEmpty(board.upstreamKey, board.path)
+			items, more, err := ranker.RankingEntries(ctx, key, page)
+			if err != nil {
+				return rankingPage{}, err
+			}
+			result := rankingPage{Items: make([]rankingItem, 0, len(items)), HasMore: more}
+			for _, item := range items {
+				result.Items = append(result.Items, rankingItem{Rank: item.Rank, Drama: item.Drama, Metric: item.Metric})
+			}
+			return result, nil
+		}
+	}
 	switch board.Source {
 	case sourceHongguo:
 		return d.fetchHongguoRankingPage(ctx, board, page)
 	case sourceHuangdou:
-		var decoded any
-		err := newHuangdouAPIClient(d).call(ctx, "/drama/rank", map[string]any{"tab": board.upstreamKey, "page": strconv.Itoa(page)}, &decoded)
+		provider, ok := d.sourceProvider(board.Source)
+		if !ok {
+			return rankingPage{}, errSourceNotCompiled
+		}
+		ranker, ok := provider.(SourceRankings)
+		if !ok {
+			return rankingPage{}, errors.New("该站源不支持榜单")
+		}
+		items, more, err := ranker.RankingPage(ctx, board.upstreamKey, page)
 		if err != nil {
 			return rankingPage{}, err
 		}
-		return parseHuangdouRanking(decoded, page)
-	case sourceHuangguoAI:
-		if page != 1 {
-			return rankingPage{}, errors.New("该榜单只有一页")
+		result := rankingPage{Items: make([]rankingItem, 0, len(items)), HasMore: more}
+		for index, drama := range items {
+			metric := ""
+			if drama.Heat != "" {
+				metric = drama.Heat + "热度"
+			}
+			result.Items = append(result.Items, rankingItem{Rank: (page-1)*20 + index + 1, Drama: drama, Metric: metric})
 		}
-		var ranking struct {
-			Items []map[string]any `json:"items"`
-		}
-		if err := d.huangguoAIAPI(ctx, "/api/ranks/"+board.path, &ranking); err != nil {
-			return rankingPage{}, err
-		}
-		page, err := parseHuangguoAIRanking(ranking.Items, d.providerBaseURL(sourceHuangguoAI)+"/")
-		if err != nil {
-			return rankingPage{}, fmt.Errorf("%s: %w", board.Name, err)
-		}
-		return page, nil
+		return result, nil
 	default:
 		return rankingPage{}, fmt.Errorf("不支持的榜单站源 %s", board.Source)
 	}

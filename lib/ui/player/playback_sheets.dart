@@ -142,6 +142,21 @@ class PlaybackSettings extends StatelessWidget {
                       ),
                   ],
           ),
+          const SizedBox(height: 18),
+          Text('画面比例', style: label),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final fit in VideoFit.values)
+                _Choice(
+                  label: fit.label,
+                  selected: fit == session.videoFit,
+                  onSelected: () => _change(() => session.setVideoFit(fit)),
+                ),
+            ],
+          ),
           if (!session.local) ...[
             const SizedBox(height: 18),
             Text('播放线路', style: label),

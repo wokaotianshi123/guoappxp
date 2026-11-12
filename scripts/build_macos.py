@@ -8,6 +8,7 @@ from pathlib import Path
 
 from app_build import BuildVariant, add_variant_argument
 from ffmpeg_frameworks import ensure_pods, package_path
+from source_module import add_source_argument, forward_arguments
 
 root = Path(__file__).resolve().parents[1]
 
@@ -65,8 +66,10 @@ def repair_media_kit(env):
 def main():
     parser = argparse.ArgumentParser(description='构建红果鉴 / 真果鉴 macOS 应用与 dmg')
     add_variant_argument(parser)
+    add_source_argument(parser)
     options = parser.parse_args()
     variant = BuildVariant(options.all_sources)
+    source_arguments = forward_arguments(options.sources)
     if platform.system() != 'Darwin':
         raise SystemExit('macOS 构建需要 macOS 与完整 Xcode。')
     env = toolchain_environment(developer_directory())
@@ -77,7 +80,7 @@ def main():
     if not pod:
         raise SystemExit('请先安装 CocoaPods（brew install cocoapods）。')
     run([sys.executable, root / 'scripts' / 'build_native.py', '--platform', 'darwin',
-         *variant.arguments], env)
+         *variant.arguments, *source_arguments], env)
     run([flutter, 'pub', 'get', '--enforce-lockfile'], env)
     # 同 iOS：ffmpeg_kit_flutter_new 的 macOS 框架也是 pod install 时按需下载，
     # 缓存命中时会被跳过，出包前先自己补上。

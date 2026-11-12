@@ -90,27 +90,6 @@ func TestHongguoRankingUsesDeclaredEpisodeCount(t *testing.T) {
 	}
 }
 
-func TestHuangdouRankingPreservesOrderAndMetrics(t *testing.T) {
-	rows := []any{
-		map[string]any{"id": "rp_first", "name": "低热度先返回", "hot_rate": "20", "click": "100"},
-		map[string]any{"id": "second", "name": "高热度后返回", "hot_rate": "1000", "click": "2"},
-	}
-	result, err := parseHuangdouRanking(map[string]any{"data": map[string]any{"list": rows}}, 2)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(result.Items) != 2 || result.Items[0].Rank != 21 || result.Items[0].Drama.ID != "huangdou:first" || result.Items[0].Drama.Heat != "20" || result.Items[0].Drama.Views != "100次播放" || result.HasMore {
-		t.Fatalf("wrong rank or source metric: %+v", result)
-	}
-	if _, err := parseHuangdouRanking(map[string]any{"error": "not a list"}, 1); err == nil {
-		t.Fatal("an upstream error cannot become an empty successful board")
-	}
-	result, err = parseHuangdouRanking(map[string]any{"list": []any{}}, 1)
-	if err != nil || len(result.Items) != 0 || result.HasMore {
-		t.Fatal("explicitly empty lists must be supported")
-	}
-}
-
 func TestHuangguoRankingStructuredData(t *testing.T) {
 	board, _ := findRankingBoard("huangguo-potential")
 	body := `<script type="application/ld+json">{"@graph":[{"@type":"BreadcrumbList","itemListElement":[]},{"@type":"ItemList","@id":"https://huangguoai.com/ranks/potential/#itemlist","itemListElement":[{"position":1,"name":"A & B","url":"https://huangguoai.com/detail/12/"},{"position":3,"name":"第二条","url":"https://huangguoai.com/detail/34/"}]}]}</script>`

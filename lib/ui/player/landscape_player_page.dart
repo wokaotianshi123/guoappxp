@@ -25,7 +25,7 @@ import 'playback_sheets.dart';
 import 'player_intro.dart';
 import 'player_surface.dart';
 
-enum _Panel { episodes, settings, speed, quality }
+enum _Panel { episodes, settings, speed, quality, fit }
 
 class LandscapePlayerPage extends StatefulWidget {
   const LandscapePlayerPage({
@@ -46,7 +46,11 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
     with WidgetsBindingObserver {
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final _selected = <int>{};
-  final _links = {_Panel.speed: LayerLink(), _Panel.quality: LayerLink()};
+  final _links = {
+    _Panel.speed: LayerLink(),
+    _Panel.quality: LayerLink(),
+    _Panel.fit: LayerLink(),
+  };
   Player? _bound;
   Timer? _hideTimer;
   Timer? _tapTimer;
@@ -66,7 +70,10 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
   _Panel? _panel;
   DateTime _now = DateTime.now();
   ({int level, bool charging})? _battery;
-  late final PlayerGestures _gestures = PlayerGestures(session: _session);
+  late final PlayerGestures _gestures = PlayerGestures(
+    session: _session,
+    swipeEpisodes: _session.store.playbackPreferences.swipeEpisodes,
+  );
 
   PlaybackSession get _session => widget.handle.session;
 
@@ -424,10 +431,12 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
           key: ValueKey(session.player),
           handle: widget.handle,
           player: session.player,
+          fit: session.videoFit,
         ),
         DanmakuOverlay(
           controller: session.danmaku,
-          aspectRatio: session.aspectRatio,
+          video: session.videoSize,
+          fit: session.videoFit,
           style: session.danmakuStyle,
         ),
         LayoutBuilder(
@@ -472,7 +481,9 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
             ),
           ),
         ),
-        if (full && !visible)
+        if (full &&
+            !visible &&
+            session.store.playbackPreferences.progressLine)
           Positioned(
             left: 0,
             right: 0,
@@ -753,6 +764,17 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
                   '倍速',
                   ready ? () => _openPanel(_Panel.speed) : null,
                   bold: true,
+                ),
+              ),
+              CompositedTransformTarget(
+                link: _links[_Panel.fit]!,
+                child: _icon(
+                  Icons.aspect_ratio_rounded,
+                  '画面比例 · ${session.videoFit.label}',
+                  () => _openPanel(_Panel.fit),
+                  color: session.videoFit == VideoFit.auto
+                      ? null
+                      : Theme.of(context).colorScheme.primary,
                 ),
               ),
               _icon(Icons.fullscreen_exit_rounded, '退出全屏', () => _rotate(true)),
@@ -1127,19 +1149,26 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
       borderRadius: BorderRadius.circular(12),
       child: Padding(
         padding: const EdgeInsets.all(6),
-        child: panel == _Panel.speed
-            ? _options<double>(
-                values: playbackSpeeds.reversed.toList(),
-                selected: session.speed,
-                label: (value) => '${value}x',
-                onSelected: (value) => _change(() => session.setSpeed(value)),
-              )
-            : _options<int>(
-                values: [...session.qualities, 0],
-                selected: session.quality,
-                label: (value) => value == 0 ? '自动' : '${value}P',
-                onSelected: (value) => _change(() => session.setQuality(value)),
-              ),
+        child: switch (panel) {
+          _Panel.speed => _options<double>(
+            values: playbackSpeeds.reversed.toList(),
+            selected: session.speed,
+            label: (value) => '${value}x',
+            onSelected: (value) => _change(() => session.setSpeed(value)),
+          ),
+          _Panel.fit => _options<VideoFit>(
+            values: VideoFit.values,
+            selected: session.videoFit,
+            label: (value) => value.label,
+            onSelected: (value) => _change(() => session.setVideoFit(value)),
+          ),
+          _ => _options<int>(
+            values: [...session.qualities, 0],
+            selected: session.quality,
+            label: (value) => value == 0 ? '自动' : '${value}P',
+            onSelected: (value) => _change(() => session.setQuality(value)),
+          ),
+        },
       ),
     );
   }

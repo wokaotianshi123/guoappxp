@@ -114,15 +114,27 @@ class SettingsSection extends StatelessWidget {
   };
 
   List<Widget> _danmaku(BuildContext context) {
+    final preferences = store.playbackPreferences;
     void savePreferences(PlaybackPreferences next) =>
         saveSetting(context, () => store.setPlaybackPreferences(next));
     return [
       SettingsCard(
         children: [
+          SwitchTile(
+            title: '显示弹幕',
+            subtitle: '与播放页的弹幕开关同步',
+            value: preferences.danmaku,
+            onChanged: (value) =>
+                savePreferences(preferences.copyWith(danmaku: value)),
+          ),
+        ],
+      ),
+      SettingsCard(
+        children: [
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 4, 16, 12),
             child: DanmakuSettings(
-              preferences: store.playbackPreferences,
+              preferences: preferences,
               save: savePreferences,
             ),
           ),
@@ -183,6 +195,27 @@ class SettingsSection extends StatelessWidget {
           if (Platform.isAndroid) const _RenderingTile(),
         ],
       ),
+      if ((Platform.isAndroid || Platform.isIOS) &&
+          AppScope.formFactorOf(context) != FormFactor.television)
+        SettingsCard(
+          children: [
+            SwitchTile(
+              title: '上下滑动切换剧集',
+              subtitle: '横屏全屏时上滑播放下一集，下滑播放上一集',
+              value: preferences.swipeEpisodes,
+              onChanged: (value) => savePreferences(
+                preferences.copyWith(swipeEpisodes: value),
+              ),
+            ),
+            SwitchTile(
+              title: '横屏底部进度线',
+              subtitle: '横屏全屏播控隐藏后，在画面底边保留一条细进度线',
+              value: preferences.progressLine,
+              onChanged: (value) =>
+                  savePreferences(preferences.copyWith(progressLine: value)),
+            ),
+          ],
+        ),
     ];
   }
 

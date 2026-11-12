@@ -6,11 +6,14 @@ import sys
 from pathlib import Path
 
 from app_build import BuildVariant, add_variant_argument
+from source_module import add_source_argument, forward_arguments
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 add_variant_argument(parser)
+add_source_argument(parser)
 options = parser.parse_args()
+source_arguments = forward_arguments(options.sources)
 variant = BuildVariant(options.all_sources)
 env = os.environ.copy()
 env.setdefault('GOPROXY', 'https://goproxy.cn,direct')
@@ -18,7 +21,7 @@ env.setdefault('GOSUMDB', 'off')
 flutter = shutil.which('flutter')
 if not flutter:
     raise SystemExit('请先将 Flutter SDK 的 bin 目录加入 PATH。')
-subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'windows', *variant.arguments],
+subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'windows', *variant.arguments, *source_arguments],
                cwd=root, env=env, check=True)
 subprocess.run([flutter, 'pub', 'get', '--enforce-lockfile'], cwd=root, env=env, check=True)
 subprocess.run([flutter, 'build', 'windows', '--release', '--no-pub', *variant.flutter_arguments], cwd=root, env=env, check=True)

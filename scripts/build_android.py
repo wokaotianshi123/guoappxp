@@ -7,13 +7,16 @@ import sys
 from pathlib import Path
 
 from app_build import BuildVariant, add_variant_argument
+from source_module import add_source_argument, forward_arguments
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
 parser.add_argument('--abi', action='append', choices=['arm64-v8a', 'armeabi-v7a', 'x86_64'])
 add_variant_argument(parser)
+add_source_argument(parser)
 options = parser.parse_args()
 variant = BuildVariant(options.all_sources)
+source_arguments = forward_arguments(options.sources)
 env = os.environ.copy()
 if platform.system() == 'Darwin':
     env['LANG'] = 'en_US.UTF-8'
@@ -24,7 +27,8 @@ flutter = shutil.which('flutter')
 if not flutter:
     raise SystemExit('请先将 Flutter SDK 的 bin 目录加入 PATH。')
 abi_args = [item for abi in options.abi or [] for item in ['--abi', abi]]
-subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'android', *abi_args, *variant.arguments],
+subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'android', *abi_args,
+                *variant.arguments, *source_arguments],
                cwd=root, env=env, check=True)
 subprocess.run([flutter, 'pub', 'get'], cwd=root, env=env, check=True)
 build_args = [flutter, 'build', 'apk', '--release', '--split-per-abi', '--no-pub', *variant.flutter_arguments]

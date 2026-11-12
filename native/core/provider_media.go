@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"net/url"
-	"strconv"
 	"strings"
 	"time"
 )
@@ -41,27 +40,23 @@ func (d *Downloader) providerBaseURL(source string) string {
 	case sourceYeguo:
 		configured, fallback = d.cfg.YeguoURL, yeguoBaseURL
 	case sourceJinguoDuanju:
-		configured, fallback = jinguoDuanjuContentSite(d.cfg.JinguoDuanjuURL), jinguoDuanjuBaseURL
+		configured, fallback = jinguoDuanjuContentSite(d.cfg.JinguoDuanjuURL), jinguoDuanjuSiteBaseURL
 	case sourceDSD:
 		configured, fallback = d.cfg.DSDURL, dsdBaseURL
 	case sourceSorani:
 		configured, fallback = d.cfg.SoraniURL, soraniSiteBaseURL
 	case sourceGuipian:
 		configured, fallback = d.cfg.GuipianURL, guipianSiteBaseURL
-	case sourceHanxiaoquan:
-		configured, fallback = d.cfg.HanxiaoquanURL, hanxiaoquanSiteBaseURL
 	case sourceIkanbot:
 		fallback = ikanbotSiteBaseURL
 	case sourceA123:
 		fallback = a123SiteBaseURL
 	case sourceFanqie:
-		configured, fallback = d.cfg.FanqieURL, fanqieDefaultBaseURL
+		configured, fallback = d.cfg.FanqieURL, fanqieBaseURL
 	case sourceXChina:
 		configured, fallback = d.cfg.XChinaURL, xchinaBaseURL
 	case sourceTheporny:
-		configured, fallback = d.cfg.ThepornyURL, thepornyHosts[0]
-	case sourceHeitao:
-		configured, fallback = d.cfg.HeitaoURL, heitaoBaseURL
+		configured, fallback = d.cfg.ThepornyURL, thepornyBaseURL
 	case sourceBeabox:
 		configured, fallback = d.cfg.BeaboxURL, beaboxBaseURL
 	default:
@@ -163,127 +158,21 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (provi
 	if chapter.Source == "" {
 		chapter.Source = sourceFromDramaID(task.DramaID)
 	}
-	if chapter.Source == sourceCloudFront {
-		return d.resolveLegacyMedia(ctx, task)
+	// 编译期接入的站源自己解析取流（抓当集播放页、算令牌、取线路表等），
+	// 不能落到下面按 chapter.VideoURL 直连的通用兜底。
+	if provider, ok := d.sourceProvider(chapter.Source); ok {
+		return provider.ResolveMedia(ctx, task)
 	}
-	if chapter.Source == sourceHuangju {
-		return d.resolveHuangjuMedia(ctx, task)
-	}
-	if chapter.Source == sourceYeguo {
-		return d.resolveYeguoMedia(ctx, task)
-	}
-	if chapter.Source == sourceJinguoDuanju {
-		return d.resolveJinguoDuanjuMedia(ctx, task)
-	}
-	if chapter.Source == sourceJinguo {
-		return d.resolveJinguoMedia(ctx, task)
-	}
-	if chapter.Source == sourceHeitao {
-		return d.resolveHeitaoMedia(ctx, task)
-	}
-	if chapter.Source == sourceBeabox {
-		return d.resolveBeaboxMedia(ctx, task)
-	}
-	if chapter.Source == sourceDSD {
-		return d.resolveDSDMedia(ctx, task)
-	}
-	if chapter.Source == sourceSorani {
-		return d.resolveSoraniMedia(ctx, task)
-	}
-	if chapter.Source == sourceGuipian {
-		return d.resolveGuipianMedia(ctx, task)
-	}
-	if chapter.Source == sourceHanxiaoquan {
-		return d.resolveHanxiaoquanMedia(ctx, task)
-	}
-	// 爱看机器人 / A123 / 短剧家族各有专用取流逻辑（抓当集播放页、算令牌、取 pp.la 等），
-	// 不能落到下面通用兜底：兜底按 chapter.VideoURL 直连解析，对 a123-play:// 前缀、
-	// 爱看一次性令牌这类地址会解不出有效播放地址，表现为「网页源视频均加载失败」。
-	if chapter.Source == sourceIkanbot {
-		return d.resolveIkanbotMedia(ctx, task)
-	}
-	if chapter.Source == sourceA123 {
-		return d.resolveA123Media(ctx, task)
-	}
-	if chapter.Source == sourceFanqie {
-		return d.resolveFanqieMedia(ctx, chapter, task.Quality)
-	}
-	if chapter.Source == sourceXChina {
-		return d.resolveXChinaMedia(ctx, task)
-	}
-	if chapter.Source == sourceTheporny {
-		return d.resolveThepornyMedia(ctx, task)
-	}
+	// 爱看机器人 / 短剧家族各有专用取流逻辑（抓当集播放页、算令牌、取 pp.la 等），
+	// 不能落到下面通用兜底：兜底按 chapter.VideoURL 直连解析，
+	// 这类地址会解不出有效播放地址，表现为「网页源视频均加载失败」。
 	if isDuanjuProviderSource(chapter.Source) {
 		return d.resolveDuanjuMedia(ctx, task)
 	}
 	if strings.HasPrefix(chapter.VideoURL, "hongguo-cenc://") {
 		return d.resolveHongguoMedia(ctx, task)
 	}
-	if chapter.PageURL == "" && (chapter.Source == sourceHuangguoAI || chapter.Source == sourceHuangguoVideo) {
-		if source, sourceID, valid := splitProviderDramaID(task.DramaID); valid {
-			_, chapters, err := d.GetHuangguoChapters(ctx, source, sourceID)
-			if err != nil {
-				return providerMedia{}, fmt.Errorf("刷新旧任务播放地址失败: %w", err)
-			}
-			matched := false
-			for _, fresh := range chapters {
-				if fresh.ID == chapter.ID {
-					chapter = fresh
-					matched = true
-					break
-				}
-			}
-			if !matched {
-				return providerMedia{}, fmt.Errorf("原章节已变化，请更新该合集后重新下载")
-			}
-		}
-	}
 	media := providerMedia{URL: chapter.VideoURL, Referer: firstNonEmpty(chapter.Referer, d.providerBaseURL(chapter.Source)+"/")}
-	if chapter.Source == sourceHuangdou {
-		_, sourceID, valid := splitProviderDramaID(task.DramaID)
-		if valid {
-			sequence, err := strconv.Atoi(chapter.EpisodeString(task.Index))
-			if err != nil || sequence < 1 {
-				return providerMedia{}, fmt.Errorf("黄豆集数无效")
-			}
-			client := newHuangdouAPIClient(d)
-			media, err = d.resolveHuangdouPlayback(ctx, client, sourceID, sequence)
-			if err != nil {
-				return providerMedia{}, err
-			}
-			media.Referer = client.host + "/home"
-		}
-	}
-	if chapter.Source == sourceHuangguoAI {
-		_, sourceID, valid := splitProviderDramaID(task.DramaID)
-		if !valid {
-			return providerMedia{}, fmt.Errorf("黄果剧集信息无效")
-		}
-		address, err := d.fetchHuangguoAIPlayURL(ctx, sourceID, chapterEpisodeNumber(chapter, task.Index))
-		if err != nil {
-			return providerMedia{}, err
-		}
-		media.URL = address
-	}
-	if chapter.PageURL != "" && chapter.Source == sourceHuangguoVideo {
-		responses := &playbackResponseURLs{}
-		pageContext := context.WithValue(ctx, playbackResponseURLsKey{}, responses)
-		body, err := d.fetchProviderText(pageContext, chapter.PageURL, media.Referer)
-		if err != nil {
-			return providerMedia{}, err
-		}
-		pageURL := chapter.PageURL
-		if actual, ok := responses.values.Load(chapter.PageURL); ok {
-			pageURL = actual.(string)
-		}
-		if chapter.Source == sourceHuangguoAI {
-			media.URL = parseAIVideoURL(body, pageURL)
-		} else {
-			media.URL = parseDataHLS(body, pageURL)
-		}
-		media.Referer = pageURL
-	}
 	if !isProviderHTTPMediaURL(media.URL) {
 		return providerMedia{}, fmt.Errorf("%s 未返回有效播放地址，请刷新章节或确认站点访问权限", chapter.Source)
 	}

@@ -10,6 +10,7 @@ import 'package:media_kit/media_kit.dart';
 import '../../app_device.dart';
 import '../../local_store.dart';
 import '../../models.dart';
+import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../app_scope.dart';
 import '../downloads/download_actions.dart';
@@ -184,12 +185,20 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   }
 
   void _endPinch() {
+    final from = _pinchFrom;
     _pinchFrom = null;
-    // 过半就吸附到「铺满」，否则退回完整画面，不要停在半路上。
+    // 双指张开 / 捏合不再只是临时放大，而是把结果记成画面比例：
+    // 过半即「裁切」，否则回「自动」，退出播放页后仍然保持。
+    final target = _zoom >= .4 ? VideoFit.crop : VideoFit.auto;
     setState(() {
       _pinching = false;
-      _zoom = _zoom >= .4 ? 1 : 0;
+      _zoom = 0;
     });
+    if (from != null && target != _session.videoFit) {
+      unawaited(_session.setVideoFit(target).catchError((Object _) => _saveFailed()));
+      unawaited(HapticFeedback.selectionClick());
+      _say(target == VideoFit.crop ? '画面比例：裁切，双指捏合恢复' : '画面比例：自动');
+    }
     // 捏合结束后短时间内不响应单击，避免误触暂停。
     _pinchTapGuard = DateTime.now().add(const Duration(milliseconds: 300));
   }
@@ -405,6 +414,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                   key: ValueKey(player),
                   handle: widget.handle,
                   player: player,
+                  fit: session.videoFit,
                 );
                 // 只有当前这一集跟随双指缩放的进度。
                 final zoom = current ? _zoom : 0.0;
@@ -444,7 +454,8 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
             DanmakuOverlay(
               key: const ValueKey('danmaku'),
               controller: session.danmaku,
-              aspectRatio: session.aspectRatio,
+              video: session.videoSize,
+          fit: session.videoFit,
               style: session.danmakuStyle,
             ),
             LayoutBuilder(

@@ -3588,6 +3588,8 @@ var audiobookState = {
   // 空串表示「全部」。
   category: '',
   categories: [],
+  // 书源：hongguo = 红果听书（官方书城听书专辑，默认），fanqie = 番茄听书（畅听男女榜）。
+  origin: 'hongguo',
   // 分类条与「全部分类」面板：面板状态要在书库轮询重绘后保持。
   allCategoriesOpen: false,
   revealCategory: false,
@@ -3813,6 +3815,10 @@ function abBooksHTML(books) {
     return '<button type="button" class="ab-card" data-index="' + index + '">' +
       '<span class="ab-cover">' + escapeHTML((book.title || '书').slice(0, 1)) + cover + '</span>' +
       '<span class="ab-meta"><span class="ab-title">' + escapeHTML(book.title) + '</span>' +
+      (book.voiceMode
+        ? '<span class="ab-voice ' + (book.voiceMode === '真人录音' ? 'real' : 'ai') +
+          '">' + escapeHTML(book.voiceMode) + '</span>'
+        : '') +
       '<span class="ab-sub">' + escapeHTML(book.author || '佚名') +
       (book.category ? ' · ' + escapeHTML(book.category) : '') + '</span>' +
       (book.intro ? '<span class="ab-intro">' + escapeHTML(book.intro) + '</span>' : '') +
@@ -3875,7 +3881,16 @@ function abListHeadHTML() {
     '<span class="ab-page-info">第 ' + audiobookState.page + ' / ' + audiobookState.pageCount + ' 页</span>' +
     '<button type="button" class="btn mini" id="ab-next-page"' + nextDisabled + '>下一页</button>' +
     '</span>';
+  var origins = '<div class="ab-origin-row">' +
+    '<button type="button" class="btn mini ab-origin' +
+      (audiobookState.origin === 'hongguo' ? ' active' : '') +
+      '" data-ab-origin="hongguo">红果听书</button>' +
+    '<button type="button" class="btn mini ab-origin' +
+      (audiobookState.origin === 'fanqie' ? ' active' : '') +
+      '" data-ab-origin="fanqie">番茄听书</button>' +
+    '</div>';
   return '<div class="ab-list-head">' +
+    origins +
     '<div class="ab-category-bar">' +
       '<div class="ab-category-row"><span class="ab-category-label">分类</span>' + categories + '</div>' +
       '<button type="button" class="btn mini ab-category-all' + (opened ? ' active' : '') +
@@ -3885,6 +3900,23 @@ function abListHeadHTML() {
     '</div>' +
     '<div class="ab-pager-row"><span class="ab-count">' + status + '</span>' + pager + '</div>' +
     '</div>';
+}
+
+// 切换书源：红果听书（官方书城听书专辑）↔ 番茄听书（畅听男女榜），
+// 书池、分类、搜索一起重置，避免把上一源的书单混进来。
+function abSelectOrigin(origin) {
+  if (audiobookState.origin === origin) { return; }
+  audiobookState.origin = origin;
+  audiobookState.category = '';
+  audiobookState.query = '';
+  audiobookState.shelf = false;
+  audiobookState.page = 1;
+  audiobookState.categories = [];
+  audiobookState.allCategoriesOpen = false;
+  var input = document.getElementById('ab-search-input');
+  if (input) { input.value = ''; }
+  renderAudiobookToolbar();
+  abLoadLibrary(1);
 }
 
 // 分类条与「全部分类」面板共用的切换逻辑：选中后立刻重新拉该分类第一页。
@@ -3949,6 +3981,11 @@ function abBindCategoryPanel(body) {
       abSelectCategory(index < 0 ? '' : (audiobookState.categories[index] || ''));
     });
   });
+  Array.prototype.forEach.call(body.querySelectorAll('.ab-origin'), function (button) {
+    button.addEventListener('click', function () {
+      abSelectOrigin(button.getAttribute('data-ab-origin'));
+    });
+  });
 }
 
 // 点击面板以外的地方收起面板；只注册一次，避免列表反复重绘叠加监听。
@@ -3994,6 +4031,7 @@ function abLoadLibrary(page) {
     board: audiobookState.board,
     category: audiobookState.category,
     q: audiobookState.query,
+    origin: audiobookState.origin,
     page: page,
     size: audiobookState.pageSize
   }).then(function (data) {

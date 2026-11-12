@@ -7,8 +7,6 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -67,8 +65,14 @@ func TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken(t *testing.T)
 	d.proxyRouter = &proxyRouter{}
 	d.client.Transport = newHuangguoBrowserTransport(http.DefaultTransport, d)
 	t.Cleanup(d.client.CloseIdleConnections)
-	task := Task{DramaID: "huangguo-video:video/fixture", Chapter: Chapter{ID: "fixture", Source: sourceHuangguoVideo, PageURL: "https://huangguo.video/video/fixture"}, Index: 1}
-	media, err := d.resolveProviderMedia(context.Background(), task)
+	// 黄果视频的取流已搬到站源，这里保留运行时原语（跳转后地址 + 播放列表预取）
+	// 的验证：站源正是靠它们拿到正确 Referer 与签名地址。
+	host := downloaderSourceHost{d: d}
+	body, finalURL, err := host.FetchTextFinal(context.Background(), "https://huangguo.video/video/fixture", server.URL+"/", "", "")
+	if err != nil {
+		t.Fatal("page fetch failed", err)
+	}
+	media, err := d.prepareWebProviderMedia(context.Background(), providerMedia{URL: parseDataHLS(body, finalURL), Referer: finalURL}, "黄果视频")
 	if err != nil || media.Referer != server.URL+"/video/fixture" || media.URL != server.URL+"/master.m3u8?signature=a%2Fb" {
 		t.Fatal("media resolve failed", err, media.URL, media.Referer)
 	}
@@ -101,7 +105,7 @@ func TestHuangguoMediaUsesBrowserSessionPageRefererAndPreviewToken(t *testing.T)
 	manager := newNativeDownloads(engine)
 	engine.downloads = manager
 	t.Cleanup(manager.close)
-	job := nativeDownloadJob{ID: "synthetic-job", Drama: nativeDrama{ID: task.DramaID, Source: sourceHuangguoVideo}, Index: 1}
+	job := nativeDownloadJob{ID: "synthetic-job", Drama: nativeDrama{ID: "huangguo-video:video/fixture", Source: sourceHuangguoVideo}, Index: 1}
 	result, err := manager.transferMedia(context.Background(), job, media)
 	if err != nil || result.file != "index.m3u8" {
 		t.Fatal("download did not reuse media chain", err)
@@ -144,48 +148,6 @@ func TestHuangguoPreviewTokenRefreshIsBoundedAndScoped(t *testing.T) {
 	}
 	if previews.Load() != 2 || keys.Load() != 3 {
 		t.Fatal("unexpected token renewal count", previews.Load(), keys.Load())
-	}
-}
-
-func TestLegacyPlaybackAndDownloadUseAuthenticatedPlaylistAndSourceKey(t *testing.T) {
-	var keys atomic.Int32
-	d := sourceFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
-		switch request.URL.Path {
-		case "/api/app/vid/h5/m3u8/opaque-video":
-			if request.URL.Query().Get("token") != "fixture-session" || request.URL.Query().Get("c") != defaultCDNURL {
-				t.Error("legacy playlist lost its own session")
-			}
-			return sourceFixtureResponse(request, 200, "#EXTM3U\n#EXT-X-KEY:METHOD=AES-128,URI=\"/api/app/vid/sec\"\n#EXTINF:4,\nsegment.ts\n#EXT-X-ENDLIST\n"), nil
-		case "/api/app/vid/sec":
-			keys.Add(1)
-			if request.Header.Get("Origin") != legacyFrontendURL || request.Header.Get("Referer") != legacyFrontendURL+"/" {
-				t.Error("legacy key lost source headers")
-			}
-			return sourceFixtureResponse(request, 200, "0123456789abcdef"), nil
-		case "/api/app/vid/h5/m3u8/segment.ts":
-			return sourceFixtureResponse(request, 200, "synthetic-segment"), nil
-		default:
-			t.Error("unexpected legacy resource", request.URL.Path)
-			return nil, errors.New("blocked")
-		}
-	})
-	d.cfg.APIBase = "https://legacy.example.test"
-	d.cfg.Token = "fixture-session"
-	d.cfg.InterfaceKey, d.cfg.ParamKey, d.cfg.ParamIV = fixtureLegacyProtocol.InterfaceKey, fixtureLegacyProtocol.ParamKey, fixtureLegacyProtocol.ParamIV
-	media, err := d.resolveProviderMedia(context.Background(), Task{DramaID: "cloudfront:fixture", Chapter: Chapter{Source: sourceCloudFront, VideoURL: "opaque-video"}})
-	if err != nil || media.Duration.Seconds() != 4 {
-		t.Fatal("legacy resolver failed", err)
-	}
-	engine := &nativeEngine{downloader: d, directory: d.cfg.dataDir}
-	manager := newNativeDownloads(engine)
-	engine.downloads = manager
-	t.Cleanup(manager.close)
-	result, err := manager.transferMedia(context.Background(), nativeDownloadJob{ID: "legacy-fixture"}, media)
-	if err != nil || result.file != "index.m3u8" || keys.Load() != 1 {
-		t.Fatal("legacy download failed", err, keys.Load())
-	}
-	if _, err := os.Stat(filepath.Join(manager.root, "legacy-fixture", "index.m3u8")); err != nil {
-		t.Fatal(err)
 	}
 }
 

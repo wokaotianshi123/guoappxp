@@ -15,7 +15,7 @@ import 'playback_handle.dart';
 import 'player_surface.dart';
 import 'player_video.dart';
 
-enum _Menu { speed, quality, route }
+enum _Menu { speed, quality, route, fit }
 
 /// 弹出菜单里每行的高度（选项 44 + 间距 2），用来把选中项滚进可视区。
 const _menuRowExtent = 46.0;
@@ -65,6 +65,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
   final _route = FocusNode(debugLabel: 'tv-player-route');
   final _speed = FocusNode();
   final _quality = FocusNode();
+  final _fit = FocusNode();
   final _retry = FocusNode();
   final _options = <FocusNode>[];
   final _episodeNodes = <FocusNode>[];
@@ -122,6 +123,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       _route,
       _speed,
       _quality,
+      _fit,
       _retry,
       ..._options,
       ..._episodeNodes,
@@ -295,6 +297,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     if (!_session.local) _route,
     _speed,
     _quality,
+    _fit,
   ];
 
   bool _enabled(FocusNode node) =>
@@ -302,6 +305,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       node == _next && _session.hasNext ||
       node == _speed && _session.ready ||
       node == _quality && _session.ready && !_session.local ||
+      node == _fit ||
       node == _route && _session.ready && !_session.local ||
       node == _adBlock && !_session.local ||
       node == _episodes ||
@@ -323,6 +327,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     _Menu.speed => playbackSpeeds.reversed.toList(),
     _Menu.quality => [..._session.qualities, 0],
     // 单线路也给出一条，用户至少能确认「本集只有一条线路」。
+    _Menu.fit => VideoFit.values,
     _Menu.route => List<int>.generate(
       _session.routeCount < 1 ? 1 : _session.routeCount,
       (index) => index,
@@ -333,12 +338,14 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     _Menu.speed => _session.speed,
     _Menu.quality => _session.quality,
     _Menu.route => _session.routeIndex,
+    _Menu.fit => _session.videoFit,
   };
 
   FocusNode _button(_Menu menu) => switch (menu) {
     _Menu.speed => _speed,
     _Menu.quality => _quality,
     _Menu.route => _route,
+    _Menu.fit => _fit,
   };
 
   void _openMenu(_Menu menu) {
@@ -373,6 +380,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
           _Menu.speed => _session.setSpeed(value as double),
           _Menu.quality => _session.setQuality(value as int),
           _Menu.route => _session.setRoute(value as int),
+          _Menu.fit => _session.setVideoFit(value as VideoFit),
         },
       ),
     );
@@ -593,10 +601,12 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                         key: ValueKey(_session.player),
                         handle: widget.handle,
                         player: _session.player,
+                        fit: _session.videoFit,
                       ),
                     DanmakuOverlay(
                       controller: _session.danmaku,
-                      aspectRatio: _session.aspectRatio,
+                      video: _session.videoSize,
+                fit: _session.videoFit,
                       style: _session.danmakuStyle,
                     ),
                     if (_session.loading) PlaybackLoading(session: _session),
@@ -727,6 +737,15 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                   _session.qualityLabel,
                   '清晰度',
                   () => _openMenu(_Menu.quality),
+                ),
+              ),
+              CompositedTransformTarget(
+                link: _links[_Menu.fit]!,
+                child: _pill(
+                  _fit,
+                  '比例 ${_session.videoFit.label}',
+                  '画面比例',
+                  () => _openMenu(_Menu.fit),
                 ),
               ),
             ],
@@ -1214,6 +1233,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       _Menu.speed => '${value}x',
       _Menu.quality => value == 0 ? '自动' : '${value}P',
       _Menu.route => '线路 ${(value as int) + 1}',
+      _Menu.fit => (value as VideoFit).label,
     };
     // 线路可能几十条：菜单高度封顶后交给滚动，选中项由 _scrollMenuTo 带进来。
     final maxHeight = (MediaQuery.sizeOf(context).height - 230)

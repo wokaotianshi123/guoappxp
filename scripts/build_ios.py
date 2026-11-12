@@ -11,6 +11,7 @@ from pathlib import Path
 
 from app_build import BuildVariant, add_variant_argument, go_build_tag_args
 from ffmpeg_frameworks import ensure_pods
+from source_module import add_source_argument, configure
 
 root = Path(__file__).resolve().parents[1]
 
@@ -51,12 +52,14 @@ def write_variant_config(variant):
                       f'APP_DISPLAY_NAME = {display}\n', encoding='utf-8')
 
 
-def build_core(simulator=False, variant=BuildVariant()):
+def build_core(simulator=False, variant=BuildVariant(), sources=()):
     if platform.system() != 'Darwin':
         raise SystemExit('iOS 构建需要 macOS 和完整 Xcode。')
     go = shutil.which('go')
     if not go:
         raise SystemExit('请安装 Go 1.24.1 或更新版本。')
+    # 生成 native/go.work 与 bridge/sources_gen.go；不传 --sources 时清掉上次残留。
+    source_tags = configure(root / 'native', sources)
     environment = os.environ.copy()
     environment.setdefault('GOPROXY', 'https://goproxy.cn,direct')
     environment.setdefault('GOSUMDB', 'off')
@@ -81,7 +84,7 @@ def build_core(simulator=False, variant=BuildVariant()):
             'GOOS': 'ios', 'GOARCH': architecture, 'CC': compiler,
             'CGO_CFLAGS': flags, 'CGO_LDFLAGS': flags,
         }
-        run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(),
+        run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(), *source_tags,
              '-ldflags=' + variant.linker_flags,
              '-o', str(output), './bridge'], cwd=root / 'native', env=build_env)
         shutil.copy2(output.with_suffix('.h'), headers / 'DuanjuCore.h')
@@ -107,10 +110,11 @@ def main():
     parser.add_argument('--simulator', action='store_true', help='额外生成模拟器核心；不启动模拟器')
     parser.add_argument('--export-options', type=Path, help='使用自己的 Xcode 签名配置导出 IPA')
     add_variant_argument(parser)
+    add_source_argument(parser)
     options = parser.parse_args()
     variant = BuildVariant(options.all_sources)
     write_variant_config(variant)
-    build_core(options.simulator, variant)
+    build_core(options.simulator, variant, options.sources)
     if options.core_only:
         return
     flutter = shutil.which('flutter')

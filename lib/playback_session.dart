@@ -52,6 +52,7 @@ class PlaybackSession extends ChangeNotifier {
     _quality = preferences.quality;
     _danmakuEnabled = preferences.danmaku;
     _adBlock = preferences.adBlock;
+    _videoFit = preferences.videoFit;
     // 换剧 / 重开播放器时沿用上次调过的音量；下限 1 防止旧存档里存了 0
     // 导致一进来就是静音。静音状态本身不落盘。
     _unmutedVolume = store.playerVolume.clamp(1.0, 100.0);
@@ -92,6 +93,7 @@ class PlaybackSession extends ChangeNotifier {
     final size = videoDisplaySize(player.state.videoParams);
     if (size != null) {
       _aspectRatio = size.width / size.height;
+      _videoSize = size;
       _aspectKnown = true;
     }
     _buffering(player.state.buffering);
@@ -127,6 +129,7 @@ class PlaybackSession extends ChangeNotifier {
         final size = videoDisplaySize(parameters);
         if (size == null || _closed) return;
         _aspectRatio = size.width / size.height;
+        _videoSize = size;
         _aspectKnown = true;
         _notify();
       }),
@@ -135,7 +138,9 @@ class PlaybackSession extends ChangeNotifier {
 
   final AppRepository repository;
   final LocalStore store;
-  final DramaDetail detail;
+
+  /// 当前播放的剧集详情。本季播完自动接下一季时会整体替换。
+  DramaDetail detail;
   Player _player;
   Player? _standby;
   late final DanmakuController danmaku;
@@ -169,6 +174,7 @@ class PlaybackSession extends ChangeNotifier {
   bool _pendingError = false;
   bool _boosting = false;
   bool _boostLocked = false;
+  bool _advancingSeason = false;
   bool _engaged;
   bool _staleAudio = false;
   bool _stalled = false;
@@ -194,6 +200,8 @@ class PlaybackSession extends ChangeNotifier {
   bool _adBlock = true;
   double _aspectRatio = 9 / 16;
   bool _aspectKnown = false;
+  Size? _videoSize;
+  VideoFit _videoFit = VideoFit.auto;
   double _resumePosition = 0;
   double _unmutedVolume = 100;
 
@@ -218,6 +226,8 @@ class PlaybackSession extends ChangeNotifier {
   bool get boostLocked => _boostLocked;
   double get aspectRatio => _aspectRatio;
   bool get aspectKnown => _aspectKnown;
+  Size? get videoSize => _videoSize;
+  VideoFit get videoFit => _videoFit;
   double get speed => _speed;
   int get quality => _quality;
   bool get local => _plan?.local == true;
@@ -272,6 +282,7 @@ class PlaybackSession extends ChangeNotifier {
     quality: _quality,
     danmaku: _danmakuEnabled,
     adBlock: _adBlock,
+    videoFit: _videoFit,
     autoAdvance: true,
     preload: true,
   );
@@ -403,6 +414,57 @@ class PlaybackSession extends ChangeNotifier {
     _queueRecovery('player_error');
   }
 
+  /// 详情页取到季列表后同步给会话，供「本季播完自动接下一季」使用。
+  /// 列表里没有当前这一季时忽略，避免把别的剧的季列表套上来。
+  void syncSeasons(List<DramaSeason> seasons) {
+    if (_closed ||
+        seasons.isEmpty ||
+        identical(seasons, detail.seasons) ||
+        !seasons.any((season) => season.drama.id == detail.drama.id)) {
+      return;
+    }
+    detail = DramaDetail(
+      detail.drama,
+      detail.episodes,
+      warning: detail.warning,
+      seasons: seasons,
+    );
+  }
+
+  Future<void> _playNextSeason() async {
+    final season = detail.nextSeason;
+    if (_advancingSeason || season == null || !_usable) return;
+    _advancingSeason = true;
+    final ticket = _generation;
+    DiaryService.add('[Play] 本季播完，切换到${season.label}');
+    _dropStandby();
+    _preloader.clear();
+    try {
+      await saveProgress();
+      final next = await repository.detail(season.drama);
+      if (!_current(ticket) || !_foreground) return;
+      if (next.episodes.isEmpty) throw AppFailure('下一季暂时没有可播放的分集');
+      detail = DramaDetail(
+        repository.catalogUpdates.current(season.drama).merge(next.drama),
+        next.episodes,
+        warning: next.warning,
+        seasons: detail.seasons,
+      );
+      _openedIndex = -1;
+      _index = 0;
+      _online = false;
+      _notify();
+      await play(0);
+    } catch (error) {
+      // 下一季可能还没上线：只记录，不弹错误打断用户。
+      DiaryService.add('[Play] 切换下一季失败：${_diagnostic(error)}');
+      _playIntent = false;
+      _notify();
+    } finally {
+      _advancingSeason = false;
+    }
+  }
+
   void _completed(bool completed) {
     if (!completed || _loading || _closed || !_acceptErrors || _error != null) {
       return;
@@ -413,6 +475,9 @@ class PlaybackSession extends ChangeNotifier {
       _queueRecovery('early_completion');
     } else if (_foreground && hasNext) {
       unawaited(play(_index + 1));
+    } else if (_foreground && detail.nextSeason != null) {
+      // 本季最后一集播完，自动接下一季第 1 集。
+      unawaited(_playNextSeason());
     } else {
       _playIntent = false;
       endBoost();
@@ -1071,6 +1136,23 @@ class PlaybackSession extends ChangeNotifier {
       position: currentPosition,
       playWhenReady: _error != null || player.state.playing,
     );
+  }
+
+  /// 画面比例只影响渲染，不重新取流；保存失败时回滚到上一个比例。
+  Future<void> setVideoFit(VideoFit value) async {
+    if (value == _videoFit) return;
+    final previous = _videoFit;
+    _videoFit = value;
+    _notify();
+    try {
+      await _savePreferences(_preferences);
+    } catch (_) {
+      if (_videoFit == value) {
+        _videoFit = previous;
+        _notify();
+      }
+      rethrow;
+    }
   }
 
   Future<void> toggleDanmaku() async {

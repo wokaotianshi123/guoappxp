@@ -4,12 +4,18 @@
 
 Flutter 多端独立短剧 / 影视应用
 
-## 最近更新（1.4.5+121）
+## 最近更新（1.6.0+123）
 
 完整历史见 [CHANGELOG.md](CHANGELOG.md)。
 
 > ⚠️ **包名已更换**：红果鉴 `com.guoapp.phoenix`、真果鉴 `com.guoapp.all`（Android / iPhone / iPad / macOS 统一）。旧版需手动卸载后重装，原有设置、追剧与下载记录不会自动迁移；两个变体现在可以同时安装。
 
+- **听书双书源：红果听书 / 番茄听书**：听书页顶部可切书源，默认「红果听书」。红果听书吃番茄畅听 / 红果同一后端的官方书城听书专辑（带主播、总集数、评分、真实分类），番茄听书吃畅听男女榜，两者书池独立不再混入。详情页新增「真人录音 / AI 朗读」标签与主播名。网页端同步支持 `origin` 参数与同样的书源切换。
+- **黄果 AI 取流修复**：播放地址改为宽松解析（字段改名、嵌套、多线路、base64 / hex 混淆都能还原）；会话失效自动换镜像重建一次，业务失败不重试；配置成镜像域名时也会展开全部备选域名。
+- **红果系列剧**：详情页选集上方新增「系列多季」卡片条，显示各季集数 / 观看进度 / 上线日期，点击切换，本季播完自动接下一季；季列表按归一化基础名 + 季单位分组，同名不同剧不会混在一起。
+- **画面比例与播放设置**：新增「自动 / 拉伸 / 裁切 / 等宽 / 等高 / 原始 / 4:3 / 16:9」八档画面比例，全局记住；手机在播放设置面板、横屏全屏与平板电脑在播放条比例按钮、电视在「比例」菜单里切换，弹幕区域跟随画面；手机竖屏双指张合在「裁切」和「自动」之间切换。设置 › 播放新增「上下滑动切换剧集」「横屏底部进度线」，设置 › 弹幕新增「显示弹幕」总开关。
+- **导航与发现**：手机底栏 / 平板侧栏新增「历史」（可在 设置 › 外观 关闭，电视不变）；发现页再点当前分类标签回到顶部。
+- **设备注册与平台修复**：域名被解析到 0.0.0.0 或系统 DNS 报不存在时改用 DoH 真实地址重连；Intel Mac 改用 Skia 渲染；Windows 便携版程序旁有 `userdata` 文件夹时数据全部存在这里。
 - **听书分类对齐视频分类交互**：App 端与本地服务版网页端的听书分类条改成与「发现」页一致的横向 tab，点击后内容跟随刷新、分类条自动滚到选中项并露出右侧后续分类；右侧常驻「全部分类」按钮，点开网格面板一次列出书池里全部真实分类（含「全部」）并可直接选中加载。分类仍来自实时书池与官方书城，未引入静态清单。
 - **听书接入番茄畅听官方书城（实时书库 + 官方分类）**：从 `fanqie.apk` 反编译出 `api.novelfm.com` 的书城接口（`aid=3040`，6 个一级分类 tab），App 端与本地服务版都改为在线拉取，不做静态快照。服务端每 10 分钟、App 端每次进听书页重新取数，书目按 `book_id` 累积去重，分类取官方 `popular_tags` 与书籍内嵌 `category_info`；官方书与原有番茄畅听榜单书池合并，实测合并后 2098 本、分类条从 24 个扩到 65 个且全部有书。请求仍由 Go 核心代发（白名单加 `api.novelfm.com`），单个源失败不影响其它源。
 - **本地服务版听书补齐分类与完整书库**：榜单接口固定每页 30 条且 `has_more` 恒 false，网页旧逻辑只能显示第一页 20 本；现在服务端后台抓全男/女两榜并缓存成一份全量书池（实测 2039 本，多个页面共享），支持按总页数翻页。新增 24 个来自 `category_v2` 的真实分类（选分类时跨男女两榜过滤），搜索改为在全量书库里按书名 / 分类 / 作者 / 简介匹配并排序，不再只覆盖榜单前几项；卡片补上真实封面与简介，列表上方显示分类条、分页控件与书库加载进度。
@@ -242,30 +248,59 @@ Go 侧跟引擎只走 loopback：`fanqieGetJSON` 先用应用统一传输（带�
 自愈；两边都失败时，提示里会同时带两条原始错误和 `fanqie_engine.log` 的最后一行
 （Rust 的 panic 只写这里，安卓没有 logcat），排障直接看那句提示。
 
+### 两套包与外置站源
+
+站源已经外置到私有仓库 `guoapp-sources`（`module guoapp/sources`），因此每次出包分两种：
+
+| 版本 | 内容 | 构建参数 |
+| --- | --- | --- |
+| 红果鉴（默认） | 只用 `native/core` 里的内置源：**红果、XBPQ、红果听书、番茄听书、直播** | 不加 `--sources` |
+| 真果鉴（全站源） | 内置源 + 外置仓库里的全部站源（30 个） | `--all-sources --sources ../guoapp-sources` |
+
+`--all-sources` 只决定「这是全站源版本」（界面开关、`buildAllSources` 标记、站源可见性），
+外置站源本身要靠 `--sources` 编进来；两个参数要一起给，否则真果鉴会只剩内置源。
+
+实际出包走 GitHub Actions（本机不需要装 Xcode / NDK）：
+
+- 仓库 Secrets 增加 `SOURCES_DEPLOY_KEY`：给私有仓库 `wokaotianshi123/guoapp-sources`
+  配一个**只读 Deploy Key**，把私钥整段贴进去；可选仓库变量 `SOURCES_REPOSITORY` 覆盖仓库地址。
+- 手动运行 **Build app packages**，用 `with_ios` / `with_macos` / `full_variants` 控制平台与版本数量。
+  红果鉴与真果鉴在 Android / Windows 上是矩阵里的两个条目；iOS / macOS 在同一 job 内顺序构建；
+  本地服务版一次出两个 zip（`hongguojian.zip` / `zhenguojian.zip`，合集 `zhenguoweb.zip`）。
+- 工作流按变体决定是否检出站源仓库：红果鉴那一路完全不碰私有仓库，真果鉴那一路检出到
+  `guoapp-sources/` 并传 `--sources guoapp-sources`；缺 Secret 时直接给出明确报错。
+- `scripts/check_web.py` 会分别校验：红果鉴只有 `hongguo` + `fanqie` 两个源，真果鉴至少 10 个源。
+
+本地复现同样的包（需要对应平台工具链）：
+
 ~~~sh
-python3 scripts/build_android.py                 # 红果鉴
-python3 scripts/build_android.py --all-sources   # 真果鉴
+# Android：红果鉴 / 真果鉴
+python3 scripts/build_android.py
+python3 scripts/build_android.py --all-sources --sources ../guoapp-sources
 python3 scripts/build_android.py --abi arm64-v8a
-python scripts/build_windows.py [--all-sources]
+
+# Windows：红果鉴 / 真果鉴
+python scripts/build_windows.py
+python scripts/build_windows.py --all-sources --sources ../guoapp-sources
 ~~~
 
 ~~~sh
 python3 scripts/build_ios.py
-python3 scripts/build_ios.py --all-sources
+python3 scripts/build_ios.py --all-sources --sources ../guoapp-sources
 python3 scripts/build_ios.py --core-only [--simulator]
 python3 scripts/build_ios.py --export-options /path/to/ExportOptions.plist
 ~~~
 
 ~~~sh
 python3 scripts/build_macos.py                   # 红果鉴（arm64 + x86_64 通用 dmg）
-python3 scripts/build_macos.py --all-sources     # 真果鉴
-python3 scripts/build_native.py --platform darwin  # 只编 macOS 核心（lipo 成 macos/DuanjuCore/libDuanjuCore.a）
+python3 scripts/build_macos.py --all-sources --sources ../guoapp-sources
+python3 scripts/build_native.py --platform darwin --sources ../guoapp-sources  # 只编 macOS 核心
 ~~~
 
 ~~~sh
-python3 scripts/build_web.py                     # 两版都构建
+python3 scripts/build_web.py --sources ../guoapp-sources   # 两版都构建（站源只进真果鉴）
 python3 scripts/build_web.py --edition hongguojian
-python3 scripts/build_web.py --edition zhenguojian
+python3 scripts/build_web.py --edition zhenguojian --sources ../guoapp-sources
 python3 scripts/check_web.py                     # 出包前自检：真跑起来打一遍接口
 ~~~
 
@@ -303,7 +338,8 @@ go test -race -ldflags="-X duanjuapp/native/core.buildAllSources=true" ./...
 | 目录 | 内容 |
 | --- | --- |
 | `lib` | 页面、播放器、本地用户、FFI、下载和媒体处理 |
-| `native/core`、`native/bridge` | 独立站源核心、缓存、下载、目录迁移及 C ABI |
+| `native/core`、`native/bridge` | 站源运行时（接口、缓存、下载、目录迁移）及 C ABI |
+| `../guoapp-sources` | 外置站源模块（不入库，`--sources` 接入；示例见上文站源模块） |
 | `native/server` | 本地服务版（Go HTTP 服务 + 内嵌网页前端，含直播代发），由 `scripts/build_web.py` 构建 |
 | `android`、`windows`、`ios` | 平台工程与必要资源 |
 | `assets/video_enhancement`、`packages/media_kit_libs_windows_video` | 增强 Shader 与许可、固定 Windows 媒体依赖插件 |
@@ -311,6 +347,38 @@ go test -race -ldflags="-X duanjuapp/native/core.buildAllSources=true" ./...
 | `test` | 自动化测试 |
 
 ## 站源开发约定
+
+### 站源模块（外置）
+
+站源可以外置成独立 Go 模块，编译期接入，不进本仓库：
+
+~~~bash
+# 本机约定：站源仓库与 guoappxp 平级
+python scripts/build_native.py --platform windows --sources ../guoapp-sources
+# 可多次指定，同时接入多个站源模块
+python scripts/build_native.py --platform windows --sources ../guoapp-sources --sources ../my-sources
+~~~
+
+脚本会生成两个**不入库**的文件：`native/go.work`（工作区，列出本仓库与站源模块）和 `native/bridge/sources_gen.go`（空导入站源模块，带 `sources` 编译标签）。不传 `--sources` 时这两个文件会被删除，构建出的是不含站源的版本，站源调用返回「该站源未编入当前版本」。
+
+站源模块的写法：
+
+- 任意路径的 Go 模块，`go.mod` 里 `module` 自取（如 `guoapp/sources`），**不要** `require duanjuapp/native`；构建脚本生成的 `go.work` 负责解析。
+- 实现 `core.SourceProvider`：`Categories`、`ValidCategory`、`CatalogPage`、`Detail`、`ResolveMedia`；在 `init` 里用 `core.RegisterSource(描述符, 工厂)` 登记。
+- 只能经 `core.SourceHost` 访问运行时：`BaseURL` / `ConfigURL` / `ConfigAPIURL`（站点与接口地址）、`StateDir`（落盘登录态/访客会话）、`RememberHost`（换线后回报可用站点）、`LegacySettings` / `APIEndpoint` / `ResetAPIEndpoint` / `FetchMediaPlaylist`（legacy 家族的账号配置、接口域名轮换与播放列表解析）、`FetchTextFinal`（取回跟随重定向后的最终地址，播放页跳域名时当 Referer 用）、`PostJSON`（POST JSON 载荷，黄果 AI 的信封接口用它）、`ForgetHost`（会话失效时让运行时换镜像）、`FetchText` / `FetchPage`（可带 UA 与 Cookie）、`PrepareWebMedia`、`DoPrepared`、`HTTPClient` / `Limiter` / `CatalogResponseError`（标准请求与限流）、`BrowserPostJSON`（Chrome 指纹 + 独立 Cookie 会话）、`DuanjuBaseURL` / `DuanjuJSON` / `DuanjuDo`（短剧接口）、`MaccmsCatalogPage` / `MaccmsDetail` / `MaccmsSearch`（MacCMS 引擎）、`DuanjuResolveMedia`（通用取流）；不要自建 `http.Client`，代理、限流、重试、DNS 都由运行时统一处理。
+- 站源可按需实现可选接口：`core.SourceAccount`（账号登录）、`core.SourceRankings`（榜单，名次按位置算）、`core.SourceRankingEntries`（榜单，站点自带名次与指标文案，如黄果）、`core.SourceCategoryLess`（本来就没有分类，如黄豆 / 番茄）。
+- 需要账号的站源额外实现 `core.SourceAccount`（`Account(ctx, command, input json.RawMessage)`）；「需要登录 / 登录失效」用 `core.ErrSourceLoginRequired` / `core.ErrSourceLoginExpired` 包装，运行时会把错误码回成 `source_login`。
+- legacy 家族（黄果 / 云栈 / 禁果）的 AES 协议与宽松解码由 core 导出：`LegacyCipher`、`LegacyEnvelope`、`LegacyDetail`、`LegacyTabList`、`LegacyCoverURL`、`IsLegacySessionExpired`。
+- `ValidCategory` 里不要再调 `core.ValidNativeCategory`：运行时会用无 Host 探针调站源，回头查注册表会绕回自己形成无限递归。
+- 站源自己的状态（线路缓存、会话、令牌、详情缓存）放在站源结构体里，不要往 `Downloader` 加字段。
+- 目前已外置（共 30 个）：A123、鬼片网、爱看机器人、XChina、河果、芽果、猫果、饭果、观果、星果、牛果、花果、发果、伍果、网果、黑桃、韩小圈、Theporny、剧果、野果、禁果、禁果短剧、青空、帝果、笔盒、黄豆、番茄、黄果旧版（legacy）、黄果视频、黄果 AI。
+- 尚未外置（仍在 `native/core`）：红果。它的剧库缓存、推荐流、弹幕与设备库都在 `nativeEngine` 里，要先抽 `SourceCatalogState` / `SourceDanmaku` / `SourceDevices` 三类运行态接口。
+- 黄果家族的 HTML 解析（卡片 / 详情 / 分集 / data-hls）仍留在 `native/core/source_huangguo_parsers.go`：黄果 AI 与「排序详情」模块共用同一套正则，站源通过 `core.ParseHuangguoVideoCards` 等入口调用，不复制私有助手。
+- XBPQ 规则源、自定义 MacCMS 源的导入与设置、站点分析器，以及它们共用的 MacCMS 解析引擎保留在 `native/core`（外置站源同样经 `SourceHost` 调用这套引擎）。
+- `ValidCategory` 必须是纯函数：core 在校验分类时会用一个不带 Host 的探针实例调用它。
+- 编译标签为 `sources`，所以站源模块里的测试用 `go test guoapp/sources`（在 `native/` 目录、生成 go.work 之后执行）。
+
+### 内嵌站源（尚未外置）
 
 站源是 Go 原生 provider（`native/core/provider_*.go`），不是运行期加载的 Python 源。新增站源需接入：`provider_huangguo.go`（常量 / 白名单 / `canonicalProviderSource` / `GetHuangguoChapters`）、`provider_media.go`（baseURL / host 反查 / 播放分派）、`app_categories.go`、`app_cover_metadata.go`、`app_runtime.go`（Config 字段 + 目录 / 搜索 / 详情分派 + 空页放行），并在 `lib/models.dart` 登记 `SourceSite`。
 

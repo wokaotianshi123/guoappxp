@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
-	"net/url"
 	"os"
 	"path/filepath"
 	"runtime/debug"
@@ -55,51 +54,25 @@ type Config struct {
 }
 
 type Downloader struct {
-	rankings              rankingCache
-	cfg                   Config
-	client                *http.Client
-	huangdouDetails       map[string]huangdouDetailEntry
-	huangdouDetailPending map[string]*huangdouDetailCall
-	ikanbotLineCache      map[string]ikanbotLineEntry
-	ikanbotLinePending    map[string]*ikanbotLineCall
-	providerMu            sync.Mutex
-	providerHosts         map[string]string
-	beaboxMu              sync.Mutex
-	beaboxLoaded          bool
-	beaboxSite            string
-	beaboxPool            []string
-	beaboxPoolNext        time.Time
-	beaboxDiscoverMu      sync.Mutex
-	limiter               *requestLimiter
-	proxyRouter           *proxyRouter
-	browserTransport      *huangguoBrowserTransport
-	hongguoOnce           sync.Once
-	hongguo               *hongguoAppClient
-	fanqieMu              sync.Mutex
-	fanqieFeeds           map[int]*fanqieFeedState
-	xchinaOnce            sync.Once
-	xchinaCore            *xchinaClient
-	thepornyOnce          sync.Once
-	thepornyCore          *thepornyClient
-	huangjuOnce           sync.Once
-	huangju               *huangjuAPIClient
-	yeguoOnce             sync.Once
-	yeguo                 *yeguoAPIClient
-	jinguoDuanjuOnce      sync.Once
-	jinguoDuanju          *jinguoDuanjuAPIClient
-	jinguoOnce            sync.Once
-	jinguo                *jinguoAPIClient
-	soraniOnce            sync.Once
-	sorani                *soraniAPIClient
-	dsdCatalog            dsdCatalogState
-	diagnostics           *diagnosticLog
-	apiMu                 sync.Mutex
-	apiBase               string
-	apiFailures           map[string]time.Time
-	legacyOnce            sync.Once
-	legacy                *legacyAPIClient
-	previewMu             sync.Mutex
-	previewSessions       map[string]*huangguoPreviewSession
+	rankings      rankingCache
+	cfg           Config
+	client        *http.Client
+	providerMu    sync.Mutex
+	providerHosts map[string]string
+	// 编译期接入的站源实现按站源 ID 缓存（见 source_api.go）。
+	sourceProviderMu sync.Mutex
+	sourceProviders  map[string]SourceProvider
+	limiter          *requestLimiter
+	proxyRouter      *proxyRouter
+	browserTransport *huangguoBrowserTransport
+	hongguoOnce      sync.Once
+	hongguo          *hongguoAppClient
+	diagnostics      *diagnosticLog
+	apiMu            sync.Mutex
+	apiBase          string
+	apiFailures      map[string]time.Time
+	previewMu        sync.Mutex
+	previewSessions  map[string]*huangguoPreviewSession
 }
 
 func defaultConfig() Config { return Config{MaxPagesPerSort: 50, PageSize: 30, Retries: 2} }
@@ -159,7 +132,7 @@ type nativeInput struct {
 	Sequence        int64                   `json:"sequence"`
 	Force           bool                    `json:"force"`
 	AdBlock         *bool                   `json:"adBlock"`
-	Account         soraniAccountInput      `json:"account"`
+	Account         json.RawMessage         `json:"account"`
 	CacheDirectory  string                  `json:"cacheDirectory"`
 	// 下载列表增量：Since 是上次拿到的列表指纹，列表没变化时核心只回指纹。
 	Since string `json:"since"`
@@ -373,7 +346,7 @@ func NativeRequest(raw string) (result string) {
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
-		if errors.Is(err, errSoraniLoginRequired) || errors.Is(err, errSoraniLoginExpired) {
+		if errors.Is(err, ErrSourceLoginRequired) || errors.Is(err, ErrSourceLoginExpired) {
 			envelope["code"] = "source_login"
 		}
 		var backoff *requestBackoff
@@ -554,6 +527,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.prepareCover(ctx, input.Drama)
 	case "detail":
 		return engine.nativeDetail(ctx, input.Drama)
+	case "seasons":
+		return engine.nativeSeasons(ctx, input.Drama)
 	case "metadata":
 		return engine.nativeMetadata(ctx, input.Drama)
 	case "followCheck":
@@ -608,8 +583,18 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 会忽略上一次失败留下的暂停窗口。
 	case "hongguoDevices":
 		return engine.hongguoDevices(ctx, input.Command == "register")
+	// soraniAccount：站源账号能力（登录 / 验证码 / 登出）。具体语义由站源自己定义，
+	// 运行时只按 action 找到站源并把 command 与 account 原样转过去。
 	case "soraniAccount":
-		return engine.downloader.soraniAccount(ctx, input.Command, input.Account)
+		provider, ok := engine.downloader.sourceProvider(sourceSorani)
+		if !ok {
+			return nil, errSourceNotCompiled
+		}
+		account, ok := provider.(SourceAccount)
+		if !ok {
+			return nil, errors.New("当前版本的青空次元不支持账号登录")
+		}
+		return account.Account(ctx, input.Command, input.Account)
 	case "addCustomSource":
 		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
 		if err != nil {
@@ -713,96 +698,66 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	}
 	var items []Drama
 	var err error
-	switch source {
-	case sourceFanqie:
-		items, result.HasMore, err = d.fetchFanqieCatalogPage(ctx, category, page)
-	case sourceHongguo:
-		if strings.HasPrefix(category, hongguoTagPrefix) {
-			items, result.HasMore, err = d.fetchHongguoTagPage(ctx, category, page)
-			break
-		}
-		engine.mu.Lock()
-		known := make(map[string]bool, len(engine.catalogs[cacheKey]))
-		for _, drama := range engine.catalogs[cacheKey] {
-			known[drama.ID] = true
-		}
-		engine.mu.Unlock()
-		ctx = context.WithValue(ctx, libraryKnownKey{}, known)
-		if page > 1 {
-			ctx = context.WithValue(ctx, libraryMoreKey{}, true)
-		}
-		items, err = d.fetchHongguoAppCatalogCategory(ctx, category)
-		state := d.hongguoCatalogSnapshot()
-		result.hongguo = state
-		result.HasMore = hongguoCatalogHasMore(state)
-		if category != "" && state != nil {
-			result.HasMore = !state.Feeds["category:"+category].Exhausted
-		}
-		if len(items) == 0 && err != nil && ctx.Err() == nil && (category == "" || category == "short_play") {
-			var totalPages int
-			items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
-			result.HasMore = page < totalPages
-		}
-	case sourceHuangdou:
-		client := newHuangdouAPIClient(d)
-		var decoded any
-		err = client.call(ctx, "/drama/list", map[string]any{"page": strconv.Itoa(page), "page_size": "30"}, &decoded)
-		if err == nil {
-			rows := huangdouList(decoded)
-			for _, row := range rows {
-				if drama := huangdouDramaFromMap(row); drama.ID != "" {
-					items = append(items, drama)
-				}
+	if provider, ok := engine.downloader.sourceProvider(source); ok {
+		items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+	} else {
+		switch source {
+		case sourceHongguo:
+			if strings.HasPrefix(category, hongguoTagPrefix) {
+				items, result.HasMore, err = d.fetchHongguoTagPage(ctx, category, page)
+				break
 			}
-			result.HasMore = len(rows) >= 30
-		}
-	case sourceHuangguoAI:
-		items, result.HasMore, err = d.fetchHuangguoAICatalogPage(ctx, page, category)
-	case sourceHuangju:
-		items, result.HasMore, err = d.fetchHuangjuCatalogPage(ctx, page, category, "")
-	case sourceYeguo:
-		items, result.HasMore, err = d.fetchYeguoCatalogPage(ctx, page, category, "")
-	case sourceJinguoDuanju:
-		items, result.HasMore, err = d.fetchJinguoDuanjuCatalogPage(ctx, page, category, "")
-	case sourceJinguo:
-		items, result.HasMore, err = d.fetchJinguoCatalogPage(ctx, page, category, "")
-	case sourceHeitao:
-		items, result.HasMore, err = d.fetchHeitaoCatalogPage(ctx, page, category, "")
-	case sourceBeabox:
-		items, result.HasMore, err = d.fetchBeaboxCatalogPage(ctx, page, category, "")
-	case sourceDSD:
-		items, result.HasMore, err = d.fetchDSDCatalogPage(ctx, page, category, "")
-	case sourceSorani:
-		items, result.HasMore, err = d.fetchSoraniCatalogPage(ctx, page, category, "")
-	case sourceGuipian:
-		items, result.HasMore, err = d.fetchGuipianCatalogPage(ctx, page, category, "")
-	case sourceHanxiaoquan:
-		items, result.HasMore, err = d.fetchHanxiaoquanCatalogPage(ctx, page, category, "")
-	case sourceHuangguoVideo:
-		address := fmt.Sprintf("%s/videos?page=%d", d.providerBaseURL(source), page)
-		if category != "" {
-			address += "&category=" + url.QueryEscape(category)
-		}
-		var body string
-		body, err = d.fetchProviderText(ctx, address, d.providerBaseURL(source)+"/")
-		if err == nil {
-			items = parseHuangguoVideoCards(body, address)
-		}
-		result.HasMore = len(items) >= 20
-	case sourceCloudFront:
-		items, result.HasMore, err = d.fetchLegacyCatalogCategoryPage(ctx, page, category)
-	case sourceIkanbot:
-		items, result.HasMore, err = d.fetchIkanbotCatalogPage(ctx, page, category, "")
-	case sourceA123:
-		items, result.HasMore, err = d.fetchA123CatalogPage(ctx, page, category, "")
-	case sourceXChina:
-		items, result.HasMore, err = d.fetchXChinaCatalogPage(ctx, page, category, "")
-	case sourceTheporny:
-		items, result.HasMore, err = d.fetchThepornyCatalogPage(ctx, page, category, "")
-	default:
-		// 短剧家族与自定义 MacCMS 源共用同一套目录抓取（isDuanjuProviderSource 已含自定义源）。
-		if isDuanjuProviderSource(source) {
-			items, result.HasMore, err = d.fetchDuanjuCatalogPage(ctx, source, page, category)
+			engine.mu.Lock()
+			known := make(map[string]bool, len(engine.catalogs[cacheKey]))
+			for _, drama := range engine.catalogs[cacheKey] {
+				known[drama.ID] = true
+			}
+			engine.mu.Unlock()
+			ctx = context.WithValue(ctx, libraryKnownKey{}, known)
+			if page > 1 {
+				ctx = context.WithValue(ctx, libraryMoreKey{}, true)
+			}
+			items, err = d.fetchHongguoAppCatalogCategory(ctx, category)
+			state := d.hongguoCatalogSnapshot()
+			result.hongguo = state
+			result.HasMore = hongguoCatalogHasMore(state)
+			if category != "" && state != nil {
+				result.HasMore = !state.Feeds["category:"+category].Exhausted
+			}
+			if len(items) == 0 && err != nil && ctx.Err() == nil && (category == "" || category == "short_play") {
+				var totalPages int
+				items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
+				result.HasMore = page < totalPages
+			}
+		case sourceGuipian:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceIkanbot:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceA123:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceXChina:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+			} else {
+				err = errSourceNotCompiled
+			}
+		default:
+			// 短剧家族与自定义 MacCMS 源共用同一套目录抓取（isDuanjuProviderSource 已含自定义源）。
+			if isDuanjuProviderSource(source) {
+				items, result.HasMore, err = d.fetchDuanjuCatalogPage(ctx, source, page, category)
+			}
 		}
 	}
 	if err != nil && len(items) == 0 {
@@ -835,37 +790,30 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	var raw Drama
 	var chapters []Chapter
 	var err error
-	switch source {
-	case sourceHuangguoAI:
-		raw, chapters, err = engine.downloader.fetchHuangguoAIDetail(ctx, sourceID)
-	case sourceHuangguoVideo:
-		raw, chapters, err = engine.downloader.fetchHuangguoVideoDetail(ctx, sourceID)
-	case sourceCloudFront:
-		raw, chapters, err = engine.downloader.fetchLegacyDetail(ctx, sourceID)
-	case sourceHuangju:
-		raw, chapters, err = engine.downloader.fetchHuangjuDetail(ctx, sourceID)
-	case sourceYeguo:
-		raw, chapters, err = engine.downloader.fetchYeguoDetail(ctx, sourceID)
-	case sourceDSD:
-		raw, chapters, err = engine.downloader.fetchDSDDetail(ctx, sourceID)
-	case sourceSorani:
-		raw, chapters, err = engine.downloader.fetchSoraniDetail(ctx, sourceID)
-	case sourceGuipian:
-		raw, chapters, err = engine.downloader.fetchGuipianDetail(ctx, sourceID)
-	case sourceHanxiaoquan:
-		raw, chapters, err = engine.downloader.fetchHanxiaoquanDetail(ctx, sourceID)
-	case sourceFanqie:
-		raw, chapters, err = engine.downloader.fetchFanqieDetail(ctx, sourceID)
-	case sourceXChina:
-		raw, chapters, err = engine.downloader.fetchXChinaDetail(ctx, sourceID)
-	case sourceTheporny:
-		raw, chapters, err = engine.downloader.fetchThepornyDetail(ctx, sourceID)
-	default:
-		// 必须拿完整 Drama：这些源（网页源 / XBPQ 自定义源 / 爱看机器人 /
-		// A123 / 短剧家族 / 红果 / 黄豆）的详情层解析出了简介、封面、类型等，
-		// 只取标题会让播放页简介与详情页资料区一直空白。
-		raw, chapters, err = engine.downloader.GetHuangguoDetail(ctx, source, sourceID)
+	if provider, ok := engine.downloader.sourceProvider(source); ok {
+		raw, chapters, err = provider.Detail(ctx, sourceID)
 		title = raw.DisplayTitle()
+	} else {
+		switch source {
+		case sourceGuipian:
+			if provider, ok := engine.downloader.sourceProvider(source); ok {
+				raw, chapters, err = provider.Detail(ctx, sourceID)
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceXChina:
+			if provider, ok := engine.downloader.sourceProvider(source); ok {
+				raw, chapters, err = provider.Detail(ctx, sourceID)
+			} else {
+				err = errSourceNotCompiled
+			}
+		default:
+			// 必须拿完整 Drama：这些源（网页源 / XBPQ 自定义源 / 爱看机器人 /
+			// A123 / 短剧家族 / 红果 / 黄豆）的详情层解析出了简介、封面、类型等，
+			// 只取标题会让播放页简介与详情页资料区一直空白。
+			raw, chapters, err = engine.downloader.GetHuangguoDetail(ctx, source, sourceID)
+			title = raw.DisplayTitle()
+		}
 	}
 	if err != nil {
 		return nil, err
@@ -882,14 +830,6 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 	if source == sourceHongguo {
 		raw := engine.downloader.hongguoCachedDrama(Drama{ID: drama.ID, Title: drama.Title, Source: source})
 		drama = mergeNativeDrama(drama, nativeNormalize(raw))
-	}
-	if source == sourceHuangdou {
-		if row, err := engine.downloader.huangdouDetail(ctx, sourceID); err == nil {
-			fresh := nativeNormalize(huangdouDramaFromMap(row))
-			if fresh.ID == drama.ID {
-				drama = mergeNativeDrama(drama, fresh)
-			}
-		}
 	}
 	// 覆盖前留一份「榜单 / 剧库 / 详情元数据」给出的总集数。
 	metadataEpisodes := drama.Episodes

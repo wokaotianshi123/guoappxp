@@ -10,6 +10,7 @@ import (
 )
 
 func TestNativeCategoryPaginationStaysIndependent(t *testing.T) {
+	installAIFixture(t)
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		target := huangguoEdgeTarget(t, request)
 		if !strings.HasPrefix(target.Path, "/api/videos/category/ai-") {
@@ -68,28 +69,5 @@ func TestNativeCategoryDiscoveryUsesSourceLinks(t *testing.T) {
 		if err := nativeAuthorizeInput(nativeInput{Action: "categories", Source: source}); (err == nil) != nativeSourceAvailable(source) {
 			t.Fatal("categories ignored edition permissions", source, err)
 		}
-	}
-}
-
-func TestLegacyResource404KeepsHealthyEndpoint(t *testing.T) {
-	d := legacyFixtureDownloader(t, func(request *http.Request) (*http.Response, error) {
-		if strings.Contains(request.URL.Path, "/detail/") {
-			return sourceFixtureResponse(request, 404, "removed drama"), nil
-		}
-		return legacyFixtureResponse(request, []Tab{{ID: "active", Name: "合成分类"}}), nil
-	})
-	d.cfg.Token = "fixture-session"
-	d.cfg.InterfaceKey, d.cfg.ParamKey, d.cfg.ParamIV = fixtureLegacyProtocol.InterfaceKey, fixtureLegacyProtocol.ParamKey, fixtureLegacyProtocol.ParamIV
-	d.apiBase = d.cfg.APIBase
-	var detail detailResponse
-	if err := d.fetchAPI(context.Background(), "/api/app/playlet/detail/removed", nil, &detail); err == nil {
-		t.Fatal("a missing drama was treated as available")
-	}
-	if d.apiBase != d.cfg.APIBase || len(d.apiFailures) != 0 {
-		t.Fatal("one removed drama disabled a healthy API host")
-	}
-	var tabs legacyTabList
-	if err := d.fetchAPI(context.Background(), "/api/app/playlet-tab/all", nil, &tabs); err != nil || len(tabs) != 1 {
-		t.Fatal("catalog did not remain usable", err)
 	}
 }

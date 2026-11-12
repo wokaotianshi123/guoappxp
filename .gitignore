@@ -6,6 +6,14 @@ dist/
 coverage/
 
 native/build/
+# 站源模块由 build_native.py --sources 生成，不入库：
+# go.work 指向本机的站源仓库，sources_gen.go 只在带 sources 标签时生效。
+native/go.work
+native/go.work.sum
+native/bridge/sources_gen.go
+native/server/sources_gen.go
+# 本地 go build ./server 的产物，不入库（本地服务版正式产物在 dist/web/）：
+native/server.exe
 # jniLibs 整体是构建产物目录，但番茄内容引擎的 Rust 产物没有源码可重建
 # （本机无 Rust 工具链，依赖的 fqapp/rust 也未随仓库提供），必须随仓库携带，
 # 否则换台机器打出的 APK 会缺 libfanqie_shim.so，番茄源直接不可用。

@@ -50,6 +50,26 @@ var audiobookCategoryOrder = []string{
 	"玄幻言情", "先婚后爱",
 }
 
+// 听书页的两个书源：红果听书吃官方书城听书专辑，番茄听书吃畅听男女榜。
+const (
+	abOriginHongguo = "hongguo"
+	abOriginFanqie  = "fanqie"
+	// abOriginAll 保留旧接口「榜单 + 官方书城合并」的行为。
+	abOriginAll = "all"
+)
+
+func abNormalizeOrigin(origin string) string {
+	switch {
+	case strings.EqualFold(strings.TrimSpace(origin), abOriginFanqie):
+		return abOriginFanqie
+	case strings.EqualFold(strings.TrimSpace(origin), abOriginAll):
+		return abOriginAll
+	default:
+		// 默认红果听书。
+		return abOriginHongguo
+	}
+}
+
 type audiobookBook struct {
 	ID       string
 	Title    string
@@ -57,7 +77,8 @@ type audiobookBook struct {
 	Category string
 	Cover    string
 	Intro    string
-	Board    int // 0 男生榜 / 1 女生榜
+	Board    int    // 0 男生榜 / 1 女生榜
+	Anchor   string // 有声书主播；为空说明没有真人录制
 }
 
 func (book audiobookBook) payload() map[string]any {
@@ -65,11 +86,28 @@ func (book audiobookBook) payload() map[string]any {
 		"id": book.ID, "title": book.Title, "author": book.Author,
 		"category": book.Category, "cover": book.Cover,
 		"intro": book.Intro, "board": book.Board,
+		"anchor": book.Anchor, "voiceMode": abVoiceMode(book.Anchor),
 	}
+}
+
+// abVoiceMode 与 App 端同规则：有真人主播名是「真人录音」，否则是 AI 音色朗读。
+func abVoiceMode(anchor string) string {
+	anchor = strings.ToLower(strings.TrimSpace(anchor))
+	if anchor == "" {
+		return "AI 朗读"
+	}
+	for _, hint := range []string{"ai", "智能", "机器", "合成", "tts", "番茄畅听", "番茄小说", "听书助手"} {
+		if strings.Contains(anchor, hint) {
+			return "AI 朗读"
+		}
+	}
+	return "真人录音"
 }
 
 type audiobookLibrarySnapshot struct {
 	pool       []audiobookBook
+	rank       []audiobookBook // 只含畅听男女榜，供「番茄听书」
+	official   []audiobookBook // 只含官方书城听书专辑，供「红果听书」
 	categories []string
 	loading    bool
 	done       bool
@@ -236,8 +274,25 @@ func (store *audiobookLibraryStore) rebuildLocked() {
 func (store *audiobookLibraryStore) snapshot() audiobookLibrarySnapshot {
 	store.mu.RLock()
 	defer store.mu.RUnlock()
+	rank := make([]audiobookBook, 0, len(store.merged))
+	seen := map[string]bool{}
+	for _, board := range audiobookBoardDefs {
+		for _, book := range store.boards[board.key] {
+			if seen[book.ID] {
+				continue
+			}
+			seen[book.ID] = true
+			rank = append(rank, book)
+		}
+	}
+	official := make([]audiobookBook, 0, len(store.official))
+	for _, book := range store.official {
+		official = append(official, book)
+	}
 	return audiobookLibrarySnapshot{
 		pool:       append([]audiobookBook(nil), store.merged...),
+		rank:       rank,
+		official:   official,
 		categories: append([]string(nil), store.categories...),
 		loading:    store.loading,
 		done:       store.done,
@@ -246,38 +301,53 @@ func (store *audiobookLibraryStore) snapshot() audiobookLibrarySnapshot {
 }
 
 // query 返回当前过滤 / 搜索结果的某一页。抓取中也能用，前端按 loading 轮询即可。
-func (store *audiobookLibraryStore) query(board int, category, keyword string, page, size int) map[string]any {
+// origin 决定书源：red=红果听书（官方书城听书专辑），fanqie=番茄听书（畅听男女榜）。
+func (store *audiobookLibraryStore) query(origin string, board int, category, keyword string, page, size int) map[string]any {
 	store.ensure()
 	snapshot := store.snapshot()
+	pool := snapshot.pool
+	switch abNormalizeOrigin(origin) {
+	case abOriginFanqie:
+		pool = snapshot.rank
+	case abOriginAll:
+		pool = snapshot.pool
+	default:
+		pool = snapshot.official
+	}
 	if board < 0 || board >= len(audiobookBoardDefs) {
 		board = 0
 	}
 	if size < 1 || size > 50 {
 		size = audiobookLibraryPage
 	}
-	list := make([]audiobookBook, 0, len(snapshot.pool))
+	list := make([]audiobookBook, 0, len(pool))
 	switch {
 	case keyword != "":
-		// 全量书池本地匹配为主；服务端搜索结果补充书池之外的听书。
-		local := abSearchInPool(snapshot.pool, keyword)
-		remote := abRemoteSearchFunc(keyword)
+		// 全量书池本地匹配为主；服务端搜索补的是番茄畅听的书，
+		// 红果听书只用官方书城书池，不能把榜单书混进来。
 		seen := map[string]bool{}
-		for _, book := range append(local, remote...) {
-			if book.ID == "" || seen[book.ID] {
-				continue
+		add := func(books []audiobookBook) {
+			for _, book := range books {
+				if book.ID == "" || seen[book.ID] {
+					continue
+				}
+				seen[book.ID] = true
+				list = append(list, book)
 			}
-			seen[book.ID] = true
-			list = append(list, book)
+		}
+		add(abSearchInPool(pool, keyword))
+		if abNormalizeOrigin(origin) != abOriginHongguo {
+			add(abRemoteSearchFunc(keyword))
 		}
 	case category != "":
 		// 分类来自真实标签，选分类时把男/女两榜合并后的全量书库一起过滤。
-		for _, book := range snapshot.pool {
+		for _, book := range pool {
 			if abMatchesCategory(book, category) {
 				list = append(list, book)
 			}
 		}
 	default:
-		for _, book := range snapshot.pool {
+		for _, book := range pool {
 			if book.Board == board {
 				list = append(list, book)
 			}
@@ -308,11 +378,12 @@ func (store *audiobookLibraryStore) query(board int, category, keyword string, p
 		"total":      total,
 		"page":       page,
 		"pageCount":  pageCount,
-		"categories": snapshot.categories,
+		"categories": abCategoriesFrom(pool),
+		"origin":     abNormalizeOrigin(origin),
 		"library": map[string]any{
 			"loading": snapshot.loading,
 			"done":    snapshot.done,
-			"count":   len(snapshot.pool),
+			"count":   len(pool),
 			"error":   snapshot.errText,
 		},
 	}
@@ -547,6 +618,7 @@ func handleAudiobookLibrary(writer http.ResponseWriter, request *http.Request) {
 	page, _ := strconv.Atoi(params.Get("page"))
 	size, _ := strconv.Atoi(params.Get("size"))
 	answer := abLibrary.query(
+		abNormalizeOrigin(params.Get("origin")),
 		board,
 		strings.TrimSpace(params.Get("category")),
 		strings.TrimSpace(params.Get("q")),

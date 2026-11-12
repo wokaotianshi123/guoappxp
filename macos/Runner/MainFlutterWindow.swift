@@ -2,8 +2,22 @@ import CFNetwork
 import Cocoa
 import FlutterMacOS
 
+#if arch(x86_64)
+/// Intel Mac 上 Impeller 会出现主界面和视频花屏，这里把引擎的
+/// enableImpeller 改回 false，退回 Skia 渲染（未在实机验证）。
+private func useSkiaRendering() {
+  guard let method = class_getInstanceMethod(
+    FlutterDartProject.self, NSSelectorFromString("enableImpeller")) else { return }
+  let disabled: @convention(block) (AnyObject) -> ObjCBool = { _ in false }
+  method_setImplementation(method, imp_implementationWithBlock(disabled))
+}
+#endif
+
 class MainFlutterWindow: NSWindow {
   override func awakeFromNib() {
+    #if arch(x86_64)
+    useSkiaRendering()
+    #endif
     let flutterViewController = FlutterViewController()
     let windowFrame = self.frame
     self.contentViewController = flutterViewController

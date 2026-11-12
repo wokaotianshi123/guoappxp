@@ -411,6 +411,9 @@ class LocalStore extends ChangeNotifier {
   bool get sideBarExpanded => preferences.getBool('sideBarExpanded') ?? true;
   bool get playerWide => preferences.getBool('playerWide') ?? false;
 
+  /// 手机底栏 / 平板侧边栏是否显示「历史」入口；关闭后仍可从「我的」进入。
+  bool get historyTab => preferences.getBool('historyTab') ?? true;
+
   /// 上次在电脑 / 手机全屏播放时调过的播放器音量（0~100，默认 100）。
   /// 静音不写入，所以这里永远不会是 0；电视端不提供音量控件。
   double get playerVolume => preferences.getDouble('playerVolume') ?? 100;
@@ -617,6 +620,10 @@ class LocalStore extends ChangeNotifier {
   });
   Future<void> setTelevisionKeyboard(bool value) => _queue(() async {
     await preferences.setBool('televisionKeyboard', value);
+    _notify();
+  });
+  Future<void> setHistoryTab(bool value) => _queue(() async {
+    await preferences.setBool('historyTab', value);
     _notify();
   });
   Future<void> setPlaybackPreferences(PlaybackPreferences value) {

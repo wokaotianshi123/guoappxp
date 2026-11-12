@@ -100,62 +100,62 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 	var items []Drama
 	var more bool
 	var err error
-	switch source {
-	case sourceFanqie:
-		// 番茄搜索走引擎的 /api/v1/search（tab_type=11 短剧）。
-		items, more, err = d.fetchFanqieSearchPage(ctx, page, query)
-	case sourceHongguo:
-		// 红果的搜索接口是「首屏 + 翻页」两段式，首屏还能给出「结果被截断」的提示。
-		var entry hongguoSearchEntry
-		if page == 1 {
-			entry, err = d.searchHongguoDramas(ctx, query)
-		} else if keyword, keywordErr := hongguoSearchKeyword(query); keywordErr != nil {
-			err = keywordErr
-		} else {
-			entry, err = d.fetchHongguoSearchPage(ctx, keyword, page)
+	if provider, ok := d.sourceProvider(source); ok {
+		items, more, err = provider.CatalogPage(ctx, page, "", query)
+	} else {
+		switch source {
+		case sourceHongguo:
+			// 红果的搜索接口是「首屏 + 翻页」两段式，首屏还能给出「结果被截断」的提示。
+			var entry hongguoSearchEntry
+			if page == 1 {
+				entry, err = d.searchHongguoDramas(ctx, query)
+			} else if keyword, keywordErr := hongguoSearchKeyword(query); keywordErr != nil {
+				err = keywordErr
+			} else {
+				entry, err = d.fetchHongguoSearchPage(ctx, keyword, page)
+			}
+			if err != nil {
+				return result, err
+			}
+			for _, drama := range entry.Dramas {
+				result.Items = append(result.Items, nativeNormalize(drama))
+			}
+			result.Warning, result.HasMore = entry.Warning, entry.HasMore
+			return result, nil
+		case sourceGuipian:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, more, err = provider.CatalogPage(ctx, page, "", query)
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceA123:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, more, err = provider.CatalogPage(ctx, page, "", query)
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceIkanbot:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, more, err = provider.CatalogPage(ctx, page, "", query)
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceXChina:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, more, err = provider.CatalogPage(ctx, page, "", query)
+			} else {
+				err = errSourceNotCompiled
+			}
+		case sourceHuangguoAI:
+			if provider, ok := d.sourceProvider(source); ok {
+				items, more, err = provider.CatalogPage(ctx, page, "", query)
+			} else {
+				err = errSourceNotCompiled
+			}
+		default:
+			// 短剧家族与自定义 MacCMS 源共用同一套搜索接口（isDuanjuProviderSource 已含自定义源）。
+			items, err = d.searchDuanju(ctx, source, query)
 		}
-		if err != nil {
-			return result, err
-		}
-		for _, drama := range entry.Dramas {
-			result.Items = append(result.Items, nativeNormalize(drama))
-		}
-		result.Warning, result.HasMore = entry.Warning, entry.HasMore
-		return result, nil
-	case sourceHuangju:
-		items, more, err = d.fetchHuangjuCatalogPage(ctx, page, "", query)
-	case sourceYeguo:
-		items, more, err = d.fetchYeguoCatalogPage(ctx, page, "", query)
-	case sourceJinguoDuanju:
-		items, more, err = d.fetchJinguoDuanjuCatalogPage(ctx, page, "", query)
-	case sourceJinguo:
-		items, more, err = d.fetchJinguoCatalogPage(ctx, page, "", query)
-	case sourceHeitao:
-		items, more, err = d.fetchHeitaoCatalogPage(ctx, page, "", query)
-	case sourceBeabox:
-		items, more, err = d.fetchBeaboxCatalogPage(ctx, page, "", query)
-	case sourceDSD:
-		items, more, err = d.fetchDSDCatalogPage(ctx, page, "", query)
-	case sourceSorani:
-		items, more, err = d.fetchSoraniCatalogPage(ctx, page, "", query)
-	case sourceGuipian:
-		items, more, err = d.fetchGuipianCatalogPage(ctx, page, "", query)
-	case sourceHanxiaoquan:
-		items, more, err = d.fetchHanxiaoquanCatalogPage(ctx, page, "", query)
-	case sourceA123:
-		items, more, err = d.fetchA123CatalogPage(ctx, page, "", query)
-	case sourceIkanbot:
-		items, more, err = d.fetchIkanbotCatalogPage(ctx, page, "", query)
-	case sourceXChina:
-		items, more, err = d.fetchXChinaCatalogPage(ctx, page, "", query)
-	case sourceTheporny:
-		items, more, err = d.fetchThepornyCatalogPage(ctx, page, "", query)
-	case sourceHuangguoAI:
-		// 站点自己的搜索接口，支持翻页；不再只搜本机已缓存的目录。
-		items, more, err = d.searchHuangguoAI(ctx, page, query)
-	default:
-		// 短剧家族与自定义 MacCMS 源共用同一套搜索接口（isDuanjuProviderSource 已含自定义源）。
-		items, err = d.searchDuanju(ctx, source, query)
 	}
 	if err != nil {
 		return result, err

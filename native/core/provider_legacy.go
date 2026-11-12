@@ -2,7 +2,6 @@ package core
 
 import (
 	"bytes"
-	"context"
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/sha256"
@@ -10,12 +9,15 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
-	"net/http"
-	"net/url"
 	"strings"
-	"time"
 )
+
+// legacyProtocol 是旧接口的加解密参数（官网脚本里下发，也允许用户在设置里覆盖）。
+type legacyProtocol struct {
+	InterfaceKey string
+	ParamKey     string
+	ParamIV      string
+}
 
 type Tab struct {
 	ID   string
@@ -186,145 +188,18 @@ func decryptResponse(dataStr string, interfaceKey []byte) ([]byte, error) {
 	return pkcs7Unpad(plain, block.BlockSize())
 }
 
-func (d *Downloader) fetchAPI(ctx context.Context, apiPath string, params any, out any) error {
-	for attempt := 0; attempt < 2; attempt++ {
-		access, err := d.legacyCredentials(ctx)
-		if err != nil {
-			return err
-		}
-		payload, err := d.legacyRequest(ctx, http.MethodGet, apiPath, params, access)
-		var apiErr *legacyAPIError
-		if attempt == 0 && access.Anonymous && errors.As(err, &apiErr) && apiErr.code == "5005" {
-			d.invalidateLegacyToken(access)
-			continue
-		}
-		if err != nil {
-			return err
-		}
-		return json.Unmarshal(payload, out)
-	}
-	return errors.New("黄果访客登录已失效，请稍后重试")
-}
-
 type legacyAPIError struct{ code, message string }
 
 func (err *legacyAPIError) Error() string {
 	return fmt.Sprintf("黄果 API 错误 %s: %s", err.code, err.message)
 }
 
-func (d *Downloader) legacyRequest(ctx context.Context, method, apiPath string, params any, access legacyAccess) ([]byte, error) {
-	var lastErr error
-	attempts := d.cfg.Retries
-	if attempts < 1 {
-		attempts = 1
-	}
-	for attempt := 1; attempt <= attempts; attempt++ {
-		if attempt > 1 {
-			select {
-			case <-time.After(time.Duration(attempt) * time.Second):
-			case <-ctx.Done():
-				return nil, ctx.Err()
-			}
-		}
-		fullPath := apiPath
-		var requestBody io.Reader
-		if params != nil {
-			enc, err := encryptParam(params, []byte(access.ParamKey), []byte(access.ParamIV))
-			if err != nil {
-				return nil, err
-			}
-			if method == http.MethodGet {
-				sep := "?"
-				if strings.Contains(fullPath, "?") {
-					sep = "&"
-				}
-				fullPath += sep + "data=" + url.QueryEscape(enc)
-			} else {
-				body, _ := json.Marshal(map[string]string{"data": enc})
-				requestBody = bytes.NewReader(body)
-			}
-		}
-		base, err := d.apiEndpoint(ctx)
-		if err != nil {
-			return nil, err
-		}
-		req, err := http.NewRequestWithContext(ctx, method, base+fullPath, requestBody)
-		if err != nil {
-			return nil, err
-		}
-		if access.Token != "" {
-			req.Header.Set("Authorization", access.Token)
-		}
-		if requestBody != nil {
-			req.Header.Set("Content-Type", "application/json")
-		}
-		req.Header.Set("Accept", "application/json")
-		req.Header.Set("temp", "test")
-		req.Header.Set("X-User-Agent", access.userAgent())
-		req.Header.Set("Origin", legacyFrontendURL)
-		req.Header.Set("Referer", legacyFrontendURL+"/")
-		req.Header.Set("User-Agent", userAgent)
+// validLegacyProtocol 判断一套接口协议参数是否完整。
+func validLegacyProtocol(protocol legacyProtocol) bool {
+	return len(protocol.InterfaceKey) > 0 && len(protocol.InterfaceKey) <= 512 && len(protocol.ParamKey) == 16 && len(protocol.ParamIV) == 16
+}
 
-		resp, err := d.doCatalogRequestWithTimeout(req, providerTimeout)
-		if err != nil {
-			lastErr = publicError(err)
-			var backoff *requestBackoff
-			if errors.As(err, &backoff) || ctx.Err() != nil {
-				return nil, lastErr
-			}
-			d.resetAPIEndpoint(base)
-			continue
-		}
-		body, readErr := io.ReadAll(io.LimitReader(resp.Body, providerMaxBodyBytes+1))
-		_ = resp.Body.Close()
-		if readErr != nil {
-			lastErr = readErr
-			continue
-		}
-		if len(body) > providerMaxBodyBytes {
-			return nil, errors.New("API 响应过大")
-		}
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			lastErr = d.catalogResponseError(req, resp, body)
-			if resp.StatusCode >= 500 {
-				d.resetAPIEndpoint(base)
-				continue
-			}
-			if resp.StatusCode >= 400 && resp.StatusCode < 500 {
-				return nil, lastErr
-			}
-			continue
-		}
-		var env apiEnvelope
-		if err := json.Unmarshal(body, &env); err != nil {
-			lastErr = err
-			continue
-		}
-		if code := strings.Trim(string(env.Code), `"`); code != "" && code != "null" && code != "200" && code != "0" {
-			message := firstNonEmpty(env.Msg, "请检查访问配置或刷新登录凭证")
-			if access.Token != "" {
-				message = strings.ReplaceAll(message, access.Token, "[已隐藏]")
-			}
-			return nil, &legacyAPIError{code: truncate(code, 20), message: truncate(message, 160)}
-		}
-		payload := env.Data
-		if apiHashEnabled(env.Hash) && len(env.Data) > 0 {
-			var encrypted string
-			if err := json.Unmarshal(env.Data, &encrypted); err != nil {
-				lastErr = err
-				continue
-			}
-			plain, err := decryptResponse(encrypted, []byte(access.InterfaceKey))
-			if err != nil {
-				lastErr = err
-				continue
-			}
-			payload = plain
-		}
-		if len(payload) == 0 || string(payload) == "null" {
-			return nil, errors.New("黄果 API 未返回数据，请检查登录凭证或接口是否变更")
-		}
-		return payload, nil
-	}
-	return nil, lastErr
+// validLegacyToken 判断令牌是否可以安全放进请求头。
+func validLegacyToken(token string) bool {
+	return len(token) <= 4096 && !strings.ContainsAny(token, "\r\n\t ")
 }

@@ -58,7 +58,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
 
   /// 官方书城（fanqie.apk 反编译所得）实时抓到的书与分类。每次进页面/刷新
   /// 都重新请求，按 book_id 与榜单去重，只做补充，不固化成静态清单。
-  List<FanqieBook> _officialBooks = const [];
   List<String> _officialCategories = const [];
 
   /// 搜索结果的完整列表（本地全库匹配 + 服务端听书补充），翻页在本地切分。
@@ -71,6 +70,9 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   int _page = 1;
   String _query = '';
   FanqieAudiobookBoard _board = fanqieAudiobookBoards.first;
+
+  /// 当前书源：0 = 红果听书（默认），1 = 番茄听书。
+  int _origin = fanqieAudiobookOrigins.first.type;
 
   /// 空串表示「全部」，否则按番茄畅听的真实分类标签过滤。
   String _category = '';
@@ -116,9 +118,8 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     if (mounted) setState(() {});
   }
 
-  /// 分批抓取男 / 女两榜的全部书目。每批回来就更新书池，列表边加载边长；
-  /// 榜单 offset 翻到没有新书（连续两个空批次）或达到页数上限才结束。
-  /// 单批失败只影响该批，切换分类 / 榜单也不会中断这里的后台加载。
+  /// 红果听书走官方书城的听书专辑，番茄听书走畅听男女榜；两个书源各自独立，
+  /// 不再互相混入，切换书源时列表和分类一起换掉。
   Future<void> _loadPools() async {
     final token = ++_poolGeneration;
     if (mounted) {
@@ -129,23 +130,35 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       });
     }
     try {
-      // 官方书城与男女两榜同时开抓；单个源失败不影响其它源。
-      Future<FanqieOfficialResult> officialTask() async {
-        try {
-          return await _api.officialAll();
-        } catch (_) {
-          return FanqieOfficialResult.empty;
-        }
+      if (_origin == 0) {
+        final official = await _api.officialAll();
+        if (!mounted || token != _poolGeneration) return;
+        setState(() {
+          _officialCategories = official.categories;
+          // 官方书城按 gender 归到对应榜单，分类条仍按男 / 女两栏浏览。
+          _malePool = [
+            for (final book in official.books)
+              if (book.board == 0) book,
+          ];
+          _femalePool = [
+            for (final book in official.books)
+              if (book.board != 0) book,
+          ];
+          _poolLoading = false;
+          _poolDone = true;
+          _rebuildSearch();
+          _error = _pool.isEmpty ? '红果听书暂时没有书' : null;
+        });
+        return;
       }
 
-      final officialFuture = officialTask();
       final results = await Future.wait([
         _api.rankAll(
           fanqieAudiobookBoards[0],
           onProgress: (pool) {
             if (mounted && token == _poolGeneration) {
               setState(() {
-                _malePool = _mergeOfficial(pool, 0);
+                _malePool = pool;
                 _rebuildSearch();
               });
             }
@@ -156,20 +169,18 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           onProgress: (pool) {
             if (mounted && token == _poolGeneration) {
               setState(() {
-                _femalePool = _mergeOfficial(pool, 1);
+                _femalePool = pool;
                 _rebuildSearch();
               });
             }
           },
         ),
       ]);
-      final official = await officialFuture;
       if (!mounted || token != _poolGeneration) return;
       setState(() {
-        _officialBooks = official.books;
-        _officialCategories = official.categories;
-        _malePool = _mergeOfficial(results[0], 0);
-        _femalePool = _mergeOfficial(results[1], 1);
+        _officialCategories = const [];
+        _malePool = results[0];
+        _femalePool = results[1];
         _poolLoading = false;
         _poolDone = true;
         _rebuildSearch();
@@ -184,15 +195,24 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     }
   }
 
-  /// 把官方书城的书按 gender 归到对应榜单，与榜单书按 book_id 去重；
-  /// 榜单已抓到的书优先保留其原始分类与封面。
-  List<FanqieBook> _mergeOfficial(List<FanqieBook> rankPool, int board) {
-    final result = List<FanqieBook>.of(rankPool);
-    final seen = <String>{for (final book in result) book.id};
-    for (final book in _officialBooks) {
-      if (book.board == board && seen.add(book.id)) result.add(book);
-    }
-    return result;
+  /// 切书源：清掉当前书池、分类与搜索，重新按新书源加载。
+  void _switchOrigin(int type) {
+    if (_origin == type) return;
+    setState(() {
+      _origin = type;
+      _malePool = const [];
+      _femalePool = const [];
+      _officialCategories = const [];
+      _searchResults = const [];
+      _remoteBooks = const [];
+      _category = '';
+      _query = '';
+      _page = 1;
+      _board = fanqieAudiobookBoards.first;
+      _error = null;
+    });
+    _search.text = '';
+    unawaited(_loadPools());
   }
 
   /// 分类只展示书池里确实有书的：高频基线标签 + 官方书城实时学到的分类。
@@ -229,9 +249,11 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   void _rebuildSearch() {
     if (_query.isEmpty) return;
     final local = fanqieSearchInPool(_allPool, _query);
+    // 远程搜索命中的是番茄畅听的榜单书，红果听书只用官方书城书池。
+    final remote = _origin == 0 ? const <FanqieBook>[] : _remoteBooks;
     final seen = <String>{};
     _searchResults = [
-      for (final book in [...local, ..._remoteBooks])
+      for (final book in [...local, ...remote])
         if (seen.add(book.id)) book,
     ];
   }
@@ -351,6 +373,16 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _rebuildSearch(); // 本地书池匹配先出结果，不等网络
     });
     try {
+      // 红果听书只搜自己的官方书城书池，不再打番茄榜单的搜索接口。
+      if (_origin == 0) {
+        if (!mounted || token != _searchGeneration) return;
+        setState(() {
+          _searchLoading = false;
+          _rebuildSearch();
+          _error = _searchResults.isEmpty ? '没有找到听书' : null;
+        });
+        return;
+      }
       // 服务端搜索里听书（genre=4）很稀疏，单页常常 0～2 本，取前几页作为
       // 书池之外的补充即可；主体结果来自本地全量书库。
       final results = await Future.wait([
@@ -427,6 +459,24 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           ),
         ),
         if (_pane == _AudiobookPane.search) ...[
+          // 书源：红果听书吃官方书城的听书专辑（带主播录制与 AI 朗读标注），
+          // 番茄听书吃畅听男女榜，两者内容与分类各自独立。
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+            child: Row(
+              children: [
+                for (final origin in fanqieAudiobookOrigins)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(origin.name),
+                      selected: _origin == origin.type,
+                      onSelected: (_) => _switchOrigin(origin.type),
+                    ),
+                  ),
+              ],
+            ),
+          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: TextField(
@@ -1044,6 +1094,40 @@ class _AudiobookCatalogScreenState extends State<AudiobookCatalogScreen> {
             )
           : Column(
               children: [
+                // 有声书来源标签：真人录制还是 AI 音色朗读，一眼能看出来。
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(16, 10, 16, 0),
+                  child: Row(
+                    children: [
+                      Chip(
+                        visualDensity: VisualDensity.compact,
+                        avatar: Icon(
+                          widget.book.voiceMode == '真人录音'
+                              ? Icons.mic_rounded
+                              : Icons.graphic_eq_rounded,
+                          size: 16,
+                        ),
+                        label: Text(widget.book.voiceMode),
+                      ),
+                      if (widget.book.anchor.isNotEmpty) ...[
+                        const SizedBox(width: 8),
+                        Expanded(
+                          child: Text(
+                            '主播 ${widget.book.anchor}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 13,
+                              color: Theme.of(
+                                context,
+                              ).colorScheme.onSurfaceVariant,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ],
+                  ),
+                ),
                 if (_status.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),

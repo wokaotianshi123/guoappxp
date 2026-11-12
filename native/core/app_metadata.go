@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"net/url"
-	"strings"
 	"time"
 )
 
@@ -37,27 +36,17 @@ func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativ
 		if err != nil {
 			return drama, err
 		}
-	case sourceHuangdou:
-		row, err := engine.downloader.huangdouDetail(ctx, id)
+	default:
+		// 已外置的站源自己补齐元数据（黄豆的热度就是它在详情里补的）。
+		provider, ok := engine.downloader.sourceProvider(source)
+		if !ok {
+			return drama, nil
+		}
+		fresh, _, err := provider.Detail(ctx, id)
 		if err != nil {
 			return drama, err
 		}
-		raw = huangdouDramaFromMap(row)
-		if raw.Heat == "" && drama.Heat == "" {
-			var decoded any
-			err = newHuangdouAPIClient(engine.downloader).call(ctx, "/drama/list", map[string]any{
-				"keywords": firstNonEmpty(raw.Title, drama.Title), "page": "1", "page_size": "50",
-			}, &decoded)
-			if err != nil {
-				return drama, err
-			}
-			for _, candidate := range huangdouList(decoded) {
-				if strings.TrimPrefix(mapString(candidate, "id", "drama_id"), "rp_") == id {
-					raw = mergeDramaMetadata(huangdouDramaFromMap(candidate), raw)
-					break
-				}
-			}
-		}
+		raw = fresh
 	}
 	if raw.ID == drama.ID {
 		drama = mergeNativeDrama(drama, nativeNormalize(raw))

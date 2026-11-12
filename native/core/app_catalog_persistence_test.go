@@ -227,6 +227,7 @@ func TestNativeHongguoStalledCursorKeepsPartialItems(t *testing.T) {
 }
 
 func TestNativeCatalogPreservesLargeLibraryAndPage501(t *testing.T) {
+	installAIFixture(t)
 	var requested string
 	engine := sourceFixtureEngine(t, func(request *http.Request) (*http.Response, error) {
 		target := huangguoEdgeTarget(t, request)

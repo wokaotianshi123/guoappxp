@@ -397,10 +397,25 @@ class Episode {
 }
 
 class DramaDetail {
-  DramaDetail(this.drama, this.episodes, {this.warning = ''});
+  DramaDetail(
+    this.drama,
+    this.episodes, {
+    this.warning = '',
+    this.seasons = const [],
+  });
   final Drama drama;
   final List<Episode> episodes;
   final String warning;
+
+  /// 同一系列的各季（按季号升序）；不足两季时为空，详情页不显示卡片条。
+  final List<DramaSeason> seasons;
+
+  /// 本季播完后要接的下一季；没有下一季时为 null。
+  DramaSeason? get nextSeason {
+    final index = seasons.indexWhere((season) => season.drama.id == drama.id);
+    return index < 0 || index + 1 >= seasons.length ? null : seasons[index + 1];
+  }
+
   factory DramaDetail.fromJson(Map<String, dynamic> json) {
     final rows = json['chapters'] as List? ?? const [];
     return DramaDetail(
@@ -412,6 +427,36 @@ class DramaDetail {
       warning: json['warning'] as String? ?? '',
     );
   }
+}
+
+/// 系列剧里的一季：季号 + 该季自己的剧集信息。
+class DramaSeason {
+  const DramaSeason({required this.number, required this.drama});
+  final int number;
+  final Drama drama;
+
+  String get label => '第$number季';
+
+  /// 上线日期在未来、或还没有任何分集时算「待上线」。
+  bool get upcoming {
+    final date = DateTime.tryParse(drama.onlineDate);
+    if (date == null) return drama.episodes == 0;
+    final now = DateTime.now();
+    return date.isAfter(DateTime(now.year, now.month, now.day));
+  }
+
+  String? get onlineLabel {
+    final date = DateTime.tryParse(drama.onlineDate);
+    if (date == null) return null;
+    String two(int value) => value.toString().padLeft(2, '0');
+    final day = '${two(date.month)}-${two(date.day)}';
+    return upcoming ? '$day 待上线' : '$day 上线';
+  }
+
+  factory DramaSeason.fromJson(Map<String, dynamic> json) => DramaSeason(
+    number: json['number'] as int? ?? 0,
+    drama: Drama.fromJson(Map<String, dynamic>.from(json['drama'] as Map)),
+  );
 }
 
 class CatalogPage {

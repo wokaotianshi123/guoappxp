@@ -23,8 +23,8 @@ import (
 // 与榜单 / 搜索共用代理和超时设置。
 
 const (
-	novelfmBookmallURL  = "https://api.novelfm.com/novelfm/bookmall/tab_v2/v1/"
-	novelfmCommonQuery  = "aid=3040&device_platform=android&version_name=6.7.8&version_code=678&device_type=SM-G9730&iid=1&device_id=1&update_version_code=1"
+	novelfmBookmallURL = "https://api.novelfm.com/novelfm/bookmall/tab_v2/v1/"
+	novelfmCommonQuery = "aid=3040&device_platform=android&version_name=6.7.8&version_code=678&device_type=SM-G9730&iid=1&device_id=1&update_version_code=1"
 	novelfmRefreshTTL  = 10 * time.Minute
 	novelfmFetchRounds = 3 // 首屏推荐带随机性，多取几轮能覆盖更多书
 )
@@ -39,15 +39,15 @@ type novelfmCategoryDef struct {
 }
 
 var (
-	abOfficialMu       sync.RWMutex
-	abOfficialBooks    = map[string]audiobookBook{}
-	abOfficialCats     = map[string]novelfmCategoryDef{} // name -> 定义
-	abOfficialHotTags  = map[string]bool{}
-	abOfficialTabs     = map[int]string{}
-	abOfficialLast     time.Time
-	abOfficialRefresh  bool
-	abOfficialErr      string
-	abOfficialFetchFn  = abFetchNovelfmTabCore // 单测可替换，隔离网络
+	abOfficialMu      sync.RWMutex
+	abOfficialBooks   = map[string]audiobookBook{}
+	abOfficialCats    = map[string]novelfmCategoryDef{} // name -> 定义
+	abOfficialHotTags = map[string]bool{}
+	abOfficialTabs    = map[int]string{}
+	abOfficialLast    time.Time
+	abOfficialRefresh bool
+	abOfficialErr     string
+	abOfficialFetchFn = abFetchNovelfmTabCore // 单测可替换，隔离网络
 )
 
 func abNovelfmURL(tabType int) string {
@@ -172,9 +172,10 @@ func abParseNovelfmPage(root map[string]any, tabType int) abNovelfmPage {
 				Title:    title,
 				Author:   abInlineText(asString(row["author"])),
 				Category: strings.Join(names, " · "),
-			Cover:    strings.TrimSpace(asString(firstNonEmpty(row["audio_thumb_uri"], row["thumb_url"]))),
-			Intro:    abInlineText(asString(row["abstract"])),
+				Cover:    strings.TrimSpace(asString(firstNonEmpty(row["audio_thumb_uri"], row["thumb_url"]))),
+				Intro:    abInlineText(asString(row["abstract"])),
 				Board:    boardFromGender(asString(row["gender"])),
+				Anchor:   abInlineText(asString(row["anchor"])),
 			})
 		}
 	}

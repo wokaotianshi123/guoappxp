@@ -212,7 +212,9 @@ class _DetailPageState extends State<DetailPage> {
       AppScope.of(context).repository,
       widget.store,
       widget.drama,
-    )..addListener(_preopen);
+    )
+      ..addListener(_preopen)
+      ..addListener(_syncSeasons);
   }
 
   @override
@@ -261,7 +263,17 @@ class _DetailPageState extends State<DetailPage> {
       details.drama,
       details.episodes,
       warning: details.warning,
+      seasons: details.seasons,
     );
+  }
+
+  /// 切到另一季：先关掉当前播放器，避免在两季之间串进度。
+  Future<void> _selectSeason(DramaSeason season) async {
+    final details = _details!;
+    if (season.drama.id == details.drama.id) return;
+    _handle?.dispose();
+    _handle = null;
+    await details.selectSeason(season);
   }
 
   PlaybackHandle _open(
@@ -276,6 +288,14 @@ class _DetailPageState extends State<DetailPage> {
     position: position,
     autoplay: autoplay,
   );
+
+  /// 季列表通常比详情晚一步返回：到了就同步给已经开着的播放会话，
+  /// 这样「本季播完接下一季」不必等用户重新进详情页。
+  void _syncSeasons() {
+    final details = _details;
+    if (details == null || details.seasons.isEmpty) return;
+    _handle?.session.syncSeasons(details.seasons);
+  }
 
   void _preopen() {
     final details = _details!;
@@ -493,6 +513,20 @@ class _DetailPageState extends State<DetailPage> {
                 ),
               ),
             ),
+            if (details.seasons.length > 1)
+              SliverToBoxAdapter(
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
+                  child: _SeasonStrip(
+                    seasons: details.seasons,
+                    current: details.drama.id,
+                    store: widget.store,
+                    metrics: m,
+                    swipeHint: !AppScope.of(context).television,
+                    onSelected: (season) => unawaited(_selectSeason(season)),
+                  ),
+                ),
+              ),
             if (details.episodes.isEmpty)
               SliverFillRemaining(
                 hasScrollBody: false,
@@ -1656,4 +1690,244 @@ class _DescriptionDialogState extends State<_DescriptionDialog> {
       ],
     ),
   );
+}
+
+/// 详情页选集上方的「系列多季」卡片条：显示各季的集数 / 观看进度 / 上线日期，
+/// 点击切换到该季，电视遥控器可左右移动。
+class _SeasonStrip extends StatefulWidget {
+  const _SeasonStrip({
+    required this.seasons,
+    required this.current,
+    required this.store,
+    required this.metrics,
+    required this.swipeHint,
+    required this.onSelected,
+  });
+  final List<DramaSeason> seasons;
+  final String current;
+  final LocalStore store;
+  final _Metrics metrics;
+  final bool swipeHint;
+  final ValueChanged<DramaSeason> onSelected;
+
+  @override
+  State<_SeasonStrip> createState() => _SeasonStripState();
+}
+
+class _SeasonStripState extends State<_SeasonStrip> {
+  static const _cardWidth = 116.0;
+  static const _gap = 8.0;
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    // 打开就滚到当前季，长系列（第 10 季以后）不用手动找。
+    _reveal(animate: false);
+  }
+
+  @override
+  void didUpdateWidget(_SeasonStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.current != widget.current) _reveal(animate: true);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _reveal({required bool animate}) {
+    final index = widget.seasons.indexWhere(
+      (season) => season.drama.id == widget.current,
+    );
+    if (index <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final offset = (index * (_cardWidth + _gap) - _cardWidth / 2).clamp(
+        0.0,
+        _scroll.position.maxScrollExtent,
+      );
+      if (animate) {
+        _scroll.animateTo(
+          offset,
+          duration: Motion.medium,
+          curve: Curves.easeOut,
+        );
+      } else {
+        _scroll.jumpTo(offset);
+      }
+    });
+  }
+
+  String _status(DramaSeason season, bool selected) {
+    if (selected) return '正在浏览';
+    final watched = widget.store.watched(season.drama.id);
+    if (watched != null) return '看至第${watched.episode}集';
+    if (season.upcoming) return '待上线';
+    return season.drama.episodes > 0 ? '共 ${season.drama.episodes} 集' : '';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final m = widget.metrics;
+    return Container(
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 12),
+      decoration: BoxDecoration(
+        color: colors.surfaceContainerHighest.withValues(alpha: .55),
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Row(
+              children: [
+                Icon(Icons.layers_rounded, size: 16, color: colors.primary),
+                const SizedBox(width: 6),
+                Text(
+                  '系列多季',
+                  style: TextStyle(
+                    fontSize: m.section,
+                    fontWeight: FontWeight.w700,
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 8,
+                    vertical: 2,
+                  ),
+                  decoration: BoxDecoration(
+                    color: colors.primary.withValues(alpha: .16),
+                    borderRadius: BorderRadius.circular(999),
+                  ),
+                  child: Text(
+                    '共 ${widget.seasons.length} 季',
+                    style: TextStyle(fontSize: m.tag, color: colors.primary),
+                  ),
+                ),
+                const Spacer(),
+                if (widget.swipeHint)
+                  Text(
+                    '左右滑动切换',
+                    style: TextStyle(
+                      fontSize: m.tag,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 10),
+          SizedBox(
+            height: 90,
+            child: ListView.separated(
+              controller: _scroll,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              itemCount: widget.seasons.length,
+              separatorBuilder: (_, _) => const SizedBox(width: _gap),
+              itemBuilder: (context, index) =>
+                  _card(context, widget.seasons[index]),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _card(BuildContext context, DramaSeason season) {
+    final colors = Theme.of(context).colorScheme;
+    final m = widget.metrics;
+    final selected = season.drama.id == widget.current;
+    final foreground = selected ? colors.onPrimaryContainer : colors.onSurface;
+    final muted = selected
+        ? colors.onPrimaryContainer.withValues(alpha: .8)
+        : colors.onSurfaceVariant;
+    final status = _status(season, selected);
+    final online = season.onlineLabel;
+    return FocusRing(
+      radius: 12,
+      child: Material(
+        color: selected ? colors.primaryContainer : colors.surfaceContainer,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: selected ? null : () => widget.onSelected(season),
+          child: Container(
+            width: _cardWidth,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Row(
+                  children: [
+                    Flexible(
+                      child: Text(
+                        season.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: m.meta,
+                          fontWeight: FontWeight.w700,
+                          color: foreground,
+                        ),
+                      ),
+                    ),
+                    if (selected) ...[
+                      const SizedBox(width: 4),
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colors.onPrimaryContainer.withValues(
+                            alpha: .14,
+                          ),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '当前',
+                          style: TextStyle(
+                            fontSize: m.tag * .85,
+                            color: colors.onPrimaryContainer,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (status.isNotEmpty)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 3),
+                    child: Text(
+                      status,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: m.tag, color: muted),
+                    ),
+                  ),
+                if (online != null)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 2),
+                    child: Text(
+                      online,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(fontSize: m.tag * .92, color: muted),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
 }

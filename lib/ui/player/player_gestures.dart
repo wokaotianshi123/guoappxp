@@ -36,6 +36,7 @@ class PlayerGestures extends ChangeNotifier {
     this.brightnessZone = .5,
     this.volumeSwipe = true,
     this.requireHold = false,
+    this.swipeEpisodes = false,
   }) {
     unawaited(
       AppDevice.getBrightness().then((value) {
@@ -71,6 +72,9 @@ class PlayerGestures extends ChangeNotifier {
   /// 因为纵向翻页本来就不认横向手势。
   final bool requireHold;
 
+  /// 横屏全屏时上下滑动切集；开启后竖滑不再调亮度 / 音量。
+  final bool swipeEpisodes;
+
   GestureHudState _hud = const GestureHudState();
   GestureHudState get hud => _hud;
 
@@ -87,6 +91,7 @@ class PlayerGestures extends ChangeNotifier {
   bool _moved = false;
   bool _leftZone = false;
   bool _brightnessMode = false;
+  bool _episodeMode = false;
   bool _held = false;
   bool _disposed = false;
   _Axis _axis = _Axis.none;
@@ -130,6 +135,7 @@ class PlayerGestures extends ChangeNotifier {
     _moved = false;
     _axis = _Axis.none;
     _brightnessMode = false;
+    _episodeMode = false;
     // 只有触摸才有「哪半边」的概念；鼠标拖拽不做亮度/音量，免得误触。
     _leftZone =
         event.kind == PointerDeviceKind.touch &&
@@ -181,6 +187,17 @@ class PlayerGestures extends ChangeNotifier {
     }
 
     if (_axis == _Axis.vertical) {
+      // 开启「上下滑动切换剧集」时，竖滑直接切集，不再调音量 / 亮度。
+      if (swipeEpisodes && _canAdjust) {
+        if (dy.abs() < _swipeThreshold) return;
+        _episodeMode = true;
+        _show(
+          SwipeAction.seek,
+          0,
+          label: dy > 0 ? '上滑播放下一集' : '下滑播放上一集',
+        );
+        return;
+      }
       // 竖屏播放器的右半屏竖滑属于「上下滑动切集」，这里不接管音量。
       if (!volumeSwipe || !_canAdjust) return;
       // 竖向留一点死区，避免手指轻微抖动就把音量/亮度改掉。
@@ -216,6 +233,11 @@ class PlayerGestures extends ChangeNotifier {
       _dismiss();
     } else if (_hud.type == SwipeAction.volume) {
       _dismissLater();
+    } else if (_episodeMode) {
+      if (delta.dy.abs() >= _swipeThreshold) {
+        unawaited(delta.dy > 0 ? session.next() : session.previous());
+      }
+      _dismiss();
     }
 
     if (_moved) {
@@ -274,6 +296,7 @@ class PlayerGestures extends ChangeNotifier {
     _last = null;
     _axis = _Axis.none;
     _brightnessMode = false;
+    _episodeMode = false;
     _held = false;
   }
 

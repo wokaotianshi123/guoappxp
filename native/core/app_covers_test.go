@@ -18,3 +18,19 @@ func TestNativeCoverRefererDouban(t *testing.T) {
 		t.Fatalf("非豆瓣海报的 Referer = %q", got)
 	}
 }
+
+// 黄豆换线后封面必须跟着域名走，否则新域名会 403。
+func TestNativeCoverRefererFollowsHuangdouPool(t *testing.T) {
+	d := &Downloader{cfg: defaultConfig(), providerHosts: map[string]string{}}
+	for _, pooled := range huangdouHostPool {
+		cover := "https://" + pooled + "/covers/a.jpg"
+		want := "https://" + pooled + "/home"
+		if got := nativeCoverReferer(d, sourceHuangdou, cover); got != want {
+			t.Fatalf("封面 referer 未跟随域名池: %s -> %s (want %s)", pooled, got, want)
+		}
+	}
+	d.providerHosts[sourceHuangdou] = "https://" + huangdouHostPool[1]
+	if got := nativeCoverReferer(d, sourceHuangdou, "https://example.com/covers/a.jpg"); got != "https://"+huangdouHostPool[1]+"/home" {
+		t.Fatalf("非池域名封面未回落到首选站点: %s", got)
+	}
+}

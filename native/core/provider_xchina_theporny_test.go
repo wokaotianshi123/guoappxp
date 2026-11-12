@@ -51,24 +51,12 @@ func TestXChinaAndThepornySourceIdentity(t *testing.T) {
 }
 
 func TestXChinaAndThepornyCategoriesAndEndpoints(t *testing.T) {
-	if !validXChinaCategory("recent") || validXChinaCategory("not-a-category") {
-		t.Fatal("XChina 分类校验异常")
-	}
-	if kind, ok := validThepornyCategory("c1"); !ok || kind != "c1" {
-		t.Fatalf("Theporny 分类校验异常: %s %v", kind, ok)
-	}
-	if _, ok := validThepornyCategory("not-a-category"); ok {
-		t.Fatal("Theporny 接受了无效分类")
-	}
-
+	// 分类校验已随站源迁到 guoapp-sources，这里只保留运行时侧的默认线路。
 	d := &Downloader{cfg: defaultConfig()}
 	if got := d.providerBaseURL(sourceXChina); got != xchinaBaseURL {
 		t.Fatalf("XChina 默认线路异常: %s", got)
 	}
-	if got := d.providerBaseURL(sourceTheporny); got != thepornyHosts[0] {
+	if got := d.providerBaseURL(sourceTheporny); got != thepornyBaseURL {
 		t.Fatalf("Theporny 默认线路异常: %s", got)
-	}
-	if len(d.fetchXChinaCategories()) == 0 || len(d.fetchThepornyCategories()) == 0 {
-		t.Fatal("内置分类为空")
 	}
 }

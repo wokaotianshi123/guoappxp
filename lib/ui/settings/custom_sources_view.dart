@@ -24,7 +24,7 @@ class CustomSourceImportPreset {
   final String url;
 }
 
-/// 内置预设：默认填入第一项「网页」，也可点选「采集」切换。
+/// 内置预设：默认不填入地址，点「网页」或「采集」才写进输入框。
 ///
 /// 预设本身是「加速链接+网址」拼接形态，核心会作为整体识别抓取，
 /// 不会只取斜杠前的加速域名。
@@ -738,11 +738,8 @@ class _CustomSourceImportDialog extends StatefulWidget {
 }
 
 class _CustomSourceImportDialogState extends State<_CustomSourceImportDialog> {
-  final _url = TextEditingController(
-    text: customSourceImportPresets.isEmpty
-        ? ''
-        : customSourceImportPresets.first.url,
-  );
+  // 不预填默认地址：输入框留空由用户自己填，或点下面的「网页 / 采集」按钮填入。
+  final _url = TextEditingController();
   bool _fileMode = true;
 
   @override

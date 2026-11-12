@@ -25,6 +25,43 @@ const fanqieAudiobookBoards = [
   FanqieAudiobookBoard('女生听书', 17, 0),
 ];
 
+/// 听书页顶部的两个书源。红果听书和番茄畅听是同一后端（红果专辑在
+/// `api.novelfm.com` 上按同一 `book_id` 可直接查详情与目录），区别在于
+/// 红果听书吃官方书城的听书专辑（带主播、集数、评分），番茄听书吃榜单。
+class FanqieAudiobookOrigin {
+  const FanqieAudiobookOrigin(this.name, this.type);
+
+  final String name;
+  final int type;
+}
+
+const fanqieAudiobookOrigins = [
+  FanqieAudiobookOrigin('红果听书', 0),
+  FanqieAudiobookOrigin('番茄听书', 1),
+];
+
+/// 主播名里出现这些词时，说明是官方 AI 音色而不是真人录制。
+const _fanqieAiAnchorHints = [
+  'ai',
+  '智能',
+  '机器',
+  '合成',
+  'tts',
+  '番茄畅听',
+  '番茄小说',
+  '听书助手',
+];
+
+/// 详情页的有声书类型标签。
+String fanqieVoiceMode(String anchor) {
+  final text = anchor.trim().toLowerCase();
+  if (text.isEmpty) return 'AI 朗读';
+  for (final hint in _fanqieAiAnchorHints) {
+    if (text.contains(hint)) return 'AI 朗读';
+  }
+  return '真人录音';
+}
+
 /// 番茄畅听榜单返回的 `category_v2` 真实标签（按出现频次挑选的高频分类）。
 ///
 /// 榜单接口没有分类列表，分类是从榜单书籍自带的标签里统计出来的，因此这些
@@ -105,12 +142,19 @@ class FanqieBook {
     this.cover = '',
     this.intro = '',
     this.board = 0,
+    this.anchor = '',
   });
 
   final String id;
   final String title;
   final String author;
   final String category;
+
+  /// 有声书主播名；为空说明这条没有真人录制。
+  final String anchor;
+
+  /// 详情页标签：有主播录制的算「真人录音」，否则是 AI 音色朗读。
+  String get voiceMode => fanqieVoiceMode(anchor);
 
   /// 榜单/搜索返回的 `thumb_url` 封面地址，为空时列表显示占位图。
   final String cover;
@@ -707,6 +751,7 @@ FanqieOfficialPage fanqieOfficialPage(Object? decoded, {int tabType = 0}) {
           ),
           intro: fanqieIntro(rawBook['abstract']),
           board: '${rawBook['gender'] ?? ''}'.trim() == '0' ? 1 : 0,
+          anchor: fanqiePlainText('${rawBook['anchor'] ?? ''}'),
         ),
       );
     }
