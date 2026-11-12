@@ -340,6 +340,9 @@ class AudiobookStore extends ChangeNotifier {
       title: title,
       author: '${json['author'] ?? ''}',
       category: '${json['category'] ?? ''}',
+      // 旧存档没有这两个字段，缺省空串即可，封面/简介为空时列表用占位。
+      cover: '${json['cover'] ?? ''}',
+      intro: '${json['intro'] ?? ''}',
     );
   }
 
@@ -348,6 +351,8 @@ class AudiobookStore extends ChangeNotifier {
     'title': book.title,
     'author': book.author,
     'category': book.category,
+    'cover': book.cover,
+    'intro': book.intro,
   };
 }
 

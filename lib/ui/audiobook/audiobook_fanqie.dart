@@ -20,6 +20,38 @@ const fanqieAudiobookBoards = [
   FanqieAudiobookBoard('女生听书', 17, 0),
 ];
 
+/// 番茄畅听榜单返回的 `category_v2` 真实标签（按出现频次挑选的高频分类）。
+///
+/// 榜单接口没有分类列表，分类是从榜单书籍自带的标签里统计出来的，因此这些
+/// 名字都能在番茄畅听的实际数据里对应到书，不是凭空编的分类词。选分类时把
+/// 男/女两个榜的书池合并后按标签过滤。
+const fanqieAudiobookCategories = [
+  '都市',
+  '玄幻',
+  '悬疑',
+  '灵异',
+  '推理',
+  '历史',
+  '系统',
+  '穿越',
+  '重生',
+  '民俗秘闻',
+  '游戏体育',
+  '都市生活',
+  '科幻末世',
+  '战神赘婿',
+  '现代言情',
+  '古代言情',
+  '豪门总裁',
+  '宫斗宅斗',
+  '年代',
+  '种田',
+  '神医',
+  '女强',
+  '玄幻言情',
+  '先婚后爱',
+];
+
 class AudiobookSegment {
   const AudiobookSegment(this.text, this.start);
 
@@ -49,12 +81,20 @@ class FanqieBook {
     required this.title,
     required this.author,
     required this.category,
+    this.cover = '',
+    this.intro = '',
   });
 
   final String id;
   final String title;
   final String author;
   final String category;
+
+  /// 榜单/搜索返回的 `thumb_url` 封面地址，为空时列表显示占位图。
+  final String cover;
+
+  /// 榜单/搜索返回的 `abstract` 简介，为空时列表显示「暂无简介」。
+  final String intro;
 }
 
 class FanqieChapter {
@@ -109,6 +149,31 @@ class FanqieAudiobookApi {
         'https://api.fanqiesdk.com/api/novel/channel/homepage/rank/rank_list/v2/'
         '?aid=13&limit=20&offset=$offset&side_type=${board.sideType}&type=${board.type}';
     return fanqieRankPage(jsonDecode(await _fetch(url)));
+  }
+
+  /// 一次抓够分类与翻页用的书池。
+  ///
+  /// 榜单接口的 `has_more` 恒为 false，但 offset 会持续返回新数据（每页 30 条、
+  /// 相邻页重叠 10 条），所以不能靠 has_more 判断是否还有下一页；这里按固定
+  /// 页数并发抓取，再按 book_id 去重合并。单页失败不影响整池，只是少几本书。
+  Future<List<FanqieBook>> rankPool(
+    FanqieAudiobookBoard board, {
+    int pages = 5,
+  }) async {
+    final results = await Future.wait([
+      for (var page = 1; page <= pages; page++)
+        rank(board, page: page).catchError(
+          (Object _) => const FanqieSearchPage(books: [], hasMore: false),
+        ),
+    ]);
+    final seen = <String>{};
+    final pool = <FanqieBook>[];
+    for (final result in results) {
+      for (final book in result.books) {
+        if (seen.add(book.id)) pool.add(book);
+      }
+    }
+    return pool;
   }
 
   Future<List<String>> chapterText(String itemId) async {
@@ -206,6 +271,8 @@ FanqieSearchPage fanqieSearchPage(Object? decoded) {
           title: title,
           author: fanqiePlainText('${row['author'] ?? ''}'),
           category: fanqiePlainText('${row['category'] ?? ''}'),
+          cover: fanqieCover(row['thumb_url']),
+          intro: fanqieIntro(row['abstract']),
         ),
       );
     }
@@ -258,7 +325,10 @@ FanqieSearchPage fanqieRankPage(Object? decoded) {
           id: id,
           title: title,
           author: fanqiePlainText('${row['author'] ?? ''}'),
-          category: fanqieCategory(row['category']),
+          // 榜单同时给 category（逗号串）与 category_v2（标签数组），后者更干净。
+          category: fanqieCategory(row['category_v2'] ?? row['category']),
+          cover: fanqieCover(row['thumb_url']),
+          intro: fanqieIntro(row['abstract']),
         ),
       );
     }
@@ -396,6 +466,13 @@ String fanqieCategory(Object? value) {
   }
   return fanqiePlainText('${value ?? ''}');
 }
+
+/// 封面 URL 原样保留（带签名参数），列表用 Image.network 直接加载。
+String fanqieCover(Object? value) => '${value ?? ''}'.trim();
+
+/// 简介可能带高亮/换行标签，去掉标签与实体后再展示。
+String fanqieIntro(Object? value) =>
+    fanqieInlineText('${value ?? ''}').replaceAll('\n', ' ').trim();
 
 String fanqiePlainText(String value) =>
     value.replaceAll(RegExp(r'</?em>'), '').trim();

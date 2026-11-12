@@ -16,6 +16,9 @@ export 'audiobook_session.dart' show AudiobookSession, AudiobookSleep;
 
 const fanqieSearchWords = ['评书', '玄幻', '都市', '悬疑', '武侠'];
 
+/// 每页固定条数：列数随页宽变化，但每页条数不变，翻页页码才不会乱跳。
+const _pageSize = 10;
+
 enum _AudiobookPane { search, shelf, history }
 
 class AudiobookScreen extends StatefulWidget {
@@ -44,21 +47,31 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   final _search = TextEditingController();
   AudiobookStore? _store;
   _AudiobookPane _pane = _AudiobookPane.search;
+
+  /// 搜索结果只放当前页，翻页时替换而不是无限追加。
   List<FanqieBook> _books = const [];
+
+  /// 男 / 女两个榜的书池：分类过滤与本地翻页都基于它们。
+  List<FanqieBook> _malePool = const [];
+  List<FanqieBook> _femalePool = const [];
+
   bool _loading = false;
-  bool _loadingMore = false;
   bool _hasMore = false;
   int _page = 1;
   String _query = '';
-  FanqieAudiobookBoard? _board;
+  FanqieAudiobookBoard _board = fanqieAudiobookBoards.first;
+
+  /// 空串表示「全部」，否则按番茄畅听的真实分类标签过滤。
+  String _category = '';
   String? _error;
   String? _storeError;
+  int _generation = 0;
 
   @override
   void initState() {
     super.initState();
     _prepare();
-    _loadBoard(fanqieAudiobookBoards.first);
+    unawaited(_loadPools());
   }
 
   @override
@@ -89,80 +102,148 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     if (mounted) setState(() {});
   }
 
-  Future<void> _loadBoard(
-    FanqieAudiobookBoard board, {
-    bool more = false,
-  }) async {
-    final page = more && _board == board && _query.isEmpty ? _page + 1 : 1;
+  /// 一次性把男女两榜的前几页抓成书池。榜单接口的 has_more 恒为 false，
+  /// 靠「继续」按钮永远翻不到下一页，所以这里自己并发翻页并去重。
+  Future<void> _loadPools() async {
+    final token = ++_generation;
     setState(() {
-      if (page == 1) {
-        _loading = true;
-        _books = const [];
-        _search.clear();
-      } else {
-        _loadingMore = true;
-      }
+      _loading = true;
       _error = null;
-      _board = board;
-      _query = '';
     });
     try {
-      final result = await _api.rank(board, page: page);
-      if (!mounted) return;
+      final results = await Future.wait([
+        _api.rankPool(fanqieAudiobookBoards[0]),
+        _api.rankPool(fanqieAudiobookBoards[1]),
+      ]);
+      if (!mounted || token != _generation) return;
       setState(() {
-        _books = page == 1 ? result.books : [..._books, ...result.books];
-        _page = page;
-        _hasMore = result.hasMore;
+        _malePool = results[0];
+        _femalePool = results[1];
         _loading = false;
-        _loadingMore = false;
-        _error = page == 1 && result.books.isEmpty ? '听书榜暂时没有书' : null;
+        _error = _pool.isEmpty ? '番茄畅听榜单暂时没有书' : null;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || token != _generation) return;
       setState(() {
         _loading = false;
-        _loadingMore = false;
-        if (_books.isEmpty) _error = '$error';
+        _error = '$error';
       });
-      if (_books.isNotEmpty) _toast('$error');
     }
   }
 
-  Future<void> _run([String? word, bool more = false]) async {
-    final query = (word ?? _search.text).trim();
-    if (word != null) _search.text = word;
-    if (query.isEmpty) return;
-    final page = more && query == _query ? _page + 1 : 1;
+  /// 当前数据源：选分类时把男女榜合并去重后按标签过滤，否则只看选中的榜。
+  List<FanqieBook> get _pool {
+    if (_category.isEmpty) {
+      return _board.type == 0 ? _femalePool : _malePool;
+    }
+    final seen = <String>{};
+    final merged = <FanqieBook>[
+      for (final book in [..._malePool, ..._femalePool])
+        if (seen.add(book.id)) book,
+    ];
+    return [
+      for (final book in merged)
+        if (_matchesCategory(book, _category)) book,
+    ];
+  }
+
+  bool _matchesCategory(FanqieBook book, String category) => book.category
+      .split(RegExp(r'[·,，、/\s]+'))
+      .any((tag) => tag.trim() == category);
+
+  List<FanqieBook> get _visibleBooks {
+    if (_query.isNotEmpty) return _books;
+    final pool = _pool;
+    final start = (_page - 1) * _pageSize;
+    if (start >= pool.length) return const [];
+    final end = start + _pageSize;
+    return pool.sublist(start, end > pool.length ? pool.length : end);
+  }
+
+  int get _totalPages {
+    if (_query.isNotEmpty) return _page + (_hasMore ? 1 : 0);
+    final count = _pool.length;
+    return count == 0 ? 1 : (count / _pageSize).ceil();
+  }
+
+  bool get _canPrev => _page > 1;
+  bool get _canNext => _query.isNotEmpty ? _hasMore : _page < _totalPages;
+
+  void _changePage(int delta) {
+    final next = _page + delta;
+    if (next < 1) return;
+    if (_query.isNotEmpty) {
+      // 搜索走服务端分页，上一页/下一页重新请求对应 offset。
+      if (delta > 0 && !_hasMore) return;
+      unawaited(_run(null, next));
+      return;
+    }
+    if (next > _totalPages) return;
+    setState(() => _page = next);
+  }
+
+  void _loadBoard(FanqieAudiobookBoard board) {
+    ++_generation;
+    _search.clear();
+    final empty = _malePool.isEmpty && _femalePool.isEmpty;
     setState(() {
-      if (page == 1) {
-        _loading = true;
-        _books = const [];
-      } else {
-        _loadingMore = true;
-      }
+      _board = board;
+      _query = '';
+      _category = '';
+      _page = 1;
+      _hasMore = false;
+      _books = const [];
       _error = null;
-      _board = null;
+      _loading = empty;
+    });
+    if (empty) unawaited(_loadPools());
+  }
+
+  void _selectCategory(String category) {
+    ++_generation;
+    _search.clear();
+    final empty = _malePool.isEmpty && _femalePool.isEmpty;
+    setState(() {
+      _category = category;
+      _query = '';
+      _page = 1;
+      _hasMore = false;
+      _books = const [];
+      _error = null;
+      _loading = empty;
+    });
+    if (empty) unawaited(_loadPools());
+  }
+
+  Future<void> _run([String? word, int page = 1]) async {
+    final query = (word ?? _search.text).trim();
+    if (query.isEmpty) return;
+    if (word != null) _search.text = word;
+    final token = ++_generation;
+    setState(() {
+      _loading = true;
+      _error = null;
+      _query = query;
+      _category = '';
+      _page = page;
+      _hasMore = false;
+      _books = const [];
     });
     try {
       final result = await _api.search(query, page: page);
-      if (!mounted) return;
+      if (!mounted || token != _generation) return;
       setState(() {
-        _books = page == 1 ? result.books : [..._books, ...result.books];
-        _page = page;
-        _query = query;
+        _books = result.books;
         _hasMore = result.hasMore;
         _loading = false;
-        _loadingMore = false;
-        _error = page == 1 && result.books.isEmpty ? '没有找到听书' : null;
+        _error = result.books.isEmpty ? '没有找到听书' : null;
       });
     } catch (error) {
-      if (!mounted) return;
+      if (!mounted || token != _generation) return;
       setState(() {
         _loading = false;
-        _loadingMore = false;
-        if (_books.isEmpty) _error = '$error';
+        _error = '$error';
       });
-      if (_books.isNotEmpty) _toast('$error');
     }
   }
 
@@ -180,10 +261,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         ),
       ),
     );
-  }
-
-  void _toast(String text) {
-    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(text)));
   }
 
   @override
@@ -225,7 +302,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
                 hintText: '搜索番茄畅听',
                 prefixIcon: Icon(Icons.search_rounded),
               ),
-              onSubmitted: (_) => _run(),
+              onSubmitted: (_) => unawaited(_run()),
             ),
           ),
           SizedBox(
@@ -234,13 +311,32 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
               scrollDirection: Axis.horizontal,
               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
               children: [
+                // 两个榜作为「全部」入口，后面跟番茄畅听的真实分类标签。
                 for (final board in fanqieAudiobookBoards)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: ChoiceChip(
                       label: Text(board.name),
-                      selected: _query.isEmpty && _board == board,
+                      selected:
+                          _query.isEmpty &&
+                          _category.isEmpty &&
+                          _board == board,
                       onSelected: (_) => _loadBoard(board),
+                    ),
+                  ),
+                const Padding(
+                  padding: EdgeInsets.only(right: 4),
+                  child: Center(
+                    child: Text('分类', style: TextStyle(fontSize: 12)),
+                  ),
+                ),
+                for (final category in fanqieAudiobookCategories)
+                  Padding(
+                    padding: const EdgeInsets.only(right: 8),
+                    child: ChoiceChip(
+                      label: Text(category),
+                      selected: _query.isEmpty && _category == category,
+                      onSelected: (_) => _selectCategory(category),
                     ),
                   ),
                 for (final word in fanqieSearchWords)
@@ -249,7 +345,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
                     child: ChoiceChip(
                       label: Text(word),
                       selected: _query == word,
-                      onSelected: (_) => _run(word),
+                      onSelected: (_) => unawaited(_run(word)),
                     ),
                   ),
               ],
@@ -257,8 +353,37 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           ),
         ],
         Expanded(child: _body(store)),
+        // 上一页 / 下一页固定在列表下方，不随列表滚动消失。
+        if (_pane == _AudiobookPane.search) _pager(),
         const AudiobookNowPlayingBar(),
       ],
+    );
+  }
+
+  Widget _pager() {
+    final total = _totalPages;
+    final label = _query.isEmpty
+        ? '第 $_page / $total 页 · 共 ${_pool.length} 本'
+        : '第 $_page 页';
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        spacing: 8,
+        children: [
+          IconButton(
+            tooltip: '上一页',
+            onPressed: _canPrev ? () => _changePage(-1) : null,
+            icon: const Icon(Icons.chevron_left_rounded),
+          ),
+          Text(label, style: const TextStyle(fontSize: 13)),
+          IconButton(
+            tooltip: '下一页',
+            onPressed: _canNext ? () => _changePage(1) : null,
+            icon: const Icon(Icons.chevron_right_rounded),
+          ),
+        ],
+      ),
     );
   }
 
@@ -315,48 +440,170 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         break;
     }
     if (_loading) return const Center(child: CircularProgressIndicator());
-    if (_error != null && _books.isEmpty) {
+    if (_error != null && _visibleBooks.isEmpty) {
       return StatusPanel(
         title: '没有听书结果',
         message: _error!,
         icon: Icons.headphones_rounded,
-        onRetry: () =>
-            _query.isEmpty && _board != null ? _loadBoard(_board!) : _run(),
+        onRetry: () {
+          if (_query.isNotEmpty) {
+            unawaited(_run(_query));
+          } else {
+            unawaited(_loadPools());
+          }
+        },
       );
     }
-    if (_books.isEmpty) {
+    if (_visibleBooks.isEmpty) {
       return const StatusPanel(
-        title: '搜索番茄畅听',
-        message: '听书榜会列在这里。也可以搜索书名，或点上面的词。',
+        title: '挑个分类开始',
+        message: '点上面的分类或榜单，也可以搜索书名；用下方的按钮翻页。',
         icon: Icons.headphones_rounded,
       );
     }
-    return ListView.builder(
-      itemCount: _books.length + (_hasMore ? 1 : 0),
-      itemBuilder: (context, index) {
-        if (index >= _books.length) {
-          return TextButton(
-            onPressed: _loadingMore
-                ? null
-                : () => _query.isEmpty && _board != null
-                      ? _loadBoard(_board!, more: true)
-                      : _run(null, true),
-            child: Text(_loadingMore ? '加载中' : '继续'),
-          );
-        }
-        final book = _books[index];
-        return ListTile(
-          key: ValueKey('audiobook-${book.id}'),
-          title: Text(book.title),
-          subtitle: Text(_bookLine(book)),
-          onTap: () => _open(book),
-        );
-      },
-    );
+    return _bookGrid();
   }
+
+  /// 每行是「封面 | 标题 + 简介」的卡片；列数、封面宽度和简介行数随页宽变化。
+  Widget _bookGrid() => LayoutBuilder(
+    builder: (context, constraints) {
+      final width = constraints.maxWidth;
+      final columns = width >= 1080
+          ? 3
+          : width >= 640
+          ? 2
+          : 1;
+      final introLines = width >= 1080 ? 3 : 2;
+      final coverWidth = width >= 640 ? 78.0 : 66.0;
+      final books = _visibleBooks;
+      return GridView.builder(
+        key: ValueKey('audiobook-grid-$columns-$_page-$_query-$_category'),
+        padding: const EdgeInsets.fromLTRB(12, 8, 12, 12),
+        gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+          crossAxisCount: columns,
+          mainAxisExtent: 132,
+          crossAxisSpacing: 8,
+          mainAxisSpacing: 8,
+        ),
+        itemCount: books.length,
+        itemBuilder: (context, index) => _BookCard(
+          book: books[index],
+          introLines: introLines,
+          coverWidth: coverWidth,
+          onTap: () => _open(books[index]),
+        ),
+      );
+    },
+  );
 
   String _bookLine(FanqieBook book) =>
       [book.author, book.category].where((item) => item.isNotEmpty).join(' · ');
+}
+
+/// 封面 + 标题 + 作者/分类 + 简介的书籍卡片。封面直接取番茄畅听返回的
+/// thumb_url（带签名），加载失败或没有封面时退回占位图。
+class _BookCard extends StatelessWidget {
+  const _BookCard({
+    required this.book,
+    required this.introLines,
+    required this.coverWidth,
+    required this.onTap,
+  });
+
+  final FanqieBook book;
+  final int introLines;
+  final double coverWidth;
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final placeholder = ColoredBox(
+      color: colors.surfaceContainerHighest,
+      child: Center(
+        child: Icon(
+          Icons.headphones_rounded,
+          color: colors.onSurfaceVariant,
+          size: 28,
+        ),
+      ),
+    );
+    return Card(
+      margin: EdgeInsets.zero,
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: onTap,
+        child: Padding(
+          padding: const EdgeInsets.all(10),
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              ClipRRect(
+                borderRadius: BorderRadius.circular(8),
+                child: SizedBox(
+                  width: coverWidth,
+                  height: coverWidth * 4 / 3,
+                  child: book.cover.isEmpty
+                      ? placeholder
+                      : Image.network(
+                          book.cover,
+                          fit: BoxFit.cover,
+                          cacheWidth: 240,
+                          headers: const {
+                            'User-Agent': 'Mozilla/5.0',
+                            'Referer': 'https://fanqienovel.com/',
+                          },
+                          errorBuilder: (_, _, _) => placeholder,
+                        ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      book.title,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      [
+                        book.author,
+                        book.category,
+                      ].where((item) => item.isNotEmpty).join(' · '),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      book.intro.isEmpty ? '暂无简介' : book.intro,
+                      maxLines: introLines,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 12.5,
+                        height: 1.35,
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class AudiobookCatalogScreen extends StatefulWidget {
