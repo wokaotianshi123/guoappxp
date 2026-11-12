@@ -128,65 +128,24 @@ func stripFanqieEm(value string) string {
 	return strings.TrimSpace(value)
 }
 
-func audiobookCategory(value any) string {
-	if list, ok := value.([]any); ok {
-		parts := make([]string, 0, len(list))
-		for _, item := range list {
-			if text := audiobookText2(item); text != "" {
-				parts = append(parts, text)
-			}
-		}
-		return strings.Join(parts, " · ")
-	}
-	return audiobookText2(value)
-}
-
 // —— 榜单 / 搜索 / 目录 ——
+//
+// 榜单与搜索都改由服务端全量书库（audiobook_library.go）统一供数：榜单接口
+// 固定每页 30 条且 has_more 恒 false，旧的「limit=20 + offset 步长 20」会重叠
+// 漏书、翻页也永远停在首页。保留这两个旧端点，回包格式不变，额外带上
+// total / pageCount / categories / library 供网页显示分类与分页。
 
 // GET /api/audiobook/ranks?side=17&type=1&page=1
 func handleAudiobookRanks(writer http.ResponseWriter, request *http.Request) {
-	side := request.URL.Query().Get("side")
-	if side == "" {
-		side = "17"
+	params := request.URL.Query()
+	board := 0
+	if params.Get("type") == "0" {
+		board = 1
 	}
-	kind := request.URL.Query().Get("type")
-	if kind == "" {
-		kind = "1"
-	}
-	page, _ := strconv.Atoi(request.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	offset := (page - 1) * audiobookPageSize
-	target := "https://api.fanqiesdk.com/api/novel/channel/homepage/rank/rank_list/v2/" +
-		"?aid=13&limit=" + strconv.Itoa(audiobookPageSize) +
-		"&offset=" + strconv.Itoa(offset) +
-		"&side_type=" + url.QueryEscape(side) + "&type=" + url.QueryEscape(kind)
-	root, err := audiobookFetchJSON(target, nil)
-	if err != nil {
-		writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	data := audiobookObject(root["data"])
-	books := []map[string]any{}
-	for _, row := range audiobookRows(data["result"]) {
-		if asString(row["genre"]) != audiobookGenre {
-			continue
-		}
-		id := strings.TrimSpace(asString(row["book_id"]))
-		title := audiobookText2(firstNonEmpty(row["book_name"], row["title"]))
-		if id == "" || title == "" {
-			continue
-		}
-		books = append(books, map[string]any{
-			"id": id, "title": title,
-			"author":   audiobookText2(row["author"]),
-			"category": audiobookCategory(row["category"]),
-		})
-	}
-	writeJSON(writer, map[string]any{"ok": true, "data": map[string]any{
-		"books": books, "hasMore": data["has_more"] == true,
-	}})
+	page, _ := strconv.Atoi(params.Get("page"))
+	data := abLibrary.query(board, "", "", page, audiobookPageSize)
+	data["hasMore"] = abQueryHasMore(data)
+	writeJSON(writer, map[string]any{"ok": true, "data": data})
 }
 
 // GET /api/audiobook/search?q=&page=1
@@ -199,42 +158,9 @@ func handleAudiobookSearch(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	page, _ := strconv.Atoi(request.URL.Query().Get("page"))
-	if page < 1 {
-		page = 1
-	}
-	offset := (page - 1) * 10
-	target := "https://api.fanqiesdk.com/api/novel/channel/homepage/search/search/v1/" +
-		"?q=" + url.QueryEscape(query) + "&offset=" + strconv.Itoa(offset) +
-		"&aid=13&app_name=news_article&version_name=7.0.8&device_platform=android"
-	root, err := audiobookFetchJSON(target, nil)
-	if err != nil {
-		writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
-		return
-	}
-	data := audiobookObject(root["data"])
-	rows := audiobookRows(data["list"])
-	if len(rows) == 0 {
-		rows = audiobookRows(data["ret_data"])
-	}
-	books := []map[string]any{}
-	for _, row := range rows {
-		if asString(row["genre"]) != audiobookGenre {
-			continue
-		}
-		id := strings.TrimSpace(asString(row["book_id"]))
-		title := audiobookText2(firstNonEmpty(row["title"], row["book_name"]))
-		if id == "" || title == "" {
-			continue
-		}
-		books = append(books, map[string]any{
-			"id": id, "title": title,
-			"author":   audiobookText2(row["author"]),
-			"category": audiobookText2(row["category"]),
-		})
-	}
-	writeJSON(writer, map[string]any{"ok": true, "data": map[string]any{
-		"books": books, "hasMore": data["has_more"] == true,
-	}})
+	data := abLibrary.query(0, "", query, page, audiobookLibraryPage)
+	data["hasMore"] = abQueryHasMore(data)
+	writeJSON(writer, map[string]any{"ok": true, "data": data})
 }
 
 // GET /api/audiobook/chapters?book=ID&page=1 —— 目录一次取全，按页切片。

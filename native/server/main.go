@@ -1086,6 +1086,7 @@ func main() {
 	mux.HandleFunc("/api/livestream/channels", handleLiveChannels)
 	mux.HandleFunc("/api/livestream/play", handleLivePlay)
 	mux.HandleFunc("/api/livestream/stream", handleLivestreamStream)
+	mux.HandleFunc("/api/audiobook/library", handleAudiobookLibrary)
 	mux.HandleFunc("/api/audiobook/ranks", handleAudiobookRanks)
 	mux.HandleFunc("/api/audiobook/search", handleAudiobookSearch)
 	mux.HandleFunc("/api/audiobook/chapters", handleAudiobookChapters)

@@ -3577,10 +3577,19 @@ var audiobookRates = [1, 1.25, 1.5, 2, 0.75];
 var audiobookState = {
   board: 0,
   page: 1,
+  pageCount: 1,
+  total: 0,
+  pageSize: 10,
   hasMore: false,
   books: [],
   loading: false,
   query: '',
+  // 分类来自榜单书籍自带的 category_v2 真实标签；空串表示「全部」。
+  category: '',
+  categories: [],
+  // 服务端全量书库的加载进度：边加载边能用，前端按 loading 轮询补全。
+  library: { loading: false, done: false, count: 0, error: '' },
+  libraryToken: 0,
   shelf: false,
   book: null,
   chapters: [],
@@ -3597,6 +3606,7 @@ var audiobookState = {
 
 var audiobookAudio = null;
 var audiobookHls = null;
+var audiobookLibraryTimer = null;
 var audiobookSleepTimer = null;
 var audiobookSleepMinutes = 0;
 var audiobookSleepUntil = 0;
@@ -3693,7 +3703,15 @@ function abShelf() {
 function abRememberBook(book) {
   if (!book || !book.id) { return; }
   var list = abShelf().filter(function (item) { return item.id !== book.id; });
-  list.unshift({ id: book.id, title: book.title, author: book.author || '', category: book.category || '' });
+  list.unshift({
+    id: book.id,
+    title: book.title,
+    author: book.author || '',
+    category: book.category || '',
+    cover: book.cover || '',
+    intro: book.intro || '',
+    board: typeof book.board === 'number' ? book.board : 0
+  });
   abWriteJSON(AUDIOBOOK_SHELF_KEY, list.slice(0, 100));
 }
 
@@ -3776,15 +3794,110 @@ function abSyncPlayer() {
 
 function abBooksHTML(books) {
   if (!books.length) {
-    return '<div class="empty">这里还没有内容，换个榜单或搜索一下。</div>';
+    var empty = audiobookState.library.loading && !audiobookState.shelf
+      ? '正在加载完整听书书库，请稍候…'
+      : '这里还没有内容，换个分类或搜索一下。';
+    return '<div class="empty">' + empty + '</div>';
   }
   return '<div class="ab-grid">' + books.map(function (book, index) {
+    // 封面来自榜单 thumb_url；被防盗链拦掉时隐藏图片，露出底下的书名首字占位。
+    var cover = book.cover
+      ? '<img class="ab-cover-img" src="' + escapeHTML(book.cover) + '" alt="" loading="lazy" />'
+      : '';
     return '<button type="button" class="ab-card" data-index="' + index + '">' +
-      '<span class="ab-cover">' + escapeHTML((book.title || '书').slice(0, 1)) + '</span>' +
+      '<span class="ab-cover">' + escapeHTML((book.title || '书').slice(0, 1)) + cover + '</span>' +
       '<span class="ab-meta"><span class="ab-title">' + escapeHTML(book.title) + '</span>' +
       '<span class="ab-sub">' + escapeHTML(book.author || '佚名') +
-      (book.category ? ' · ' + escapeHTML(book.category) : '') + '</span></span></button>';
+      (book.category ? ' · ' + escapeHTML(book.category) : '') + '</span>' +
+      (book.intro ? '<span class="ab-intro">' + escapeHTML(book.intro) + '</span>' : '') +
+      '</span></button>';
   }).join('') + '</div>';
+}
+
+// 列表上方的分类条 + 书库进度 + 分页：分类与分页都基于服务端全量书库。
+function abListHeadHTML() {
+  if (audiobookState.shelf) {
+    return '<div class="ab-list-head"><div class="ab-pager-row">' +
+      '<span class="ab-count">书架共 ' + audiobookState.books.length + ' 本</span></div></div>';
+  }
+  var categories = '<button type="button" class="btn mini ab-category' +
+    (audiobookState.category === '' ? ' active' : '') + '" data-index="-1">全部</button>' +
+    audiobookState.categories.map(function (name, index) {
+      return '<button type="button" class="btn mini ab-category' +
+        (audiobookState.category === name ? ' active' : '') +
+        '" data-index="' + index + '">' + escapeHTML(name) + '</button>';
+    }).join('');
+  var scope = audiobookState.query
+    ? '搜索「' + escapeHTML(audiobookState.query) + '」'
+    : (audiobookState.category
+      ? '分类「' + escapeHTML(audiobookState.category) + '」'
+      : '全量书库');
+  var status = audiobookState.library.error
+    ? escapeHTML(audiobookState.library.error)
+    : (audiobookState.library.loading
+      ? '书库加载中…（已收录 ' + audiobookState.library.count + ' 本）'
+      : scope + ' · 共 ' + audiobookState.total + ' 本');
+  var prevDisabled = audiobookState.page <= 1 ? ' disabled' : '';
+  var nextDisabled = audiobookState.page >= audiobookState.pageCount ? ' disabled' : '';
+  var pager = '<span class="ab-pager">' +
+    '<button type="button" class="btn mini" id="ab-prev-page"' + prevDisabled + '>上一页</button>' +
+    '<span class="ab-page-info">第 ' + audiobookState.page + ' / ' + audiobookState.pageCount + ' 页</span>' +
+    '<button type="button" class="btn mini" id="ab-next-page"' + nextDisabled + '>下一页</button>' +
+    '</span>';
+  return '<div class="ab-list-head">' +
+    '<div class="ab-category-row"><span class="ab-category-label">分类</span>' + categories + '</div>' +
+    '<div class="ab-pager-row"><span class="ab-count">' + status + '</span>' + pager + '</div>' +
+    '</div>';
+}
+
+// 书库后台还在翻页时定时补全当前查询；token 变化（用户切榜/搜索/翻页）即作废。
+function abScheduleLibraryRefresh() {
+  if (audiobookLibraryTimer) {
+    window.clearTimeout(audiobookLibraryTimer);
+    audiobookLibraryTimer = null;
+  }
+  var info = audiobookState.library;
+  if (!info || !info.loading || info.done) { return; }
+  var token = audiobookState.libraryToken;
+  audiobookLibraryTimer = window.setTimeout(function () {
+    audiobookLibraryTimer = null;
+    if (token !== audiobookState.libraryToken) { return; }
+    if (!audiobookState.book && !audiobookState.shelf && document.getElementById('ab-body')) {
+      abLoadLibrary(audiobookState.page);
+    }
+  }, 1800);
+}
+
+function abLoadLibrary(page) {
+  var token = ++audiobookState.libraryToken;
+  audiobookState.loading = true;
+  return abGet('library', {
+    board: audiobookState.board,
+    category: audiobookState.category,
+    q: audiobookState.query,
+    page: page,
+    size: audiobookState.pageSize
+  }).then(function (data) {
+    if (token !== audiobookState.libraryToken) { return; }
+    audiobookState.loading = false;
+    audiobookState.page = Number(data.page) || 1;
+    audiobookState.pageCount = Math.max(1, Number(data.pageCount) || 1);
+    audiobookState.total = Number(data.total) || 0;
+    audiobookState.hasMore = audiobookState.page < audiobookState.pageCount;
+    audiobookState.books = (data.books || []).slice();
+    audiobookState.categories = Array.isArray(data.categories) ? data.categories.slice() : [];
+    audiobookState.library = data.library || { loading: false, done: true, count: 0, error: '' };
+    // 不重建 toolbar：搜索框还在里面，轮询刷新时不能打断输入。
+    renderAudiobookBody();
+    if (document.getElementById('ab-body')) { abScheduleLibraryRefresh(); }
+  }).catch(function (error) {
+    if (token !== audiobookState.libraryToken) { return; }
+    audiobookState.loading = false;
+    var body = document.getElementById('ab-body');
+    if (body) {
+      body.innerHTML = '<div class="empty">' + escapeHTML(error.message || '听书书库加载失败') + '</div>';
+    }
+  });
 }
 
 function abParagraphsHTML() {
@@ -3832,13 +3945,42 @@ function renderAudiobookBody() {
       '<div class="ab-pane-head">' + escapeHTML(audiobookState.book.title) + '</div>' +
       abParagraphsHTML() + '</div>';
   } else {
-    body.innerHTML = '<div class="ab-grid-pane">' + abBooksHTML(audiobookState.books) + '</div>';
+    body.innerHTML = '<div class="ab-grid-pane">' + abListHeadHTML() +
+      abBooksHTML(audiobookState.books) + '</div>';
   }
   Array.prototype.forEach.call(body.querySelectorAll('.ab-card'), function (button) {
     button.addEventListener('click', function () {
       abOpenBook(audiobookState.books[Number(button.getAttribute('data-index'))]);
     });
   });
+  Array.prototype.forEach.call(body.querySelectorAll('.ab-cover-img'), function (image) {
+    image.addEventListener('error', function () { image.style.display = 'none'; });
+  });
+  Array.prototype.forEach.call(body.querySelectorAll('.ab-category'), function (button) {
+    button.addEventListener('click', function () {
+      var index = Number(button.getAttribute('data-index'));
+      audiobookState.category = index < 0 ? '' : (audiobookState.categories[index] || '');
+      audiobookState.query = '';
+      audiobookState.shelf = false;
+      audiobookState.page = 1;
+      var input = document.getElementById('ab-search-input');
+      if (input) { input.value = ''; }
+      renderAudiobookToolbar();
+      abLoadLibrary(1);
+    });
+  });
+  var prevPage = body.querySelector('#ab-prev-page');
+  if (prevPage) {
+    prevPage.addEventListener('click', function () {
+      if (audiobookState.page > 1) { abLoadLibrary(audiobookState.page - 1); }
+    });
+  }
+  var nextPage = body.querySelector('#ab-next-page');
+  if (nextPage) {
+    nextPage.addEventListener('click', function () {
+      if (audiobookState.page < audiobookState.pageCount) { abLoadLibrary(audiobookState.page + 1); }
+    });
+  }
   Array.prototype.forEach.call(body.querySelectorAll('.ab-line'), function (line) {
     line.addEventListener('click', function () {
       var start = Number(line.getAttribute('data-start')) || 0;
@@ -3960,7 +4102,9 @@ function renderAudiobookToolbar() {
     button.addEventListener('click', function () {
       audiobookState.board = Number(button.getAttribute('data-index'));
       audiobookState.query = '';
+      audiobookState.category = '';
       audiobookState.shelf = false;
+      audiobookState.page = 1;
       abLoadBooks(1);
     });
   });
@@ -3968,9 +4112,13 @@ function renderAudiobookToolbar() {
   if (shelf) {
     shelf.addEventListener('click', function () {
       audiobookState.shelf = !audiobookState.shelf;
+      // 让在途的书库请求与轮询作废，书架视图不与列表数据互相覆盖。
+      ++audiobookState.libraryToken;
       if (audiobookState.shelf) {
         audiobookState.books = abShelf();
         audiobookState.hasMore = false;
+        audiobookState.query = '';
+        audiobookState.category = '';
         renderAudiobookToolbar();
         renderAudiobookBody();
       } else {
@@ -3985,7 +4133,9 @@ function renderAudiobookToolbar() {
       var input = document.getElementById('ab-search-input');
       var query = input ? input.value.trim() : '';
       audiobookState.query = query;
+      audiobookState.category = '';
       audiobookState.shelf = false;
+      audiobookState.page = 1;
       if (query) { abSearchBooks(1); } else { abLoadBooks(1); }
     });
   }
@@ -4011,46 +4161,29 @@ function renderAudiobookView() {
   return abLoadBooks(1);
 }
 
+// 榜单 / 分类 / 全库搜索统一走服务端全量书库：榜单 has_more 恒 false、
+// 单页搜索结果稀疏，都不再作为翻页与搜索的依据。
 function abLoadBooks(page) {
-  var board = audiobookBoards[audiobookState.board];
-  audiobookState.loading = true;
+  audiobookState.query = '';
+  audiobookState.category = '';
+  audiobookState.book = null;
+  audiobookState.chapters = [];
+  audiobookState.chapterIndex = -1;
+  // 清空搜索框里可能残留的上一次关键词，避免输入框与列表不一致。
+  renderAudiobookToolbar();
+  renderAudiobookPanel();
+  renderAudiobookBody();
+  return abLoadLibrary(page);
+}
+
+function abSearchBooks(page) {
+  audiobookState.category = '';
   audiobookState.book = null;
   audiobookState.chapters = [];
   audiobookState.chapterIndex = -1;
   renderAudiobookPanel();
   renderAudiobookBody();
-  return abGet('ranks', { side: board.side, type: board.type, page: page })
-    .then(function (data) {
-      audiobookState.loading = false;
-      audiobookState.page = page;
-      audiobookState.books = (data.books || []).slice();
-      audiobookState.hasMore = !!data.hasMore;
-      renderAudiobookToolbar();
-      renderAudiobookBody();
-    })
-    .catch(function (error) {
-      audiobookState.loading = false;
-      var body = document.getElementById('ab-body');
-      if (body) { body.innerHTML = '<div class="empty">' + escapeHTML(error.message || '榜单加载失败') + '</div>'; }
-    });
-}
-
-function abSearchBooks(page) {
-  return abGet('search', { q: audiobookState.query, page: page })
-    .then(function (data) {
-      audiobookState.page = page;
-      audiobookState.books = (data.books || []).slice();
-      audiobookState.hasMore = !!data.hasMore;
-      audiobookState.book = null;
-      audiobookState.chapters = [];
-      audiobookState.chapterIndex = -1;
-      renderAudiobookPanel();
-      renderAudiobookToolbar();
-      renderAudiobookBody();
-    })
-    .catch(function (error) {
-      showNotice(error.message || '搜索失败');
-    });
+  return abLoadLibrary(page);
 }
 
 function abOpenBook(book) {
