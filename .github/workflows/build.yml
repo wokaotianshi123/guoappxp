@@ -215,14 +215,14 @@ jobs:
         run: |
           if [ -z "$SOURCES_DEPLOY_KEY" ]; then
             echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
             exit 1
           fi
       - name: 检出外置站源（真果鉴）
         if: matrix.edition == 'zhenguojian'
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          repository: ${{ github.repository_owner }}/guoapp-sources
           ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
           path: guoapp-sources
       - &setup-python
@@ -363,14 +363,14 @@ jobs:
         run: |
           if [ -z "$SOURCES_DEPLOY_KEY" ]; then
             echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
             exit 1
           fi
       - name: 检出外置站源（真果鉴）
         if: matrix.edition == 'zhenguojian'
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          repository: ${{ github.repository_owner }}/guoapp-sources
           ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
           path: guoapp-sources
       - uses: actions/download-artifact@v4
@@ -456,14 +456,14 @@ jobs:
         run: |
           if [ -z "$SOURCES_DEPLOY_KEY" ]; then
             echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
             exit 1
           fi
       - name: 检出外置站源（真果鉴）
         if: true
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          repository: ${{ github.repository_owner }}/guoapp-sources
           ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
           path: guoapp-sources
       - *setup-python
@@ -537,14 +537,14 @@ jobs:
         run: |
           if [ -z "$SOURCES_DEPLOY_KEY" ]; then
             echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
             exit 1
           fi
       - name: 检出外置站源（真果鉴）
         if: true
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          repository: ${{ github.repository_owner }}/guoapp-sources
           ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
           path: guoapp-sources
       - uses: actions/download-artifact@v4
@@ -603,14 +603,14 @@ jobs:
         run: |
           if [ -z "$SOURCES_DEPLOY_KEY" ]; then
             echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }} 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
+            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
             exit 1
           fi
       - name: 检出外置站源（真果鉴）
         if: true
         uses: actions/checkout@v4
         with:
-          repository: ${{ vars.SOURCES_REPOSITORY || 'wokaotianshi123/guoapp-sources' }}
+          repository: ${{ github.repository_owner }}/guoapp-sources
           ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
           path: guoapp-sources
       # 本地服务版要带齐三个平台的番茄引擎；缺哪个平台就跳过哪个平台的引擎，

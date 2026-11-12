@@ -262,8 +262,9 @@ Go 侧跟引擎只走 loopback：`fanqieGetJSON` 先用应用统一传输（带�
 
 实际出包走 GitHub Actions（本机不需要装 Xcode / NDK）：
 
-- 仓库 Secrets 增加 `SOURCES_DEPLOY_KEY`：给私有仓库 `wokaotianshi123/guoapp-sources`
-  配一个**只读 Deploy Key**，把私钥整段贴进去；可选仓库变量 `SOURCES_REPOSITORY` 覆盖仓库地址。
+- 仓库 Secrets 增加 `SOURCES_DEPLOY_KEY`：给**当前账号/组织下的 `guoapp-sources` 私有仓库**
+  （CI 用 `github.repository_owner` 动态拼仓库地址，无需手填）配一个**只读 Deploy Key**，
+  把私钥整段贴进去。若主仓库不在该组织/账号下，改把站源仓库也放到同一 owner 即可。
 - 手动运行 **Build app packages**，用 `with_ios` / `with_macos` / `full_variants` 控制平台与版本数量。
   红果鉴与真果鉴在 Android / Windows 上是矩阵里的两个条目；iOS / macOS 在同一 job 内顺序构建；
   本地服务版一次出两个 zip（`hongguojian.zip` / `zhenguojian.zip`，合集 `zhenguoweb.zip`）。
