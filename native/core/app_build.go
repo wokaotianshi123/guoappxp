@@ -11,11 +11,9 @@ func nativeSourceAvailable(source string) bool {
 	if source == sourceHongguo {
 		return true
 	}
-	// 番茄是内置站源：目录/详情/取流由本机番茄内容引擎承担，与 buildAllSources 无关，
-	// 两种构建（红果鉴 / 真果鉴）下都应常驻可用。
-	if source == sourceFanqie {
-		return true
-	}
+	// 番茄（fanqie）短剧源与其余 30 个外置源一样，跟随 buildAllSources 门控：
+	// 红果鉴（false）不含它，真果鉴（true）才可用。注意与「番茄听书」区分——
+	// 听书走 audiobookFetch/Text/Media 独立 action，不经本函数，两种版本都保留。
 	if isCustomMaccmsSource(source) {
 		return isHuangguoProviderSource(source)
 	}
