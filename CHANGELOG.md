@@ -2,6 +2,28 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.4.4+120
+
+从 `fanqie.apk` 反编译定位到番茄畅听**官方书城接口**，把它接成听书模块的**实时**书库与分类数据源。按需求不做静态书库快照——固化下来的书目、分类和封面签名都会过期。
+
+### 勘察结论
+- APK 里**没有**可一次性提取的静态书库：`assets/tab_v2_simple.json` 只有 6 个一级 tab 和 8 本兜底书，`assets/channel_book_config.properties` 是渠道推广素材，冷启动书单由 RPC 下发，资源表里也没有中文分类名。
+- 真正的数据源是 `BookmallApiService`：smali 里硬编码 host `https://api.novelfm.com` 与 `$POST /novelfm/bookmall/category/landing/v1/`，scheme `novelfm3040://` 对应 `aid=3040`。实测匿名 `GET /novelfm/bookmall/tab_v2/v1/?aid=3040&update_version_code=1&tab_type=N` 可用；缺 `update_version_code` 会被网关拦成 `update_version_code is 0`，且必须按 `tab_type` 分别请求才有书目。
+- 一级分类来自 APK 内置 + 接口实时返回：推荐(10) / 听书(12) / 相声评书(4) / 出版物(5) / 故事(9) / 音乐(6)。二级分类来自 `popular_tags.show_tags`（category_id → 名称）与每本书内嵌的 `category_info`（ObjectId / Name / Dim / ExternalDesc），是官方的完整分类词表，比榜单的 `category_v2` 高频标签更全。
+
+### 实现
+- **实时拉取，不落地快照**：服务端每 10 分钟、App 端每次进听书页都重新请求官方书城；书目按 `book_id` 累积去重，分类词表与封面签名随每次请求更新。
+- Go 核心 `audiobookFetch` 域名白名单新增 `api.novelfm.com`，App 与网页端共用同一条代发链路（代理 / 超时一致）。
+- 网页端新增 `native/server/audiobook_novelfm.go`：解析书目（只留 `genre=4` 听书）、官方分类词表、热门标签、一级 tab；`audiobookLibraryStore` 把官方书按 gender 并入男/女榜并与榜单去重，榜单已抓到的书优先保留原始分类与封面；单个源失败不影响其它源。
+- 分类条不再写死 24 个标签：改为「高频基线 + 官方实时学到的分类」里**书池确实有书**的那些，按官方 Dim 排序、主类在前。
+- `/api/audiobook/library` 回包新增 `official: {count,tabs,tags,loading,error}`，状态栏显示官方书城收录数与「更新中」；官方刷新期间前端继续轮询补全当前页。
+- App 端 `audiobook_fanqie.dart` 新增 `officialAll()` / `fanqieOfficialPage()` / `fanqieCategoriesFrom()`，`FanqieBook` 增加 `board` 字段按 gender 归榜；`audiobook_screen.dart` 分类条改为动态统计。
+
+### 实测
+- 本地服务版端到端：榜单书池 2039 本 + 官方书城实时 81 本 → 合并 **2098 本**；官方一级分类 5 个、热门标签 30 个；分类条从 24 个扩到 **65 个**且全部有书；目录 / 正文 / 音频接口未改动。
+- 新增 `native/server/audiobook_novelfm_test.go`（解析、刷新累积、并发读）与 `test/audiobook_official_test.dart`（5 例，含官方源失败退化）。
+- `go build ./core ./server`、`go vet ./core ./server`、`go test ./core ./server`、`dart analyze lib test`、`node --check app.js` 全部通过；听书与外壳相关测试逐文件跑通（`audiobook_official` 5 例、`audiobook_fanqie` 6 例、`audiobook_catalog` 2 例、`audiobook_store` 4 例、`app_shell_tv_focus` 4 例）。全量 `flutter test` 因本机 C 盘一度只剩 30 MB、编译 `.dill` 报「磁盘空间不足」未能一次跑完，清理可再生缓存后上述文件均单独通过。
+
 ## 1.4.3+119
 
 把 App 端听书的「真实分类 + 全量书库」修复同步到**本地服务器版（网页端）**。

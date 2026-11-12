@@ -79,6 +79,7 @@ type audiobookLibrarySnapshot struct {
 type audiobookLibraryStore struct {
 	mu         sync.RWMutex
 	boards     map[string][]audiobookBook
+	official   map[string]audiobookBook // 官方书城实时抓到的书，跨榜单刷新累积
 	merged     []audiobookBook
 	categories []string
 	loading    bool
@@ -110,9 +111,10 @@ func (store *audiobookLibraryStore) ensure() {
 	store.done = false
 	store.errText = ""
 	store.boards = map[string][]audiobookBook{}
-	store.merged = nil
-	store.categories = nil
+	// 榜单重新抓取期间，官方书城已抓到的书仍然可用，不要把书池清空。
+	store.rebuildLocked()
 	store.mu.Unlock()
+	abRefreshOfficialLibrary()
 	go store.load(generation)
 }
 
@@ -190,6 +192,24 @@ func (store *audiobookLibraryStore) publish(generation uint64, key string, pool 
 		return
 	}
 	store.boards[key] = append([]audiobookBook(nil), pool...)
+	store.rebuildLocked()
+}
+
+// publishOfficial 在官方书城刷新出书后重算书池；官方书按 gender 归到男/女榜，
+// 与榜单书按 book_id 去重，榜单已抓到的书优先保留其原始分类与封面。
+func (store *audiobookLibraryStore) publishOfficial() {
+	books, _ := abOfficialSnapshot()
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	store.official = make(map[string]audiobookBook, len(books))
+	for _, book := range books {
+		store.official[book.ID] = book
+	}
+	store.rebuildLocked()
+}
+
+// rebuildLocked 合并三个来源：男榜、女榜、官方书城。调用方必须持有写锁。
+func (store *audiobookLibraryStore) rebuildLocked() {
 	seen := map[string]bool{}
 	merged := make([]audiobookBook, 0, 2048)
 	for index, board := range audiobookBoardDefs {
@@ -201,6 +221,13 @@ func (store *audiobookLibraryStore) publish(generation uint64, key string, pool 
 			book.Board = index
 			merged = append(merged, book)
 		}
+	}
+	for _, book := range store.official {
+		if book.ID == "" || seen[book.ID] {
+			continue
+		}
+		seen[book.ID] = true
+		merged = append(merged, book)
 	}
 	store.merged = merged
 	store.categories = abCategoriesFrom(merged)
@@ -422,6 +449,9 @@ func abMatchesCategory(book audiobookBook, category string) bool {
 	return false
 }
 
+// abCategoriesFrom 只展示书池里确实有书的分类。
+// 候选名 = 榜单高频基线 + 官方书城实时返回的 category_info / popular_tags，
+// 顺序保持「主类在前、官方 Dim 从小到大」，不是写死的一份静态清单。
 func abCategoriesFrom(pool []audiobookBook) []string {
 	counts := map[string]int{}
 	for _, book := range pool {
@@ -429,8 +459,16 @@ func abCategoriesFrom(pool []audiobookBook) []string {
 			counts[tag]++
 		}
 	}
-	categories := make([]string, 0, len(audiobookCategoryOrder))
-	for _, name := range audiobookCategoryOrder {
+	_, official := abOfficialSnapshot()
+	order := make([]string, 0, len(audiobookCategoryOrder)+len(official))
+	order = append(order, audiobookCategoryOrder...)
+	for _, name := range official {
+		if !containsString(order, name) {
+			order = append(order, name)
+		}
+	}
+	categories := make([]string, 0, len(order))
+	for _, name := range order {
 		if counts[name] > 0 {
 			categories = append(categories, name)
 		}
@@ -502,6 +540,8 @@ func abQueryHasMore(data map[string]any) bool {
 
 // GET /api/audiobook/library?board=0&category=&q=&page=1&size=10
 func handleAudiobookLibrary(writer http.ResponseWriter, request *http.Request) {
+	// 官方书城单独按 10 分钟 TTL 刷新，不受榜单书池 6 小时缓存牵制。
+	abRefreshOfficialLibrary()
 	params := request.URL.Query()
 	board, _ := strconv.Atoi(params.Get("board"))
 	page, _ := strconv.Atoi(params.Get("page"))
@@ -513,5 +553,6 @@ func handleAudiobookLibrary(writer http.ResponseWriter, request *http.Request) {
 		page,
 		size,
 	)
+	answer["official"] = abOfficialStatus()
 	writeJSON(writer, map[string]any{"ok": true, "data": answer})
 }

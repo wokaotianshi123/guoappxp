@@ -3584,11 +3584,14 @@ var audiobookState = {
   books: [],
   loading: false,
   query: '',
-  // 分类来自榜单书籍自带的 category_v2 真实标签；空串表示「全部」。
+  // 分类来自书池的真实标签 + 官方书城实时返回的 category_info / popular_tags；
+  // 空串表示「全部」。
   category: '',
   categories: [],
   // 服务端全量书库的加载进度：边加载边能用，前端按 loading 轮询补全。
   library: { loading: false, done: false, count: 0, error: '' },
+  // 官方书城（fanqie.apk 反编译所得）实时抓取进度，服务端每 10 分钟刷新。
+  official: { loading: false, count: 0, tabs: 0, tags: 0, error: '' },
   libraryToken: 0,
   shelf: false,
   book: null,
@@ -3832,11 +3835,19 @@ function abListHeadHTML() {
     : (audiobookState.category
       ? '分类「' + escapeHTML(audiobookState.category) + '」'
       : '全量书库');
+  var official = audiobookState.official || {};
+  var officialText = official.error
+    ? ' · 官方书城：' + escapeHTML(official.error)
+    : (Number(official.count) > 0
+      ? ' · 官方书城 ' + Number(official.count) + ' 本'
+        + (Number(official.tags) > 0 ? ' / ' + Number(official.tags) + ' 个标签' : '')
+        + (official.loading ? '（更新中）' : '')
+      : '');
   var status = audiobookState.library.error
-    ? escapeHTML(audiobookState.library.error)
+    ? escapeHTML(audiobookState.library.error) + officialText
     : (audiobookState.library.loading
       ? '书库加载中…（已收录 ' + audiobookState.library.count + ' 本）'
-      : scope + ' · 共 ' + audiobookState.total + ' 本');
+      : scope + ' · 共 ' + audiobookState.total + ' 本') + officialText;
   var prevDisabled = audiobookState.page <= 1 ? ' disabled' : '';
   var nextDisabled = audiobookState.page >= audiobookState.pageCount ? ' disabled' : '';
   var pager = '<span class="ab-pager">' +
@@ -3857,7 +3868,10 @@ function abScheduleLibraryRefresh() {
     audiobookLibraryTimer = null;
   }
   var info = audiobookState.library;
-  if (!info || !info.loading || info.done) { return; }
+  var official = audiobookState.official || {};
+  // 榜单全量抓取或官方书城刷新还在跑时，定时回来补全当前页。
+  var waiting = (info && info.loading && !info.done) || !!official.loading;
+  if (!waiting) { return; }
   var token = audiobookState.libraryToken;
   audiobookLibraryTimer = window.setTimeout(function () {
     audiobookLibraryTimer = null;
@@ -3887,6 +3901,7 @@ function abLoadLibrary(page) {
     audiobookState.books = (data.books || []).slice();
     audiobookState.categories = Array.isArray(data.categories) ? data.categories.slice() : [];
     audiobookState.library = data.library || { loading: false, done: true, count: 0, error: '' };
+    audiobookState.official = data.official || audiobookState.official;
     // 不重建 toolbar：搜索框还在里面，轮询刷新时不能打断输入。
     renderAudiobookBody();
     if (document.getElementById('ab-body')) { abScheduleLibraryRefresh(); }

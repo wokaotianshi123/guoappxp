@@ -22,6 +22,9 @@ var audiobookFetchHosts = map[string]bool{
 	"api5-normal-lq.fqnovel.com":          true,
 	"api5-sinfonlineb.novelfm.com":        true,
 	"novelfm.changdunovel.com":            true,
+	// 番茄畅听官方书城（fanqie.apk 反编译所得）。书库/分类实时从这里取，
+	// 见 server/audiobook_novelfm.go 与 lib/ui/audiobook/audiobook_fanqie.dart。
+	"api.novelfm.com":                     true,
 }
 
 func audiobookFetchURL(raw string) (*url.URL, error) {

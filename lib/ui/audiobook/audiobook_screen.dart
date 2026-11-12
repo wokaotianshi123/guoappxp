@@ -54,6 +54,11 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   List<FanqieBook> _malePool = const [];
   List<FanqieBook> _femalePool = const [];
 
+  /// 官方书城（fanqie.apk 反编译所得）实时抓到的书与分类。每次进页面/刷新
+  /// 都重新请求，按 book_id 与榜单去重，只做补充，不固化成静态清单。
+  List<FanqieBook> _officialBooks = const [];
+  List<String> _officialCategories = const [];
+
   /// 搜索结果的完整列表（本地全库匹配 + 服务端听书补充），翻页在本地切分。
   List<FanqieBook> _searchResults = const [];
   List<FanqieBook> _remoteBooks = const [];
@@ -122,13 +127,23 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       });
     }
     try {
+      // 官方书城与男女两榜同时开抓；单个源失败不影响其它源。
+      Future<FanqieOfficialResult> officialTask() async {
+        try {
+          return await _api.officialAll();
+        } catch (_) {
+          return FanqieOfficialResult.empty;
+        }
+      }
+
+      final officialFuture = officialTask();
       final results = await Future.wait([
         _api.rankAll(
           fanqieAudiobookBoards[0],
           onProgress: (pool) {
             if (mounted && token == _poolGeneration) {
               setState(() {
-                _malePool = pool;
+                _malePool = _mergeOfficial(pool, 0);
                 _rebuildSearch();
               });
             }
@@ -139,17 +154,20 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           onProgress: (pool) {
             if (mounted && token == _poolGeneration) {
               setState(() {
-                _femalePool = pool;
+                _femalePool = _mergeOfficial(pool, 1);
                 _rebuildSearch();
               });
             }
           },
         ),
       ]);
+      final official = await officialFuture;
       if (!mounted || token != _poolGeneration) return;
       setState(() {
-        _malePool = results[0];
-        _femalePool = results[1];
+        _officialBooks = official.books;
+        _officialCategories = official.categories;
+        _malePool = _mergeOfficial(results[0], 0);
+        _femalePool = _mergeOfficial(results[1], 1);
         _poolLoading = false;
         _poolDone = true;
         _rebuildSearch();
@@ -163,6 +181,21 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       });
     }
   }
+
+  /// 把官方书城的书按 gender 归到对应榜单，与榜单书按 book_id 去重；
+  /// 榜单已抓到的书优先保留其原始分类与封面。
+  List<FanqieBook> _mergeOfficial(List<FanqieBook> rankPool, int board) {
+    final result = List<FanqieBook>.of(rankPool);
+    final seen = <String>{for (final book in result) book.id};
+    for (final book in _officialBooks) {
+      if (book.board == board && seen.add(book.id)) result.add(book);
+    }
+    return result;
+  }
+
+  /// 分类只展示书池里确实有书的：高频基线标签 + 官方书城实时学到的分类。
+  List<String> get _categories =>
+      fanqieCategoriesFrom(_allPool, preferred: _officialCategories);
 
   /// 男女榜合并去重后的完整听书书库。
   List<FanqieBook> get _allPool {
@@ -383,7 +416,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
                     child: Text('分类', style: TextStyle(fontSize: 12)),
                   ),
                 ),
-                for (final category in fanqieAudiobookCategories)
+                for (final category in _categories)
                   Padding(
                     padding: const EdgeInsets.only(right: 8),
                     child: ChoiceChip(

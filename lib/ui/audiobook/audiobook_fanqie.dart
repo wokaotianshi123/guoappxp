@@ -57,6 +57,22 @@ const fanqieAudiobookCategories = [
   '先婚后爱',
 ];
 
+// —— 番茄畅听官方书城（fanqie.apk 反编译所得，实时数据源）——
+//
+// APK 的 assets/tab_v2_simple.json 只有 6 个一级 tab 和 8 本兜底书，真正的
+// 书库与分类由 BookmallApiService 下发；smali 里硬编码了 host 和路径
+// `/novelfm/bookmall/tab_v2/v1/`，scheme `novelfm3040://` 对应 aid=3040。
+// 实测匿名 GET 可用，但必须带 update_version_code，并按 tab_type 分别请求
+// 才有书目。这里每次进听书页都重新请求，书与分类随时间更新，不落静态快照。
+const novelfmBookmallUrl =
+    'https://api.novelfm.com/novelfm/bookmall/tab_v2/v1/';
+const novelfmCommonQuery =
+    'aid=3040&device_platform=android&version_name=6.7.8&version_code=678'
+    '&device_type=SM-G9730&iid=1&device_id=1&update_version_code=1';
+
+/// 官方一级分类：推荐 / 听书 / 相声评书 / 出版物 / 故事 / 音乐。
+const novelfmTabTypes = <int>[10, 12, 4, 5, 9, 6];
+
 class AudiobookSegment {
   const AudiobookSegment(this.text, this.start);
 
@@ -88,6 +104,7 @@ class FanqieBook {
     required this.category,
     this.cover = '',
     this.intro = '',
+    this.board = 0,
   });
 
   final String id;
@@ -100,6 +117,10 @@ class FanqieBook {
 
   /// 榜单/搜索返回的 `abstract` 简介，为空时列表显示「暂无简介」。
   final String intro;
+
+  /// 归属榜单：0 男生听书榜、1 女生听书榜。官方书城按 gender 归类，
+  /// 榜单/搜索来源默认 0（它们本来就在当前榜里展示）。
+  final int board;
 }
 
 class FanqieChapter {
@@ -123,6 +144,46 @@ class FanqieSearchPage {
   final bool hasMore;
 }
 
+/// 官方书城单个 tab 的解析结果。
+class FanqieOfficialPage {
+  const FanqieOfficialPage({
+    this.books = const [],
+    this.categoryDims = const {},
+    this.hotTags = const [],
+    this.tabTitle = '',
+    this.tabType = 0,
+  });
+
+  static const empty = FanqieOfficialPage();
+
+  final List<FanqieBook> books;
+
+  /// 官方分类名 → Dim（1 主类 / 2 角色 / 3 金手指 / 10 细分，0 为热门标签）。
+  final Map<String, int> categoryDims;
+  final List<String> hotTags;
+  final String tabTitle;
+  final int tabType;
+}
+
+/// 多个 tab、多轮采样合并后的官方书城结果。
+class FanqieOfficialResult {
+  const FanqieOfficialResult({
+    this.books = const [],
+    this.categories = const [],
+    this.hotTags = const [],
+    this.tabs = const [],
+  });
+
+  static const empty = FanqieOfficialResult();
+
+  final List<FanqieBook> books;
+
+  /// 官方分类词表，按 Dim 从小到大、再按名称排序。
+  final List<String> categories;
+  final List<String> hotTags;
+  final List<String> tabs;
+}
+
 class FanqieChapterPage {
   const FanqieChapterPage({
     required this.chapters,
@@ -144,6 +205,70 @@ class FanqieAudiobookApi {
   /// 未注入仓库时（单测或独立工具）才回落到 Dart 直连。
   final AppRepository? repository;
   final Map<String, List<FanqieChapter>> _chapters = {};
+
+  /// 实时拉取官方书城某个一级分类（tab_type）。
+  Future<FanqieOfficialPage> officialTab(int tabType) async {
+    final url = '$novelfmBookmallUrl?$novelfmCommonQuery&tab_type=$tabType';
+    return fanqieOfficialPage(
+      jsonDecode(await _fetch(url)),
+      tabType: tabType,
+    );
+  }
+
+  Future<FanqieOfficialPage> _officialTabSafe(int tabType) async {
+    try {
+      return await officialTab(tabType);
+    } catch (_) {
+      // 单个分类失败不影响其它分类与现有榜单书库。
+      return FanqieOfficialPage.empty;
+    }
+  }
+
+  /// 抓全部一级分类并累积去重。首屏推荐带随机性，多取几轮覆盖更多书；
+  /// 每次调用都重新请求，不会用到固化的书目。
+  Future<FanqieOfficialResult> officialAll({int rounds = 3}) async {
+    final pages = <FanqieOfficialPage>[];
+    for (var round = 0; round < rounds; round++) {
+      pages.addAll(await Future.wait<FanqieOfficialPage>([
+        for (final tab in novelfmTabTypes) _officialTabSafe(tab),
+      ]));
+    }
+    final books = <FanqieBook>[];
+    final seenBooks = <String>{};
+    final dims = <String, int>{};
+    final hotTags = <String>[];
+    final seenTags = <String>{};
+    final tabs = <String>[];
+    final seenTabs = <String>{};
+    for (final page in pages) {
+      if (page.tabTitle.isNotEmpty && seenTabs.add(page.tabTitle)) {
+        tabs.add(page.tabTitle);
+      }
+      for (final tag in page.hotTags) {
+        if (seenTags.add(tag)) hotTags.add(tag);
+      }
+      page.categoryDims.forEach((name, dim) {
+        final old = dims[name];
+        if (old == null || (dim > 0 && (old == 0 || dim < old))) {
+          dims[name] = dim;
+        }
+      });
+      for (final book in page.books) {
+        if (seenBooks.add(book.id)) books.add(book);
+      }
+    }
+    final categories = dims.keys.toList()
+      ..sort((a, b) {
+        final byDim = (dims[a] ?? 99).compareTo(dims[b] ?? 99);
+        return byDim != 0 ? byDim : a.compareTo(b);
+      });
+    return FanqieOfficialResult(
+      books: books,
+      categories: categories,
+      hotTags: hotTags,
+      tabs: tabs,
+    );
+  }
 
   Future<FanqieSearchPage> rank(
     FanqieAudiobookBoard board, {
@@ -481,6 +606,140 @@ int audiobookLineAt(List<AudiobookLine> lines, double seconds) {
     if (seconds < lines[index].end || index == lines.length - 1) return index;
   }
   return lines.length - 1;
+}
+
+/// 解析官方书城 tab_v2 回包：只留 genre=4 的听书，同时抽出官方分类词表
+/// （popular_tags.show_tags + 每本书的 category_info）和热门标签。
+FanqieOfficialPage fanqieOfficialPage(Object? decoded, {int tabType = 0}) {
+  final root = decoded is Map ? decoded : const <String, dynamic>{};
+  final data = root['data'];
+  final tabs = data is Map ? data['book_tab_infos'] : null;
+  var title = '';
+  var type = tabType;
+  final dims = <String, int>{};
+  final hotTags = <String>[];
+  final rows = <Map>[];
+  if (tabs is List) {
+    for (final rawTab in tabs) {
+      if (rawTab is! Map) continue;
+      final tabTitle = fanqiePlainText('${rawTab['tab_title'] ?? ''}');
+      if (tabTitle.isNotEmpty) title = tabTitle;
+      final parsedType = int.tryParse('${rawTab['tab_type'] ?? ''}');
+      if (parsedType != null && parsedType != 0) type = parsedType;
+      final cells = rawTab['cells'];
+      if (cells is! List) continue;
+      for (final rawCell in cells) {
+        if (rawCell is! Map) continue;
+        final popular = rawCell['popular_tags'];
+        final showTags = popular is Map ? popular['show_tags'] : null;
+        if (showTags is List) {
+          for (final rawTag in showTags) {
+            if (rawTag is! Map) continue;
+            final name = fanqiePlainText('${rawTag['name'] ?? ''}');
+            if (name.isEmpty) continue;
+            hotTags.add(name);
+            dims.putIfAbsent(name, () => 0);
+          }
+        }
+        rows.add(rawCell);
+        final subCells = rawCell['sub_cells'];
+        if (subCells is List) {
+          for (final rawSub in subCells) {
+            if (rawSub is Map) rows.add(rawSub);
+          }
+        }
+      }
+    }
+  }
+  void addCategory(String name, int dim) {
+    if (name.isEmpty) return;
+    final old = dims[name];
+    if (old == null || (dim > 0 && (old == 0 || dim < old))) dims[name] = dim;
+  }
+
+  final books = <FanqieBook>[];
+  final seen = <String>{};
+  for (final cell in rows) {
+    final list = cell['books'];
+    if (list is! List) continue;
+    for (final rawBook in list) {
+      if (rawBook is! Map) continue;
+      if ('${rawBook['genre'] ?? ''}' != fanqieAudiobookGenre) continue;
+      final id = '${rawBook['book_id'] ?? ''}'.trim();
+      final bookTitle = fanqiePlainText(
+        '${rawBook['book_name'] ?? rawBook['title'] ?? ''}',
+      );
+      if (id.isEmpty || bookTitle.isEmpty || seen.contains(id)) continue;
+      seen.add(id);
+      final names = <String>[];
+      for (final part in '${rawBook['tags'] ?? ''}'.split(',')) {
+        final tag = fanqiePlainText(part);
+        if (tag.isNotEmpty && !names.contains(tag)) names.add(tag);
+      }
+      final info = '${rawBook['category_info'] ?? ''}';
+      if (info.isNotEmpty) {
+        try {
+          final entries = jsonDecode(info);
+          if (entries is List) {
+            for (final entry in entries) {
+              if (entry is! Map) continue;
+              final name = fanqiePlainText('${entry['Name'] ?? ''}');
+              addCategory(name, int.tryParse('${entry['Dim'] ?? ''}') ?? 0);
+              if (name.isNotEmpty &&
+                  !names.contains(name) &&
+                  names.length < 12) {
+                names.add(name);
+              }
+            }
+          }
+        } catch (_) {
+          // 个别书没有 category_info 或格式异常，忽略即可。
+        }
+      }
+      books.add(
+        FanqieBook(
+          id: id,
+          title: bookTitle,
+          author: fanqiePlainText('${rawBook['author'] ?? ''}'),
+          category: fanqieCategory(names),
+          cover: fanqieCover(
+            rawBook['audio_thumb_uri'] ?? rawBook['thumb_url'] ?? '',
+          ),
+          intro: fanqieIntro(rawBook['abstract']),
+          board: '${rawBook['gender'] ?? ''}'.trim() == '0' ? 1 : 0,
+        ),
+      );
+    }
+  }
+  return FanqieOfficialPage(
+    books: books,
+    categoryDims: dims,
+    hotTags: hotTags,
+    tabTitle: title,
+    tabType: type,
+  );
+}
+
+/// 只展示书池里确实有书的分类：高频基线标签优先，再补官方书城实时学到的
+/// 分类（按官方 Dim 排序）。分类内容来自当次请求，不是写死的一份清单。
+List<String> fanqieCategoriesFrom(
+  Iterable<FanqieBook> pool, {
+  Iterable<String> preferred = const [],
+}) {
+  final counts = <String, int>{};
+  for (final book in pool) {
+    for (final tag in book.category.split(RegExp(r'[·,，、/\s]+'))) {
+      final name = tag.trim();
+      if (name.isNotEmpty) counts[name] = (counts[name] ?? 0) + 1;
+    }
+  }
+  final order = <String>[...fanqieAudiobookCategories, ...preferred];
+  final seen = <String>{};
+  final result = <String>[];
+  for (final name in order) {
+    if (counts.containsKey(name) && seen.add(name)) result.add(name);
+  }
+  return result;
 }
 
 /// 在全量书池里按关键词匹配书名 / 作者 / 分类 / 简介。
