@@ -6,6 +6,11 @@ import '../../core_bridge.dart';
 const fanqieAudiobookGenre = '4';
 const fanqieChapterPageSize = 50;
 
+/// 榜单接口忽略 limit、固定每页返回 30 条；offset 步长取 30 时相邻页零重叠。
+/// 实测男/女榜各约 34 页（offset 990 之后返回空），两榜 book_id 不重叠，
+/// 合计约 2040 本，是番茄畅听完整的听书书库。
+const fanqieRankPageSize = 30;
+
 class FanqieAudiobookBoard {
   const FanqieAudiobookBoard(this.name, this.sideType, this.type);
 
@@ -144,34 +149,55 @@ class FanqieAudiobookApi {
     FanqieAudiobookBoard board, {
     int page = 1,
   }) async {
-    final offset = (page < 1 ? 0 : page - 1) * 20;
+    final offset = (page < 1 ? 0 : page - 1) * fanqieRankPageSize;
     final url =
         'https://api.fanqiesdk.com/api/novel/channel/homepage/rank/rank_list/v2/'
-        '?aid=13&limit=20&offset=$offset&side_type=${board.sideType}&type=${board.type}';
+        '?aid=13&limit=$fanqieRankPageSize&offset=$offset'
+        '&side_type=${board.sideType}&type=${board.type}';
     return fanqieRankPage(jsonDecode(await _fetch(url)));
   }
 
-  /// 一次抓够分类与翻页用的书池。
+  /// 抓取榜单的**全部**书目。
   ///
-  /// 榜单接口的 `has_more` 恒为 false，但 offset 会持续返回新数据（每页 30 条、
-  /// 相邻页重叠 10 条），所以不能靠 has_more 判断是否还有下一页；这里按固定
-  /// 页数并发抓取，再按 book_id 去重合并。单页失败不影响整池，只是少几本书。
-  Future<List<FanqieBook>> rankPool(
+  /// 榜单接口的 `has_more` 恒为 false、`limit` 被忽略（固定每页 30 条），只有
+  /// offset 递增才会持续返回新书；实测男/女榜各约 34 页、两榜 book_id 不重叠，
+  /// 合计约 2040 本。这里分批并发翻页，翻到连续两批出现空页或达到
+  /// [maxPages] 为止；每批结束通过 [onProgress] 回吐当前累计书池，调用方可以边加载边把
+  /// 书目显示出来，不必等全部抓完。单页失败只让那一页少几本书。
+  Future<List<FanqieBook>> rankAll(
     FanqieAudiobookBoard board, {
-    int pages = 5,
+    void Function(List<FanqieBook> pool)? onProgress,
+    int batchSize = 6,
+    int maxPages = 60,
   }) async {
-    final results = await Future.wait([
-      for (var page = 1; page <= pages; page++)
-        rank(board, page: page).catchError(
-          (Object _) => const FanqieSearchPage(books: [], hasMore: false),
-        ),
-    ]);
     final seen = <String>{};
     final pool = <FanqieBook>[];
-    for (final result in results) {
-      for (final book in result.books) {
-        if (seen.add(book.id)) pool.add(book);
+    var emptyBatches = 0;
+    var page = 1;
+    while (page <= maxPages && emptyBatches < 2) {
+      final batch = <int>[];
+      while (batch.length < batchSize && page <= maxPages) {
+        batch.add(page++);
       }
+      final results = await Future.wait([
+        for (final number in batch)
+          rank(board, page: number).catchError(
+            (Object _) => const FanqieSearchPage(books: [], hasMore: false),
+          ),
+      ]);
+      var nonEmpty = 0;
+      for (final result in results) {
+        if (result.books.isNotEmpty) nonEmpty++;
+        for (final book in result.books) {
+          if (seen.add(book.id)) pool.add(book);
+        }
+      }
+      // 榜单分页连续，一旦某批出现空页就说明接近末尾；连续两批都有空页
+      // 才停，避免个别请求失败被误判成已经翻到尽头。
+      final emptyPages = results.length - nonEmpty;
+      emptyBatches = emptyPages > 0 ? emptyBatches + 1 : 0;
+      final notify = onProgress;
+      if (notify != null) notify(List<FanqieBook>.of(pool));
     }
     return pool;
   }
@@ -455,6 +481,48 @@ int audiobookLineAt(List<AudiobookLine> lines, double seconds) {
     if (seconds < lines[index].end || index == lines.length - 1) return index;
   }
   return lines.length - 1;
+}
+
+/// 在全量书池里按关键词匹配书名 / 作者 / 分类 / 简介。
+///
+/// 服务端搜索里听书（genre=4）结果很稀疏，单页常常 0～2 本，导致搜索看起来
+/// 只覆盖榜单前几项。榜单全量书池本身就是番茄畅听完整的听书库，本地匹配能让
+/// 搜索覆盖全部书目，且命中的都是确认可播放的听书。支持空格分词（需全部命中），
+/// 书名 / 分类命中的排在前面。
+List<FanqieBook> fanqieSearchInPool(Iterable<FanqieBook> pool, String query) {
+  final words = query
+      .trim()
+      .toLowerCase()
+      .split(RegExp(r'\s+'))
+      .where((word) => word.isNotEmpty)
+      .toList();
+  if (words.isEmpty) return const [];
+  final matches = <_ScoredBook>[];
+  for (final book in pool) {
+    final title = book.title.toLowerCase();
+    final author = book.author.toLowerCase();
+    final category = book.category.toLowerCase();
+    final intro = book.intro.toLowerCase();
+    final haystack = '$title $author $category $intro';
+    if (!words.every((word) => haystack.contains(word))) continue;
+    var score = 0;
+    for (final word in words) {
+      if (title.contains(word)) score += 4;
+      if (category.contains(word)) score += 3;
+      if (author.contains(word)) score += 2;
+      if (intro.contains(word)) score += 1;
+    }
+    matches.add(_ScoredBook(book, score));
+  }
+  matches.sort((a, b) => b.score.compareTo(a.score));
+  return [for (final item in matches) item.book];
+}
+
+class _ScoredBook {
+  const _ScoredBook(this.book, this.score);
+
+  final FanqieBook book;
+  final int score;
 }
 
 String fanqieCategory(Object? value) {
