@@ -2,6 +2,23 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 1.4.5+121
+
+听书分类改成与视频分类一致的交互：点击后内容跟随加载、分类条跟随选中项滚动，并提供常驻的「全部分类」入口一次看全所有类别。
+
+### 实现
+- App 端听书分类条由平铺的 `ChoiceChip` 换成 `lib/ui/widgets/category_tabs.dart` 的 `CategoryTabs`，与「发现」页视频分类共用同一套横向 tab、选中下划线与「全部分类」网格面板（`showChoicePanel`）；榜单、真实分类、搜索热词统一编码成 tab 值，选中后内容区立即刷新。
+- `CategoryTabs` 增加可选 `alwaysShowAll`：默认仍只在溢出时显示按钮（视频页行为不变），听书分类来自实时书池、首屏可能很少，开启后入口常驻。
+- `CategoryTabs` 的横向容器由 `ListView` 改为 `SingleChildScrollView`（数十个 tab 一次性布局）：`ListView` 只创建视口内的 Element，从「全部分类」面板跳到很靠后的分类时 GlobalKey 没有 context，`Scrollable.ensureVisible` 会直接跳过；现在任何位置都能精确滚到选中项，右侧后续分类随之露出。
+- 本地服务版网页端 `abListHeadHTML()` 在分类条右侧常驻「全部分类」按钮，点开网格面板列出书池里全部真实分类（含「全部」），可直接选中加载；面板状态在书库轮询重绘后保持，点击面板外收起。
+- 新增 `abSelectCategory()`（条内与面板共用，切换即重置搜索 / 页码并重新拉第一页）与 `abRevealCategory()`（选中项自动滚到分类条中间，只在真正切换时跑一次，轮询不抢滚动）。样式新增 `.ab-category-bar` / `.ab-category-panel` 系列。
+
+### 验证
+- 新增 `test/category_tabs_test.dart` 4 例：默认不溢出不显示按钮、溢出才显示、听书常驻按钮与点击回调、选中远端分类后条自动跟随滚动。
+- 网页端用 Node 脚本验证面板 HTML 与选中逻辑 9 项断言全过（按钮常驻、面板默认收起、列出全部分类、打开状态重绘保持、选中后状态重置与重新加载）。
+- 本地服务版重新编译后实测 `/web/app.js`、`/web/app.css` 已带上新交互（go:embed），`/api/audiobook/library` 契约与分类来源不变。
+- `go build ./core ./server`、`go vet ./core ./server`、`go test ./server`、`dart analyze lib test`、`node --check app.js` 全部通过；Flutter 回归子集 29 例通过（分类条、听书数据 / 目录 / 书架、站源栏、电视端外壳焦点）。本机 C 盘空间有限，未重复跑一次全量 `flutter test`。
+
 ## 1.4.4+120
 
 从 `fanqie.apk` 反编译定位到番茄畅听**官方书城接口**，把它接成听书模块的**实时**书库与分类数据源。按需求不做静态书库快照——固化下来的书目、分类和封面签名都会过期。

@@ -12,11 +12,16 @@ class CategoryTabs<T> extends StatefulWidget {
     required this.selected,
     required this.onSelected,
     this.onShowAll,
+    this.alwaysShowAll = false,
   });
   final List<ChoiceOption<T>> options;
   final T selected;
   final ValueChanged<T> onSelected;
   final void Function(BuildContext anchor)? onShowAll;
+
+  /// 默认只在分类条溢出时显示「全部分类」入口；分类一律来自实时书池、
+  /// 首屏可能还很少的页面（如听书）可以开启常驻，保证入口始终可见。
+  final bool alwaysShowAll;
 
   @override
   State<CategoryTabs<T>> createState() => _CategoryTabsState<T>();
@@ -72,7 +77,7 @@ class _CategoryTabsState<T> extends State<CategoryTabs<T>> {
     );
     final television = form == FormFactor.television;
     final showAll = switch (widget.onShowAll) {
-      final onShowAll? when _overflows => Padding(
+      final onShowAll? when _overflows || widget.alwaysShowAll => Padding(
         padding: EdgeInsets.only(right: television ? 10 : 0),
         child: Builder(
           builder: (anchor) => BarButton(
@@ -97,26 +102,32 @@ class _CategoryTabsState<T> extends State<CategoryTabs<T>> {
               children: [
                 NotificationListener<ScrollMetricsNotification>(
                   onNotification: _metricsChanged,
-                  child: ListView.builder(
+                  // 用 SingleChildScrollView 一次性布局全部 tab（只有几十个）：
+                  // ListView 即使给全 children 也只创建视口内的 Element，
+                  // 从「全部分类」面板跳到很靠后的分类时 GlobalKey 没有
+                  // context，ensureVisible 会失效，右侧分类就跟随不过来。
+                  child: SingleChildScrollView(
                     controller: _scroll,
                     scrollDirection: Axis.horizontal,
                     padding: EdgeInsets.only(
                       left: form == FormFactor.phone ? 4 : 0,
                     ),
-                    itemCount: widget.options.length,
-                    itemBuilder: (context, index) {
-                      final option = widget.options[index];
-                      return KeyedSubtree(
-                        key: _keys.putIfAbsent(option.value, GlobalKey.new),
-                        child: _Tab(
-                          label: option.label,
-                          selected: option.value == widget.selected,
-                          fontSize: fontSize,
-                          padding: padding,
-                          onTap: () => widget.onSelected(option.value),
-                        ),
-                      );
-                    },
+                    child: Row(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        for (final option in widget.options)
+                          KeyedSubtree(
+                            key: _keys.putIfAbsent(option.value, GlobalKey.new),
+                            child: _Tab(
+                              label: option.label,
+                              selected: option.value == widget.selected,
+                              fontSize: fontSize,
+                              padding: padding,
+                              onTap: () => widget.onSelected(option.value),
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ),
                 if (_overflows)

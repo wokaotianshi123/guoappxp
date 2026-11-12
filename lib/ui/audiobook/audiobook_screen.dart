@@ -11,6 +11,8 @@ import 'audiobook_session.dart';
 import 'audiobook_store.dart';
 import '../../core_bridge.dart';
 import 'audiobook_widgets.dart';
+import '../widgets/category_tabs.dart';
+import '../widgets/choice_panel.dart';
 
 export 'audiobook_session.dart' show AudiobookSession, AudiobookSleep;
 
@@ -287,6 +289,53 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     });
   }
 
+  /// 分类条与「发现」页视频分类共用同一套横向 tab：榜单是「全部」入口，
+  /// 其后是书池里真实存在的分类，再后面是搜索热词。三者用前缀区分，
+  /// 保证 selected 只有一个值，切换时内容区与选中项位置一起跟随。
+  String get _selectedTab {
+    if (_query.isNotEmpty) {
+      return fanqieSearchWords.contains(_query) ? 'w:$_query' : '';
+    }
+    if (_category.isNotEmpty) return 'c:$_category';
+    final index = fanqieAudiobookBoards.indexWhere(
+      (board) => board.type == _board.type,
+    );
+    return 'b:${index < 0 ? 0 : index}';
+  }
+
+  void _onTabSelected(String value) {
+    if (value.startsWith('b:')) {
+      final index = int.tryParse(value.substring(2)) ?? 0;
+      if (index >= 0 && index < fanqieAudiobookBoards.length) {
+        _loadBoard(fanqieAudiobookBoards[index]);
+      }
+    } else if (value.startsWith('c:')) {
+      _selectCategory(value.substring(2));
+    } else if (value.startsWith('w:')) {
+      unawaited(_run(value.substring(2)));
+    }
+  }
+
+  /// 分类多到横向放不下时，右侧「全部分类」入口打开与视频分类一致的网格
+  /// 面板；这里把书池里所有真实分类一次列全，选中后直接回到分类条加载。
+  Future<void> _pickCategory(BuildContext anchor) async {
+    final boardIndex = fanqieAudiobookBoards.indexWhere(
+      (board) => board.type == _board.type,
+    );
+    final value = await showChoicePanel<String>(
+      context: anchor,
+      title: '全部分类',
+      options: [
+        ChoiceOption('b:${boardIndex < 0 ? 0 : boardIndex}', '全部'),
+        for (final category in _categories)
+          ChoiceOption('c:$category', category),
+      ],
+      selected: _selectedTab,
+      grid: ChoiceGrid.categories,
+    );
+    if (value != null) _onTabSelected(value);
+  }
+
   Future<void> _run([String? word]) async {
     final query = (word ?? _search.text).trim();
     if (query.isEmpty) return;
@@ -391,51 +440,25 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
               onSubmitted: (_) => unawaited(_run()),
             ),
           ),
-          SizedBox(
-            height: 48,
-            child: ListView(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-              children: [
-                // 两个榜作为「全部」入口，后面跟番茄畅听的真实分类标签。
-                for (final board in fanqieAudiobookBoards)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(board.name),
-                      selected:
-                          _query.isEmpty &&
-                          _category.isEmpty &&
-                          _board == board,
-                      onSelected: (_) => _loadBoard(board),
-                    ),
-                  ),
-                const Padding(
-                  padding: EdgeInsets.only(right: 4),
-                  child: Center(
-                    child: Text('分类', style: TextStyle(fontSize: 12)),
-                  ),
-                ),
-                for (final category in _categories)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(category),
-                      selected: _query.isEmpty && _category == category,
-                      onSelected: (_) => _selectCategory(category),
-                    ),
-                  ),
-                for (final word in fanqieSearchWords)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(word),
-                      selected: _query == word,
-                      onSelected: (_) => unawaited(_run(word)),
-                    ),
-                  ),
-              ],
-            ),
+          // 与「发现」页视频分类同一套横向 tab：点击后内容区跟随刷新，
+          // 选中项自动滚到中间、露出右侧后续分类；溢出时右侧出现
+          // 「全部分类」入口，点开是列出所有真实分类的网格面板。
+          CategoryTabs<String>(
+            options: [
+              for (var index = 0;
+                  index < fanqieAudiobookBoards.length;
+                  index++)
+                ChoiceOption('b:$index', fanqieAudiobookBoards[index].name),
+              for (final category in _categories)
+                ChoiceOption('c:$category', category),
+              for (final word in fanqieSearchWords)
+                ChoiceOption('w:$word', word),
+            ],
+            selected: _selectedTab,
+            onSelected: _onTabSelected,
+            onShowAll: _pickCategory,
+            // 分类来自实时书池，首屏可能只有几个；常驻入口避免按钮时有时无。
+            alwaysShowAll: true,
           ),
         ],
         Expanded(child: _body(store)),

@@ -3588,6 +3588,9 @@ var audiobookState = {
   // 空串表示「全部」。
   category: '',
   categories: [],
+  // 分类条与「全部分类」面板：面板状态要在书库轮询重绘后保持。
+  allCategoriesOpen: false,
+  revealCategory: false,
   // 服务端全量书库的加载进度：边加载边能用，前端按 loading 轮询补全。
   library: { loading: false, done: false, count: 0, error: '' },
   // 官方书城（fanqie.apk 反编译所得）实时抓取进度，服务端每 10 分钟刷新。
@@ -3830,6 +3833,23 @@ function abListHeadHTML() {
         (audiobookState.category === name ? ' active' : '') +
         '" data-index="' + index + '">' + escapeHTML(name) + '</button>';
     }).join('');
+  // 「全部分类」面板：把书池里所有真实分类一次列全，选中后回到分类条并
+  // 重新加载该分类的书；面板状态存在 state 里，书库轮询重绘不会把它关掉。
+  var allOptions = '<button type="button" class="btn mini ab-category-option' +
+    (audiobookState.category === '' ? ' active' : '') +
+    '" data-ab-cat-index="-1">全部</button>' +
+    audiobookState.categories.map(function (name, index) {
+      return '<button type="button" class="btn mini ab-category-option' +
+        (audiobookState.category === name ? ' active' : '') +
+        '" data-ab-cat-index="' + index + '">' + escapeHTML(name) + '</button>';
+    }).join('');
+  var opened = audiobookState.allCategoriesOpen;
+  var allPanel = '<div class="ab-category-panel" id="ab-category-panel"' +
+    (opened ? '' : ' hidden') + '>' +
+    '<div class="ab-category-panel-head"><span>全部分类 · 共 ' +
+      audiobookState.categories.length + ' 类</span>' +
+      '<button type="button" class="btn mini" id="ab-category-panel-close">关闭</button></div>' +
+    '<div class="ab-category-panel-grid">' + allOptions + '</div></div>';
   var scope = audiobookState.query
     ? '搜索「' + escapeHTML(audiobookState.query) + '」'
     : (audiobookState.category
@@ -3856,10 +3876,95 @@ function abListHeadHTML() {
     '<button type="button" class="btn mini" id="ab-next-page"' + nextDisabled + '>下一页</button>' +
     '</span>';
   return '<div class="ab-list-head">' +
-    '<div class="ab-category-row"><span class="ab-category-label">分类</span>' + categories + '</div>' +
+    '<div class="ab-category-bar">' +
+      '<div class="ab-category-row"><span class="ab-category-label">分类</span>' + categories + '</div>' +
+      '<button type="button" class="btn mini ab-category-all' + (opened ? ' active' : '') +
+        '" id="ab-all-categories" aria-expanded="' + (opened ? 'true' : 'false') +
+        '">全部分类</button>' +
+      allPanel +
+    '</div>' +
     '<div class="ab-pager-row"><span class="ab-count">' + status + '</span>' + pager + '</div>' +
     '</div>';
 }
+
+// 分类条与「全部分类」面板共用的切换逻辑：选中后立刻重新拉该分类第一页。
+function abSelectCategory(name) {
+  audiobookState.category = name;
+  audiobookState.query = '';
+  audiobookState.shelf = false;
+  audiobookState.page = 1;
+  audiobookState.allCategoriesOpen = false;
+  audiobookState.revealCategory = true;
+  var input = document.getElementById('ab-search-input');
+  if (input) { input.value = ''; }
+  renderAudiobookToolbar();
+  // 先立刻刷新分类条选中态并把它滚到可见处，再异步拉书，避免点击后"没反应"。
+  renderAudiobookBody();
+  abLoadLibrary(1);
+}
+
+// 点击分类后把横向分类条滚到选中项，右侧后续分类跟着露出来（与视频分类
+// 点击后 tab 跟随定位一致）。只在真正切换分类时跑一次，轮询重绘不抢滚动。
+function abRevealCategory() {
+  if (!audiobookState.revealCategory) { return; }
+  audiobookState.revealCategory = false;
+  var row = document.querySelector('.ab-category-row');
+  if (!row) { return; }
+  var active = row.querySelector('.ab-category.active');
+  if (!active) { return; }
+  var rowRect = row.getBoundingClientRect();
+  var activeRect = active.getBoundingClientRect();
+  var delta = (activeRect.left + activeRect.width / 2) -
+    (rowRect.left + rowRect.width / 2);
+  if (Math.abs(delta) < 4) { return; }
+  if (typeof row.scrollBy === 'function') {
+    row.scrollBy({ left: delta, behavior: 'smooth' });
+  } else {
+    row.scrollLeft += delta;
+  }
+}
+
+// 「全部分类」面板：一次列出书池里全部真实分类，选中即加载。
+function abBindCategoryPanel(body) {
+  var toggle = body.querySelector('#ab-all-categories');
+  var panel = body.querySelector('#ab-category-panel');
+  if (!toggle || !panel) { return; }
+  function setOpen(open) {
+    audiobookState.allCategoriesOpen = open;
+    panel.hidden = !open;
+    toggle.classList.toggle('active', open);
+    toggle.setAttribute('aria-expanded', open ? 'true' : 'false');
+  }
+  toggle.addEventListener('click', function (event) {
+    event.stopPropagation();
+    setOpen(!audiobookState.allCategoriesOpen);
+  });
+  var close = panel.querySelector('#ab-category-panel-close');
+  if (close) {
+    close.addEventListener('click', function () { setOpen(false); });
+  }
+  Array.prototype.forEach.call(panel.querySelectorAll('.ab-category-option'), function (button) {
+    button.addEventListener('click', function () {
+      var index = Number(button.getAttribute('data-ab-cat-index'));
+      abSelectCategory(index < 0 ? '' : (audiobookState.categories[index] || ''));
+    });
+  });
+}
+
+// 点击面板以外的地方收起面板；只注册一次，避免列表反复重绘叠加监听。
+document.addEventListener('click', function (event) {
+  if (!audiobookState.allCategoriesOpen) { return; }
+  var bar = document.querySelector('.ab-category-bar');
+  if (bar && bar.contains(event.target)) { return; }
+  audiobookState.allCategoriesOpen = false;
+  var panel = document.getElementById('ab-category-panel');
+  if (panel) { panel.hidden = true; }
+  var toggle = document.getElementById('ab-all-categories');
+  if (toggle) {
+    toggle.classList.remove('active');
+    toggle.setAttribute('aria-expanded', 'false');
+  }
+});
 
 // 书库后台还在翻页时定时补全当前查询；token 变化（用户切榜/搜索/翻页）即作废。
 function abScheduleLibraryRefresh() {
@@ -3974,16 +4079,11 @@ function renderAudiobookBody() {
   Array.prototype.forEach.call(body.querySelectorAll('.ab-category'), function (button) {
     button.addEventListener('click', function () {
       var index = Number(button.getAttribute('data-index'));
-      audiobookState.category = index < 0 ? '' : (audiobookState.categories[index] || '');
-      audiobookState.query = '';
-      audiobookState.shelf = false;
-      audiobookState.page = 1;
-      var input = document.getElementById('ab-search-input');
-      if (input) { input.value = ''; }
-      renderAudiobookToolbar();
-      abLoadLibrary(1);
+      abSelectCategory(index < 0 ? '' : (audiobookState.categories[index] || ''));
     });
   });
+  abBindCategoryPanel(body);
+  abRevealCategory();
   var prevPage = body.querySelector('#ab-prev-page');
   if (prevPage) {
     prevPage.addEventListener('click', function () {
