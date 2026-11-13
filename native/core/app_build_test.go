@@ -11,8 +11,10 @@ import (
 )
 
 func TestNativeBuildAuthorization(t *testing.T) {
-	for _, source := range []string{sourceHongguo, sourceHuangdou, sourceHuangguoVideo, sourceHuangguoAI, sourceCloudFront, sourceDSD, "unknown"} {
-		allowed := source == sourceHongguo || buildAllSources == "true" && source != "unknown"
+	for _, source := range []string{sourceHongguo, sourceFanqie, sourceHuangdou, sourceHuangguoVideo, sourceHuangguoAI, sourceCloudFront, sourceDSD, "unknown"} {
+		// 红果与番茄是 core 内置源，两种版本都放行；其余源仍跟随 buildAllSources。
+		allowed := source == sourceHongguo || source == sourceFanqie ||
+			buildAllSources == "true" && source != "unknown"
 		for _, action := range []string{"catalog", "cached", "detail", "followCheck", "cover", "resolve", "enqueueDownloads", "localPlayback"} {
 			input := nativeInput{Action: action, Source: source, Drama: nativeDrama{ID: source + ":123", Source: source}}
 			err := nativeAuthorizeInput(input)

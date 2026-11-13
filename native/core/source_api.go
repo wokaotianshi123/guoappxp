@@ -32,6 +32,11 @@ func sourceValidCategory(source, category string) (valid bool, handled bool) {
 	factory, ok := sourceRegistry.factories[source]
 	sourceRegistry.RUnlock()
 	if !ok {
+		// 番茄是 core 内置源，未编入外置模块时分类校验也要能走通，
+		// 否则红果鉴里目录请求会先被「无效分类」挡下来。
+		if source == sourceFanqie {
+			return fanqieBuiltinValidCategory(category), true
+		}
 		return false, false
 	}
 	return factory(nil).ValidCategory(category), true
@@ -221,7 +226,10 @@ func (d *Downloader) sourceProvider(source string) (SourceProvider, bool) {
 	factory, ok := sourceRegistry.factories[source]
 	sourceRegistry.RUnlock()
 	if !ok {
-		return nil, false
+		// 注册表优先；番茄在 core 里有内置实现，未编入外置站源模块时
+		// 回落到这里（红果鉴 / 不带 --sources 的构建），目录、搜索、
+		// 详情、取流、分类五条派发由此一并打通。
+		return d.fanqieBuiltinSource(source)
 	}
 	d.sourceProviderMu.Lock()
 	defer d.sourceProviderMu.Unlock()

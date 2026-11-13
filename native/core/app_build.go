@@ -8,12 +8,13 @@ var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
 func nativeSourceAvailable(source string) bool {
 	source = canonicalProviderSource(source)
-	if source == sourceHongguo {
+	// 红果与番茄是 core 内置源，红果鉴 / 真果鉴都保留。番茄短剧实现已回迁到
+	// core（见 provider_fanqie.go / source_fanqie_builtin.go），不依赖外置站源
+	// 模块，因此不再随 buildAllSources 门控。注意与「番茄听书」区分——听书走
+	// audiobookFetch/Text/Media 独立 action，不经本函数，两种版本都保留。
+	if source == sourceHongguo || source == sourceFanqie {
 		return true
 	}
-	// 番茄（fanqie）短剧源与其余 30 个外置源一样，跟随 buildAllSources 门控：
-	// 红果鉴（false）不含它，真果鉴（true）才可用。注意与「番茄听书」区分——
-	// 听书走 audiobookFetch/Text/Media 独立 action，不经本函数，两种版本都保留。
 	if isCustomMaccmsSource(source) {
 		return isHuangguoProviderSource(source)
 	}
