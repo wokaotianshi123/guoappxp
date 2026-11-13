@@ -126,6 +126,11 @@ func isHuangguoProviderSource(source string) bool {
 		sourceXChina, sourceTheporny:
 		return true
 	}
+	// 用 guoappxpx 契约（core.Register）接入的外置源不在这张硬编码表里，
+	// 只要编进了注册表就当成已知源，否则会被授权、详情、取流三处门卫拦下。
+	if registeredProviderSource(canonicalProviderSource(source)) {
+		return true
+	}
 	return isDuanjuProviderSource(source)
 }
 

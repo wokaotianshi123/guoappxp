@@ -62,7 +62,7 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	source = canonicalProviderSource(source)
 	all := []nativeCategory{{Name: "全部"}}
 	if provider, ok := engine.downloader.sourceProvider(source); ok {
-		all = append(all, provider.Categories()...)
+		all = append(all, providerCategories(ctx, provider, force)...)
 		if len(all) == 1 {
 			// 站源声明「本来就没有分类」（如黄豆）时只有「全部」，属于正常情况。
 			categoryLess := false
@@ -116,19 +116,19 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	switch source {
 	case sourceGuipian:
 		if provider, ok := d.sourceProvider(source); ok {
-			all = append(all, provider.Categories()...)
+			all = append(all, providerCategories(ctx, provider, force)...)
 		}
 	case sourceIkanbot:
 		if provider, ok := d.sourceProvider(source); ok {
-			all = append(all, provider.Categories()...)
+			all = append(all, providerCategories(ctx, provider, force)...)
 		}
 	case sourceA123:
 		if provider, ok := d.sourceProvider(source); ok {
-			all = append(all, provider.Categories()...)
+			all = append(all, providerCategories(ctx, provider, force)...)
 		}
 	case sourceXChina:
 		if provider, ok := d.sourceProvider(source); ok {
-			all = append(all, provider.Categories()...)
+			all = append(all, providerCategories(ctx, provider, force)...)
 		}
 	default:
 		if isDuanjuProviderSource(source) {

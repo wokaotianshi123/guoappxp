@@ -20,16 +20,24 @@ import (
 
 var aiFixtureOnce sync.Once
 
+var aiFixtureDescriptor = SourceDescriptor{
+	ID:            sourceHuangguoAI,
+	Name:          "黄果",
+	Description:   "测试夹具",
+	ValidCategory: aiFixtureValidCategory,
+}
+
 // installAIFixture 给需要黄果站源的 core 用例装一个最小 provider。
 func installAIFixture(t *testing.T) {
 	t.Helper()
 	aiFixtureOnce.Do(func() {
-		RegisterSource(SourceDescriptor{ID: sourceHuangguoAI, Name: "黄果", Description: "测试夹具"},
-			func(host SourceHost) SourceProvider { return aiFixtureSource{host: host} })
+		Register(aiFixtureDescriptor, func(host Host) Provider {
+			return aiFixtureSource{host: AsRuntime(host)}
+		})
 	})
 }
 
-type aiFixtureSource struct{ host SourceHost }
+type aiFixtureSource struct{ host RuntimeHost }
 
 var aiFixtureCategories = []nativeCategory{
 	{ID: "ai-duanju", Name: "AI 短剧"},
@@ -38,11 +46,13 @@ var aiFixtureCategories = []nativeCategory{
 	{ID: "ai-mogai", Name: "AI 魔改"},
 }
 
-func (s aiFixtureSource) Categories() []NativeCategory {
-	return append([]nativeCategory{}, aiFixtureCategories...)
+func (s aiFixtureSource) Descriptor() SourceDescriptor { return aiFixtureDescriptor }
+
+func (s aiFixtureSource) Categories(context.Context, bool) ([]Category, error) {
+	return append([]nativeCategory{}, aiFixtureCategories...), nil
 }
 
-func (s aiFixtureSource) ValidCategory(category string) bool {
+func aiFixtureValidCategory(category string) bool {
 	if category == "" {
 		return true
 	}
@@ -63,7 +73,7 @@ func (s aiFixtureSource) edge(ctx context.Context, path string) (string, error) 
 	return s.host.PostJSON(ctx, base+"/api/edge/request", base+"/", payload)
 }
 
-func (s aiFixtureSource) CatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error) {
+func (s aiFixtureSource) CatalogPage(ctx context.Context, page int, category string) ([]Drama, bool, error) {
 	categories := aiFixtureCategories
 	if category != "" {
 		categories = nil

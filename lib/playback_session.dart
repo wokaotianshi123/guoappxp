@@ -264,7 +264,9 @@ class PlaybackSession extends ChangeNotifier {
   bool get hasNext => _index + 1 < detail.episodes.length;
   String get qualityLabel {
     final plan = _plan;
-    if (plan?.local == true) return '本地原画';
+    if (plan != null && plan.local) {
+      return plan.quality > 0 ? '本地 ${plan.quality}P' : '本地';
+    }
     if (_quality > 0) return '${_quality}P';
     return plan != null && plan.quality > 0 ? '自动（${plan.quality}P）' : '自动';
   }

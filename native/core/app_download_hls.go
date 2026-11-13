@@ -37,7 +37,12 @@ func nativeHLSSelect(lines []string, quality int) ([]string, int, bool) {
 		attributes := nativeHLSAttributes(line)
 		height := 0
 		if resolution := strings.Split(attributes["RESOLUTION"], "x"); len(resolution) == 2 {
+			width, _ := strconv.Atoi(resolution[0])
 			height, _ = strconv.Atoi(resolution[1])
+			// 竖屏剧（如 720x1280）按画面短边算档位，别把 720P 标成 1280P。
+			if width > 0 && width < height {
+				height = width
+			}
 		}
 		bandwidth, _ := strconv.Atoi(attributes["BANDWIDTH"])
 		for next := index + 1; next < len(lines); next++ {

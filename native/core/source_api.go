@@ -25,49 +25,60 @@ var (
 )
 
 // sourceValidCategory 让编译期接入的站源自己判定分类。第二个返回值表示是否已由站源处理。
-// 探针实例不带 Host，站源的 ValidCategory 因此必须是纯函数。
+// 描述符里的 ValidCategory 必须是纯函数：这条路径没有实例、不带 Host，
+// 只读注册表里登记的函数，不会碰到网络与运行时状态。
 func sourceValidCategory(source, category string) (valid bool, handled bool) {
 	source = canonicalProviderSource(source)
 	sourceRegistry.RLock()
-	factory, ok := sourceRegistry.factories[source]
+	descriptor, registered := sourceRegistry.descriptors[source]
 	sourceRegistry.RUnlock()
-	if !ok {
-		// 番茄是 core 内置源，未编入外置模块时分类校验也要能走通，
-		// 否则红果鉴里目录请求会先被「无效分类」挡下来。
-		if source == sourceFanqie {
-			return fanqieBuiltinValidCategory(category), true
-		}
-		return false, false
+	if registered && descriptor.ValidCategory != nil {
+		return descriptor.ValidCategory(category), true
 	}
-	return factory(nil).ValidCategory(category), true
+	// 番茄是 core 内置源，未编入外置模块时分类校验也要能走通，
+	// 否则红果鉴里目录请求会先被「无效分类」挡下来。
+	if source == sourceFanqie {
+		return fanqieBuiltinValidCategory(category), true
+	}
+	return false, false
 }
 
 // 本文件是「站源分离」的对外接口面：站源不再写在 core 里，而是编译期由
-// 独立的 Go 模块（默认 guoapp/sources）接入，只单向依赖这里导出的标识符。
+// 独立的 Go 模块（默认 guoapp-sources）接入，只单向依赖这里导出的标识符。
 //
 // 约定：
-//   - 站源实现 SourceProvider，在 init 里用 RegisterSource 登记描述符与工厂；
-//   - 站源访问网络、读写运行时状态只能经 SourceHost，不要自建 http.Client；
+//   - 站源实现 Provider（见 source_api_xpx.go），在 init 里用 Register 登记
+//     描述符与工厂；
+//   - 站源访问网络、读写运行时状态只能经 Host，不要自建 http.Client；
 //   - core 不再直接引用任何具体站源，派发一律经 sourceProvider(id) 查表。
 
 // SourceDescriptor 描述一个编译期接入的站源。
+// 前三个字段是旧契约使用的；其余字段来自 guoappxpx 的 SourceAPI1 契约，
+// 让那边的外置源文件可以原样声明描述符（见 source_api_xpx.go）。
 type SourceDescriptor struct {
 	ID          string
 	Name        string
 	Description string
+
+	Group              string
+	GroupName          string
+	EntryName          string
+	DefaultOff         bool
+	SkipVIPPrompt      bool
+	Aliases            []string
+	HostSuffixes       []string
+	MatchesHost        func(host string) bool
+	BaseURL            string
+	AllowEmptyCatalog  bool
+	NoHostRotation     bool
+	KeepDetailEpisodes bool
+	ContinuousFeed     bool
+	BrowserFingerprint bool
+	ValidCategory      func(category string) bool
+	Rankings           []RankingBoard
 }
 
-// SourceProvider 是站源必须实现的接口。
-//
-// 方法集合刻意保持最小：分类、分类校验、目录分页（含搜索）、详情、取流。
-// 站源特有的能力（榜单、弹幕、设备注册等）后续按可选接口补充，不塞进这里。
-type SourceProvider interface {
-	Categories() []NativeCategory
-	ValidCategory(category string) bool
-	CatalogPage(ctx context.Context, page int, category, query string) ([]Drama, bool, error)
-	Detail(ctx context.Context, sourceID string) (Drama, []Chapter, error)
-	ResolveMedia(ctx context.Context, task Task) (ProviderMedia, error)
-}
+// 以下接口是 Provider（source_api_xpx.go）的可选能力，运行时按类型断言使用。
 
 // SourceAccount 是站源的可选账号能力（登录 / 验证码 / 登出）。
 // 只有需要账号的站源才实现它；command 与 input 的语义由站源自己定义，
@@ -101,97 +112,14 @@ type SourceCategoryLess interface {
 	CategoryLess() bool
 }
 
-// SourceHost 是站源访问运行时的唯一入口。
-type SourceHost interface {
-	// BaseURL 返回站源的站点地址（设置里配过就用配置，否则用内置默认）。
-	BaseURL(source string) string
-	// FetchText 抓取纯文本，referer 为空时用请求地址本身；userAgent / cookie 为空时不附加。
-	FetchText(ctx context.Context, address, referer, userAgent, cookie string) (string, error)
-	// FetchPage 抓取并解析 HTML，返回文档与（跟随重定向后的）最终地址。
-	FetchPage(ctx context.Context, address, referer, userAgent, cookie string) (*xhtml.Node, string, error)
-	// PrepareWebMedia 校验网页源给出的播放地址，m3u8 会预取播放列表。
-	PrepareWebMedia(ctx context.Context, media ProviderMedia, sourceName string) (ProviderMedia, error)
-	// HTTPClient 返回运行时配置好的标准客户端（代理、DoH、TLS 信任库已就位）。
-	// 站源可以复制它的 Transport 发自定义请求，但不要改它的字段。
-	HTTPClient() *http.Client
-	// Limiter 返回运行时的请求限流器，未启用时返回 nil。
-	Limiter() RequestLimiter
-	// CatalogResponseError 把站点的错误响应转成可读错误（含被拦截判定）。
-	CatalogResponseError(request *http.Request, response *http.Response, body []byte) error
-	// ConfigURL 返回设置里给该站源配的自定义地址，未配置时为空。
-	ConfigURL(source string) string
-	// ConfigAPIURL 返回设置里给该站源配的接口地址（如黄剧 api、野果 api）。
-	ConfigAPIURL(source string) string
-	// DuanjuBaseURL 返回短剧家族站源的接口地址。
-	DuanjuBaseURL(source string) string
-	// DuanjuJSON 用短剧家族的客户端发请求并解出 JSON。
-	DuanjuJSON(ctx context.Context, request DuanjuRequest) (map[string]any, error)
-	// DuanjuDo 同 DuanjuJSON，但返回原始响应体。
-	DuanjuDo(ctx context.Context, request DuanjuRequest) ([]byte, error)
-	// MaccmsCatalogPage / MaccmsDetail / MaccmsSearch 是运行时的 MacCMS 通用引擎。
-	// 内置的 MacCMS 短剧站与自定义 MacCMS 源共用这套解析，站源只负责声明自己的地址与分类。
-	MaccmsCatalogPage(ctx context.Context, source string, page int, category string) ([]Drama, bool, error)
-	MaccmsDetail(ctx context.Context, source, sourceID string) (Drama, []Chapter, error)
-	MaccmsSearch(ctx context.Context, source, query string) ([]Drama, error)
-	// DuanjuResolveMedia 用运行时里的短剧通用取流逻辑解析播放地址。
-	// 站源不需要自定义取流时，ResolveMedia 直接转调它即可。
-	DuanjuResolveMedia(ctx context.Context, task Task) (ProviderMedia, error)
-	// BrowserPostJSON 用带 Chrome 指纹与独立 Cookie 会话的客户端发 POST，
-	// headers 按传入顺序写入（部分站点会校验头部顺序）。
-	BrowserPostJSON(ctx context.Context, address string, headers [][2]string, body []byte, timeout time.Duration) (int, []byte, error)
-	// DoPrepared 执行一个已经组装好的请求，经运行时的限流与超时管理。
-	// 响应体读完必须关闭；timeout<=0 表示用运行时默认。
-	DoPrepared(ctx context.Context, request *http.Request, timeout time.Duration) (*http.Response, error)
-	// RememberHost 记录站源当前可用的站点地址（域名轮换后封面 / 取流要用）。
-	RememberHost(source, host string)
-	// LegacySettings 返回 legacy 家族（黄果旧接口）的账号、协议与取流配置。
-	LegacySettings() LegacySettings
-	// APIEndpoint 返回 legacy 家族的接口根地址，运行时会做域名健康度轮换。
-	APIEndpoint(ctx context.Context) (string, error)
-	// ResetAPIEndpoint 让运行时把某个接口根地址标记为不可用并换下一个。
-	ResetAPIEndpoint(base string)
-	// PostJSON 以 POST 发送 JSON 载荷并返回响应文本（走站源的镜像候选与限流）。
-	PostJSON(ctx context.Context, address, referer string, payload []byte) (string, error)
-	// ForgetHost 忘掉记住的站点地址，下次请求重新选路（会话失效时换镜像用）。
-	ForgetHost(source string)
-	// FetchTextFinal 抓取文本并返回跟随重定向后的最终地址。
-	// 有些站点的播放页会跳转到另一个域名，取流必须用跳转后的地址当 Referer。
-	FetchTextFinal(ctx context.Context, address, referer, userAgent, cookie string) (string, string, error)
-	// FetchMediaPlaylist 取一个播放列表（会解开 legacy 接口的 JSON 信封），
-	// 返回列表文本与（跟随重定向后的）最终地址。
-	FetchMediaPlaylist(ctx context.Context, address, referer string) (string, string, error)
-	// StateDir 返回应用数据目录。站源在这里存取登录态 / 访客会话等需要跨启动保留的小文件，
-	// 不要写缓存（缓存另有清理流程）。返回空串表示当前运行时不支持持久化。
-	StateDir() string
-}
-
 var sourceRegistry = struct {
 	sync.RWMutex
-	factories   map[string]func(SourceHost) SourceProvider
+	factories   map[string]ProviderFactory
 	descriptors map[string]SourceDescriptor
 	order       []string
 }{
-	factories:   map[string]func(SourceHost) SourceProvider{},
+	factories:   map[string]ProviderFactory{},
 	descriptors: map[string]SourceDescriptor{},
-}
-
-// RegisterSource 由站源模块在 init 里调用。ID 重复或为空直接 panic：
-// 编译期拼装的站源本来就该在出包时暴露冲突，而不是装到设备上才出错。
-func RegisterSource(descriptor SourceDescriptor, factory func(SourceHost) SourceProvider) {
-	if descriptor.ID == "" {
-		panic("core: 站源描述缺少 ID")
-	}
-	if factory == nil {
-		panic("core: 站源 " + descriptor.ID + " 缺少工厂函数")
-	}
-	sourceRegistry.Lock()
-	defer sourceRegistry.Unlock()
-	if _, exists := sourceRegistry.factories[descriptor.ID]; exists {
-		panic("core: 站源 ID 重复: " + descriptor.ID)
-	}
-	sourceRegistry.factories[descriptor.ID] = factory
-	sourceRegistry.descriptors[descriptor.ID] = descriptor
-	sourceRegistry.order = append(sourceRegistry.order, descriptor.ID)
 }
 
 // unregisterSource 只给测试用：正式构建的站源集合是编译期固定的，运行期不卸载。
@@ -220,7 +148,7 @@ func RegisteredSources() []SourceDescriptor {
 }
 
 // sourceProvider 取（并按需实例化）某个站源的实现，未编入返回 false。
-func (d *Downloader) sourceProvider(source string) (SourceProvider, bool) {
+func (d *Downloader) sourceProvider(source string) (Provider, bool) {
 	source = canonicalProviderSource(source)
 	sourceRegistry.RLock()
 	factory, ok := sourceRegistry.factories[source]
@@ -236,9 +164,9 @@ func (d *Downloader) sourceProvider(source string) (SourceProvider, bool) {
 	if provider, exists := d.sourceProviders[source]; exists {
 		return provider, true
 	}
-	provider := factory(downloaderSourceHost{d: d})
+	provider := factory(newXpxHost(downloaderSourceHost{d: d}))
 	if d.sourceProviders == nil {
-		d.sourceProviders = map[string]SourceProvider{}
+		d.sourceProviders = map[string]Provider{}
 	}
 	d.sourceProviders[source] = provider
 	return provider, true

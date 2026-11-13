@@ -14,6 +14,7 @@ import 'local_store.dart';
 import 'portable_data.dart';
 import 'ui/app.dart';
 import 'ui/theme/app_theme.dart';
+import 'window_on_top.dart';
 
 /// 桌面端窗口的最小尺寸：再小的话播放器控制条和线路弹层会挤在一起。
 const desktopMinimumSize = Size(960, 640);
@@ -43,6 +44,10 @@ Future<void> main() async {
         () async => windowManager.show(),
       );
     } catch (_) {}
+  }
+  // 窗口置顶只支持桌面端，且必须等 windowManager 初始化完才能生效。
+  if (Platform.isWindows || Platform.isMacOS) {
+    await restoreWindowOnTop();
   }
   MediaKit.ensureInitialized();
   final device = await AppDevice.detect();

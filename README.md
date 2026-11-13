@@ -409,18 +409,19 @@ python scripts/build_native.py --platform windows --sources ../guoapp-sources --
 站源模块的写法：
 
 - 任意路径的 Go 模块，`go.mod` 里 `module` 自取（如 `guoapp/sources`），**不要** `require duanjuapp/native`；构建脚本生成的 `go.work` 负责解析。
-- 实现 `core.SourceProvider`：`Categories`、`ValidCategory`、`CatalogPage`、`Detail`、`ResolveMedia`；在 `init` 里用 `core.RegisterSource(描述符, 工厂)` 登记。
-- 只能经 `core.SourceHost` 访问运行时：`BaseURL` / `ConfigURL` / `ConfigAPIURL`（站点与接口地址）、`StateDir`（落盘登录态/访客会话）、`RememberHost`（换线后回报可用站点）、`LegacySettings` / `APIEndpoint` / `ResetAPIEndpoint` / `FetchMediaPlaylist`（legacy 家族的账号配置、接口域名轮换与播放列表解析）、`FetchTextFinal`（取回跟随重定向后的最终地址，播放页跳域名时当 Referer 用）、`PostJSON`（POST JSON 载荷，黄果 AI 的信封接口用它）、`ForgetHost`（会话失效时让运行时换镜像）、`FetchText` / `FetchPage`（可带 UA 与 Cookie）、`PrepareWebMedia`、`DoPrepared`、`HTTPClient` / `Limiter` / `CatalogResponseError`（标准请求与限流）、`BrowserPostJSON`（Chrome 指纹 + 独立 Cookie 会话）、`DuanjuBaseURL` / `DuanjuJSON` / `DuanjuDo`（短剧接口）、`MaccmsCatalogPage` / `MaccmsDetail` / `MaccmsSearch`（MacCMS 引擎）、`DuanjuResolveMedia`（通用取流）；不要自建 `http.Client`，代理、限流、重试、DNS 都由运行时统一处理。
-- 站源可按需实现可选接口：`core.SourceAccount`（账号登录）、`core.SourceRankings`（榜单，名次按位置算）、`core.SourceRankingEntries`（榜单，站点自带名次与指标文案，如黄果）、`core.SourceCategoryLess`（本来就没有分类，如黄豆 / 番茄）。
+- 实现 `core.Provider`：`Descriptor()`、`Categories(ctx, force)`、`CatalogPage(ctx, page, category)`、`Detail(ctx, id)`、`ResolveMedia(ctx, task)`；在 `init` 里用 `core.Register(描述符, 工厂)` 登记，工厂签名是 `func(core.Host) core.Provider`。
+- 搜索是独立能力：实现可选接口 `core.Searcher`（`Search(ctx, page, query)`）或 `core.WarningSearcher`（多返回一条「结果被截断」之类的警告）。目录接口不再接收 query。
+- 分类校验写在描述符的 `ValidCategory` 里，必须是纯函数：core 用一个不带 Host 的探针调它，不能访问网络或运行时状态。
+- 只能经 `core.Host` 访问运行时：`Fetch` / `FetchText` / `FetchPlaylist`（统一请求，限流、超时、拦截判定都在运行时）、`BaseURL` / `PreferredSite` / `RememberSite`（站点地址与换线）、`LoadState` / `SaveState`（落盘登录态/访客会话）、`PrepareWebMedia` / `FinishMedia`（网页源播放地址校验与收尾）、`Reserve` / `Retries` / `MaxPages`（重试与翻页上限）；不要自建 `http.Client`。
+- 需要短剧 / MacCMS / legacy 引擎时，用 `core.AsRuntime(host)` 取 `core.RuntimeHost`：`DuanjuBaseURL` / `DuanjuJSON` / `DuanjuDo`、`MaccmsCatalogPage` / `MaccmsDetail` / `MaccmsSearch`、`DuanjuResolveMedia`、`LegacySettings` / `APIEndpoint` / `ResetAPIEndpoint`、`FetchPage` / `FetchTextFinal` / `PostJSON` / `BrowserPostJSON` / `DoPrepared`、`HTTPClient` / `Limiter` / `CatalogResponseError`、`ConfigURL` / `ConfigAPIURL`、`StateDir` / `RememberHost` / `ForgetHost`、`FetchMediaPlaylist`。这些是 guoappxp 在 guoappxpx 契约之外补的运行时能力，上游源不感知。
+- 可选接口：`core.SourceAccount`（账号登录）、`core.SourceRankings`（榜单，名次按位置算）、`core.SourceRankingEntries`（榜单，站点自带名次与指标文案，如黄果）、`core.SourceCategoryLess`（本来就没有分类，如黄豆 / 番茄）。
 - 需要账号的站源额外实现 `core.SourceAccount`（`Account(ctx, command, input json.RawMessage)`）；「需要登录 / 登录失效」用 `core.ErrSourceLoginRequired` / `core.ErrSourceLoginExpired` 包装，运行时会把错误码回成 `source_login`。
 - legacy 家族（黄果 / 云栈 / 禁果）的 AES 协议与宽松解码由 core 导出：`LegacyCipher`、`LegacyEnvelope`、`LegacyDetail`、`LegacyTabList`、`LegacyCoverURL`、`IsLegacySessionExpired`。
-- `ValidCategory` 里不要再调 `core.ValidNativeCategory`：运行时会用无 Host 探针调站源，回头查注册表会绕回自己形成无限递归。
 - 站源自己的状态（线路缓存、会话、令牌、详情缓存）放在站源结构体里，不要往 `Downloader` 加字段。
-- 目前已外置（共 26 个）：A123、鬼片网、爱看机器人、XChina、河果、芽果、猫果、饭果、星果、牛果、花果、网果、韩小圈、Theporny、剧果、野果、禁果、禁果短剧、青空、帝果、笔盒、黄豆、番茄、黄果旧版（legacy）、黄果视频、黄果 AI。（黑桃、观果、发果、伍果已因站点失效移除。）其中番茄在 `native/core` 另有内置实现（`provider_fanqie.go`）：注册表优先用外置版本，未编入外置模块时回落到 core 内置，让红果鉴也能用。
-- 尚未外置（仍在 `native/core`）：红果、番茄（内置实现）。红果的剧库缓存、推荐流、弹幕与设备库都在 `nativeEngine` 里，要先抽 `SourceCatalogState` / `SourceDanmaku` / `SourceDevices` 三类运行态接口。
+- 目前已外置（共 27 个）：A123、鬼片网、爱看机器人、XChina、河果、芽果、猫果、饭果、星果、牛果、花果、网果、韩小圈、Theporny、剧果、野果、禁果、禁果短剧、青空、帝果、笔盒、黄豆、番茄、黄果旧版（legacy）、黄果视频、黄果 AI、红果听书。（黑桃、观果、发果、伍果已因站点失效移除。）其中番茄在 `native/core` 另有内置实现（`provider_fanqie.go`）：注册表优先用外置版本，未编入外置模块时回落到 core 内置，让红果鉴也能用。
+- 尚未外置（仍在 `native/core`）：红果。红果的剧库缓存、推荐流、弹幕与设备库都在 `nativeEngine` 里，要先抽 `SourceCatalogState` / `SourceDanmaku` / `SourceDevices` 三类运行态接口。
 - 黄果家族的 HTML 解析（卡片 / 详情 / 分集 / data-hls）仍留在 `native/core/source_huangguo_parsers.go`：黄果 AI 与「排序详情」模块共用同一套正则，站源通过 `core.ParseHuangguoVideoCards` 等入口调用，不复制私有助手。
-- XBPQ 规则源、自定义 MacCMS 源的导入与设置、站点分析器，以及它们共用的 MacCMS 解析引擎保留在 `native/core`（外置站源同样经 `SourceHost` 调用这套引擎）。
-- `ValidCategory` 必须是纯函数：core 在校验分类时会用一个不带 Host 的探针实例调用它。
+- XBPQ 规则源、自定义 MacCMS 源的导入与设置、站点分析器，以及它们共用的 MacCMS 解析引擎保留在 `native/core`（外置站源经 `core.RuntimeHost` 调用这套引擎）。
 - 编译标签为 `sources`，所以站源模块里的测试用 `go test guoapp/sources`（在 `native/` 目录、生成 go.work 之后执行）。
 
 ### 内嵌站源（尚未外置）

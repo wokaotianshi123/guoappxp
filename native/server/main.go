@@ -615,6 +615,28 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 			})
 		}
 	}
+	// 并入以新契约（core.Register）编入、但未列进静态表的站源：
+	// 以后新增外置源不必逐个改 sourceNames，注册了就能出现在下拉框。
+	known := map[string]bool{}
+	for _, source := range sourceNames {
+		known[source.ID] = true
+	}
+	for _, descriptor := range core.RegisteredSources() {
+		if descriptor.ID == "" || known[descriptor.ID] {
+			continue
+		}
+		known[descriptor.ID] = true
+		if !sourceAvailable(descriptor.ID) {
+			continue
+		}
+		name := descriptor.Name
+		if name == "" {
+			name = descriptor.ID
+		}
+		items = append(items, map[string]any{
+			"id": descriptor.ID, "name": name, "visible": !isSourceHidden(descriptor.ID),
+		})
+	}
 	// 并入用户自定义的 maccms 站源，使其出现在站源下拉框。
 	// 核心返回的是 {"ok":true,"data":{"items":[...]}} 信封，必须从 data 里取。
 	var customReply struct {

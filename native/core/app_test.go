@@ -297,18 +297,19 @@ func TestHongguoDetailAndPlayableQuality(t *testing.T) {
 // 站源外置后这条分支改由注册表转入站源实现，这里用一个假站源盯住透传。
 func TestNativeDetailKeepsWebSourceDescription(t *testing.T) {
 	d, _ := duanjuFixtureDownloader(t, func(writer http.ResponseWriter, request *http.Request) {})
-	RegisterSource(SourceDescriptor{ID: sourceWuguo, Name: "伍果"}, func(SourceHost) SourceProvider {
-		return stubDetailProvider{
-			drama: Drama{
-				ID: providerDramaID(sourceWuguo, "100"), Source: sourceWuguo, SourceID: "100",
-				Title: "五五样本", Name: "五五样本", Desc: "网页源剧情简介",
-			},
-			chapters: []Chapter{
-				{ID: providerChapterID(sourceWuguo, "100", "1"), Source: sourceWuguo, Title: "第1集", VideoURL: "https://media.example.test/1.mp4"},
-				{ID: providerChapterID(sourceWuguo, "100", "2"), Source: sourceWuguo, Title: "第2集", VideoURL: "https://media.example.test/2.mp4"},
-			},
-		}
-	})
+	Register(SourceDescriptor{ID: sourceWuguo, Name: "伍果", ValidCategory: func(string) bool { return true }},
+		func(Host) Provider {
+			return stubDetailProvider{
+				drama: Drama{
+					ID: providerDramaID(sourceWuguo, "100"), Source: sourceWuguo, SourceID: "100",
+					Title: "五五样本", Name: "五五样本", Desc: "网页源剧情简介",
+				},
+				chapters: []Chapter{
+					{ID: providerChapterID(sourceWuguo, "100", "1"), Source: sourceWuguo, Title: "第1集", VideoURL: "https://media.example.test/1.mp4"},
+					{ID: providerChapterID(sourceWuguo, "100", "2"), Source: sourceWuguo, Title: "第2集", VideoURL: "https://media.example.test/2.mp4"},
+				},
+			}
+		})
 	t.Cleanup(func() { unregisterSource(sourceWuguo) })
 	engine := &nativeEngine{
 		downloader: d,
@@ -352,11 +353,13 @@ type stubDetailProvider struct {
 	chapters []Chapter
 }
 
-func (s stubDetailProvider) Categories() []NativeCategory { return nil }
+func (s stubDetailProvider) Descriptor() SourceDescriptor {
+	return SourceDescriptor{ID: sourceWuguo, Name: "伍果", ValidCategory: func(string) bool { return true }}
+}
 
-func (s stubDetailProvider) ValidCategory(string) bool { return true }
+func (s stubDetailProvider) Categories(context.Context, bool) ([]Category, error) { return nil, nil }
 
-func (s stubDetailProvider) CatalogPage(context.Context, int, string, string) ([]Drama, bool, error) {
+func (s stubDetailProvider) CatalogPage(context.Context, int, string) ([]Drama, bool, error) {
 	return nil, false, nil
 }
 

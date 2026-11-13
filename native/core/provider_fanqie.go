@@ -5,7 +5,7 @@ package core
 // 回迁说明：站源外置第七批把本文件移进了独立模块，导致不接外置模块的
 // 红果鉴里番茄短剧源既被门控拦掉、注册表又查不到实现，引擎照常拉起却
 // 出不了内容。这里把实现放回 core，由 source_fanqie_builtin.go 包装成
-// SourceProvider，在 sourceProvider() 里做「注册表优先、未编入回落内置」。
+// Provider，在 sourceProvider() 里做「注册表优先、未编入回落内置」。
 //
 // 上游签名、设备池与视频缓存都由本机内嵌的番茄内容引擎（libfanqie_shim，
 // 127.0.0.1:18921 的 loopback REST 服务）完成；这里只做 HTTP 转发与字段映射：

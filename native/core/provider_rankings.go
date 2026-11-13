@@ -144,11 +144,14 @@ func (d *Downloader) loadRankingPage(ctx context.Context, board rankingBoard, pa
 }
 
 func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, page int) (rankingPage, error) {
-	// 站源自带名次与指标文案时优先用它：站点榜单的名次未必等于返回顺序。
+	// 站源自带名次与指标文案时优先用它：站点榜单的名次未必等于返回顺序；
+	// 只实现「按页取剧集」的源由 providerRankingEntries 统一补名次。
 	if provider, ok := d.sourceProvider(board.Source); ok {
-		if ranker, ok := provider.(SourceRankingEntries); ok {
+		_, ranker := provider.(SourceRankings)
+		_, entries := provider.(SourceRankingEntries)
+		if ranker || entries {
 			key := firstNonEmpty(board.upstreamKey, board.path)
-			items, more, err := ranker.RankingEntries(ctx, key, page)
+			items, more, err := providerRankingEntries(ctx, provider, key, page)
 			if err != nil {
 				return rankingPage{}, err
 			}
@@ -162,28 +165,6 @@ func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, p
 	switch board.Source {
 	case sourceHongguo:
 		return d.fetchHongguoRankingPage(ctx, board, page)
-	case sourceHuangdou:
-		provider, ok := d.sourceProvider(board.Source)
-		if !ok {
-			return rankingPage{}, errSourceNotCompiled
-		}
-		ranker, ok := provider.(SourceRankings)
-		if !ok {
-			return rankingPage{}, errors.New("该站源不支持榜单")
-		}
-		items, more, err := ranker.RankingPage(ctx, board.upstreamKey, page)
-		if err != nil {
-			return rankingPage{}, err
-		}
-		result := rankingPage{Items: make([]rankingItem, 0, len(items)), HasMore: more}
-		for index, drama := range items {
-			metric := ""
-			if drama.Heat != "" {
-				metric = drama.Heat + "热度"
-			}
-			result.Items = append(result.Items, rankingItem{Rank: (page-1)*20 + index + 1, Drama: drama, Metric: metric})
-		}
-		return result, nil
 	default:
 		return rankingPage{}, fmt.Errorf("不支持的榜单站源 %s", board.Source)
 	}

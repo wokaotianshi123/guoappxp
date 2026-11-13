@@ -61,7 +61,7 @@ type Downloader struct {
 	providerHosts map[string]string
 	// 编译期接入的站源实现按站源 ID 缓存（见 source_api.go）。
 	sourceProviderMu sync.Mutex
-	sourceProviders  map[string]SourceProvider
+	sourceProviders  map[string]Provider
 	limiter          *requestLimiter
 	proxyRouter      *proxyRouter
 	browserTransport *huangguoBrowserTransport
@@ -699,7 +699,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	var items []Drama
 	var err error
 	if provider, ok := engine.downloader.sourceProvider(source); ok {
-		items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+		items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
 	} else {
 		switch source {
 		case sourceHongguo:
@@ -731,25 +731,25 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			}
 		case sourceGuipian:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceIkanbot:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceA123:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceXChina:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category, "")
+				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
 			} else {
 				err = errSourceNotCompiled
 			}

@@ -18,7 +18,7 @@ func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) (
 		return nil, errors.New("该站源不支持分类读取")
 	}
 	if provider, ok := d.sourceProvider(source); ok {
-		return provider.Categories(), nil
+		return providerCategories(ctx, provider, false), nil
 	}
 	if static, found := duanjuStaticCategories[source]; found {
 		categories := make([]nativeCategory, 0, len(static))
@@ -36,7 +36,7 @@ func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) (
 func (d *Downloader) fetchDuanjuCatalogPage(ctx context.Context, source string, page int, category string) ([]Drama, bool, error) {
 	source = canonicalProviderSource(source)
 	if provider, ok := d.sourceProvider(source); ok {
-		return provider.CatalogPage(ctx, page, category, "")
+		return provider.CatalogPage(ctx, page, category)
 	}
 	// 自定义 MacCMS 源仍由运行时引擎处理；内置短剧源都已在注册表里。
 	if isCustomMaccmsSource(source) {
@@ -59,7 +59,7 @@ func (d *Downloader) fetchDuanjuDetail(ctx context.Context, source, sourceID str
 func (d *Downloader) searchDuanju(ctx context.Context, source, query string) ([]Drama, error) {
 	source = canonicalProviderSource(source)
 	if provider, ok := d.sourceProvider(source); ok {
-		items, _, err := provider.CatalogPage(ctx, 1, "", query)
+		items, _, err := providerSearch(ctx, provider, 1, query)
 		return items, err
 	}
 	if isCustomMaccmsSource(source) {

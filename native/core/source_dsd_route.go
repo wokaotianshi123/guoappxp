@@ -41,4 +41,3 @@ func dsdRouteParameters(pageURL, reference string) (string, map[string]string, b
 	}
 	return parts[1], parameters, true
 }
-

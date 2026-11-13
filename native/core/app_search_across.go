@@ -59,7 +59,10 @@ func nativeSourceSupportsSearch(source string) bool {
 	if isDuanjuProviderSource(source) {
 		return duanjuSupportsSearch(source)
 	}
-	return false
+	// 外置源模块里注册过的站源一律放行到派发层：真正没实现 Searcher 的源
+	// 由 providerSearch 返回 errSearchUnsupported，单源搜索给出明确提示，
+	// 跨源聚合静默跳过。这样新接入的站源不必再回来补这份白名单。
+	return registeredProviderSource(source)
 }
 
 // nativeSearchSourceLabel 返回站源的展示名，供提示与排序使用。
@@ -101,7 +104,7 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 	var more bool
 	var err error
 	if provider, ok := d.sourceProvider(source); ok {
-		items, more, err = provider.CatalogPage(ctx, page, "", query)
+		items, more, err = providerSearch(ctx, provider, page, query)
 	} else {
 		switch source {
 		case sourceHongguo:
@@ -124,31 +127,31 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 			return result, nil
 		case sourceGuipian:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = provider.CatalogPage(ctx, page, "", query)
+				items, more, err = providerSearch(ctx, provider, page, query)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceA123:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = provider.CatalogPage(ctx, page, "", query)
+				items, more, err = providerSearch(ctx, provider, page, query)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceIkanbot:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = provider.CatalogPage(ctx, page, "", query)
+				items, more, err = providerSearch(ctx, provider, page, query)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceXChina:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = provider.CatalogPage(ctx, page, "", query)
+				items, more, err = providerSearch(ctx, provider, page, query)
 			} else {
 				err = errSourceNotCompiled
 			}
 		case sourceHuangguoAI:
 			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = provider.CatalogPage(ctx, page, "", query)
+				items, more, err = providerSearch(ctx, provider, page, query)
 			} else {
 				err = errSourceNotCompiled
 			}

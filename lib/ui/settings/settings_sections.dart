@@ -11,6 +11,7 @@ import '../../local_store.dart';
 import '../../playback_preferences.dart';
 import '../../resource_settings.dart';
 import '../../resource_settings_editor.dart';
+import '../../window_on_top.dart';
 import '../app_scope.dart';
 import '../player/danmaku_settings.dart';
 import '../users/users_view.dart';
@@ -213,6 +214,21 @@ class SettingsSection extends StatelessWidget {
               value: preferences.progressLine,
               onChanged: (value) =>
                   savePreferences(preferences.copyWith(progressLine: value)),
+            ),
+          ],
+        ),
+      if (Platform.isWindows || Platform.isMacOS)
+        SettingsCard(
+          children: [
+            ValueListenableBuilder(
+              valueListenable: windowOnTop,
+              builder: (context, enabled, _) => SwitchTile(
+                title: '窗口置顶',
+                subtitle: '窗口始终显示在其他窗口上方，重启应用后仍然生效',
+                value: enabled,
+                onChanged: (value) =>
+                    saveSetting(context, () => setWindowOnTop(value)),
+              ),
             ),
           ],
         ),
