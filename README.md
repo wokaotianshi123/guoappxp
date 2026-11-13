@@ -220,6 +220,16 @@ iOS 需要 macOS、完整 Xcode 和 CocoaPods；macOS 同样需要 macOS 12+、�
 
 构建脚本对子进程默认设置 `GOPROXY=https://goproxy.cn,direct`、`GOSUMDB=off`，同名环境变量可覆盖。
 
+最小步骤(一次性,以后不再动)
+本机生成无口令密钥对:
+powershell
+
+ssh-keygen -t ed25519 -f "$env:USERPROFILE\guoapp-sources-deploy" -N '""' -C "guoappxp-ci"
+公钥 guoapp-sources-deploy.pub 内容 → guoapp-sources 仓库 Settings → Deploy keys → Add,不勾写权限。
+私钥全文(末尾带换行)→ guoappxp 仓库 Settings → Secrets → Actions 新增 SOURCES_DEPLOY_KEY。
+点 Run workflow 验一次真果鉴。之后每次出包自动,不用管。
+代码层无需任何改动——guoappxpx 和你现在的 CI 在这一段是同一套,站源引用也已是动态 github.repository_owner。
+
 ### 番茄内容引擎
 
 番茄短剧源随包内置，但**红果鉴不含它**（跟随全站源门控，与 30 个外置源一致）：
