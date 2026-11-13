@@ -140,12 +140,13 @@ class SourceSite {
   static const knownValues = [...primaryValues, ...restrictedValues];
   static const allValues = [...primaryValues, ...restrictedValues];
 
-  /// 红果鉴（非全站源版）只带红果一个内置短剧源；番茄短剧源（fanqie）
-  /// 与其余 30 个外置源一样跟随全站源门控，红果鉴不含它。
+  /// 红果鉴（非全站源版）保留两个 core 内置短剧源：红果（默认）与番茄。
+  /// 番茄短剧实现已回迁到 native/core（provider_fanqie.go），不依赖外置站源
+  /// 模块，因此两种版本都能用；其余 30 个外置源仍跟随全站源门控。
   /// 注意与「番茄听书」区分——听书是独立书源，走 audiobook_* action，
   /// 不经此列表，两种版本都保留。
   /// 真果鉴（`--dart-define=ALL_SOURCES=true`）才展开全部站源。
-  static const values = allSourcesEnabled ? knownValues : [hongguo];
+  static const values = allSourcesEnabled ? knownValues : [hongguo, fanqie];
 
   /// 当前会话已注册的自定义源 ID，供可用性判断与站源归一化使用。
   static final Set<String> customIds = {};
