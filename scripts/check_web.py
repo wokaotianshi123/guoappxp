@@ -174,10 +174,10 @@ def run_case(binary, slug_hint):
             ids = [item.get('id') for item in sources]
             check(ids, '/api/sources 一个站源都没有')
             if slug == 'hongguojian':
-                # 红果鉴只带红果一个内置短剧源。番茄短剧源（fanqie）跟随
-                # buildAllSources 门控，红果鉴不含它（番茄听书走独立 action，不受影响）。
-                check(set(ids) == {'hongguo'},
-                      '红果鉴只该有红果一个站源，实际是 %r（-X buildAllSources 没生效？）' % ids)
+                # 红果鉴保留两个 core 内置短剧源：红果 + 番茄。番茄实现已回迁，
+                # 不再随 buildAllSources 门控（番茄听书走独立 action，不受影响）。
+                check(set(ids) == {'hongguo', 'fanqie'},
+                      '红果鉴只该有红果与番茄两个站源，实际是 %r（-X buildAllSources 没生效？）' % ids)
             else:
                 check(len(ids) >= 10,
                       '真果鉴的站源只有 %d 个（%r），不像全站源版本' % (len(ids), ids))
