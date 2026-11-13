@@ -61,7 +61,7 @@ Flutter 多端独立短剧 / 影视应用
 | --- | --- |
 | 浏览 | 标题栏依次提供排序与筛选、榜单和展开搜索。分类保持独立一行，内容区左右滑动切类；支持默认、名称、自然季号、上线日期、热度、播放量排序及连载状态筛选。列表下滑接近底部自动加载下一页，底部「加载更多」为兜底 |
 | 搜索 | 红果合并官网与名称索引，输入停顿 300 毫秒显示最多 10 条联想；韩小圈、剧果、野果、鬼片、A123、爱看机器人调用各自的在线搜索并按分页继续加载。部分失败保留有效结果；最近 20 次搜索按用户保存。输入拼音首字母（`BDZC`）时，会先从追剧、观看记录、最近搜索里列出本地匹配的剧名，点一条即用完整标题去搜 |
-| 全部源搜索 | 搜索页可勾选「全部源」，同时并发搜索所有已开启的站源（含自定义源），结果按标题 / 年份 / 集数归一去重、同一部剧合并成一条并标出可切换的其它站源。搜索是分批返回的：哪个站源先出结果就先显示，不等最慢的那个；勾选偏好按用户保存在本机。只要当前可搜的站源多于一个（或这份构建本来就是全站源版）就会显示这个开关；红果鉴内置红果一个短剧源（番茄听书等听书书源独立保留），不用导入自定义源就能用 |
+| 全部源搜索 | 搜索页可勾选「全部源」，同时并发搜索所有已开启的站源（含自定义源），结果按标题 / 年份 / 集数归一去重、同一部剧合并成一条并标出可切换的其它站源。搜索是分批返回的：哪个站源先出结果就先显示，不等最慢的那个；勾选偏好按用户保存在本机。只要当前可搜的站源多于一个（或这份构建本来就是全站源版）就会显示这个开关；红果鉴内置红果与番茄两个短剧源（番茄听书等听书书源独立保留），不用导入自定义源就能用 |
 | 电视搜索 | 电视端搜索框按确认键由原生输入框唤起系统输入法（解决小米等电视唤不出输入法的问题）。设置里可开「搜索用字母键盘」：弹出内置 A-Z / 数字键盘，按拼音首字母输入并实时列出匹配条目。追剧、观看记录、站源搜索都支持拼音首字母（`霸道总裁` → `BDZC`） |
 | 返回键 | 首页按返回键先提示「再按一次返回退出应用」，2 秒内再按一次才退出；在其它页或有子页面时仍是返回上一层 |
 | 推荐 | 仅红果分类栏在「全部」后显示「推荐」，可切换真人剧、漫剧、AI 剧并分别记住位置 |
@@ -81,7 +81,7 @@ Flutter 多端独立短剧 / 影视应用
 | 直播 | 从发现 / 我的进入（网页版在顶栏「直播」）。内置斗鱼（默认）、哔哩哔哩、虎牙、秀果直播四个源；分类与房间列表可分页续载，点房间时才解析播放地址。绿色模式下只显示三个公开平台 |
 | 更多 | 站源管理（全站源版可逐个开关站源）、用户管理、设置与备份、界面模式、关于 |
 
-两版包内置的站源不同：**红果鉴（默认包）只保留红果一个内置短剧源，首页默认红果**；番茄短剧源与其余 30 个外置源一样跟随全站源门控，红果鉴不含它（番茄**听书**是独立书源，两种版本都保留）。真果鉴（`--dart-define=ALL_SOURCES=true`）带下表全部站源（含番茄短剧源），同样以红果开场。两版都能另外导入自定义源。
+两版包内置的站源不同：**红果鉴（默认包）保留红果与番茄两个 core 内置短剧源，首页默认红果**；番茄短剧实现已回迁 `native/core`（`provider_fanqie.go`），不依赖外置站源模块、不随全站源门控，两版都能用（番茄**听书**是独立书源，同样两版保留）。真果鉴（`--dart-define=ALL_SOURCES=true`）再叠加外置仓库的 26 个站源，同样以红果开场。两版都能另外导入自定义源。
 
 | 站源 | 浏览与播放 | 搜索 |
 | --- | --- | --- |
@@ -95,12 +95,12 @@ Flutter 多端独立短剧 / 影视应用
 | 野果 | 接口实际分类、目录、详情及真实分集；按分集重新取流，保留 H.264 / H.265 地址 | 站源在线分页搜索 |
 | 帝果 | 网页分类、目录、详情及分集；vplayer 签名解析 | 站源在线分页搜索 |
 | 黄果视频 / 黄果 AI / 黄果旧版 | 列表、分类、详情及分集 | 筛选已加载短剧 |
-| 黑桃（真果鉴，默认关闭） | 全站剧集或站点分类、翻页、详情与分集；海报沿用站点角标，站点没角标的剧看过详情后显示「共 N 集」 | 站源在线搜索 |
 | 禁果短剧（真果鉴，默认关闭） | `jinguoduanju.app` 网页版：推荐 / 热度 / 站点分类 / 题材、详情分集与播放；站点不分页，翻页复用第一页整份目录；付费集只提示不解锁 | 站源在线搜索，支持翻页 |
 | 禁果（真果鉴，默认关闭） | 禁果短剧 App `com.hgaidj.ozThree`：精选 / 最新 / 站点分类、详情分集；访客会话自动注册并续期，主线路故障自动换备用线路；VIP 付费集只提示不解锁 | 站源在线搜索，支持翻页 |
 | 笔盒（真果鉴，默认关闭） | `beabox.cc`：「全部」列出最新视频、分类取站点热门标签，支持翻页、详情与分集；域名经常更换，当前线路失效时从发布页自动发现可用域名并记住上次可用线路（重启直接用）；需要解析的线路自动向站点接口换取播放地址 | 站源在线搜索，支持翻页 |
 
-黑桃 / 禁果短剧 / 禁果 / 笔盒是本次新增的站源，**默认关闭且只在真果鉴出现**，需要在设置 › 站源管理里手动打开；禁果短剧（网页版）与「禁果」App 不是同一个产品，剧库不同，不少剧只有 1 集。笔盒的线路是站点动态下发的，可能随发布页变化。
+禁果短剧 / 禁果 / 笔盒是本次新增的站源，**默认关闭且只在真果鉴出现**，需要在设置 › 站源管理里手动打开；禁果短剧（网页版）与「禁果」App 不是同一个产品，剧库不同，不少剧只有 1 集。笔盒的线路是站点动态下发的，可能随发布页变化。
+黑桃（`heitaodj.com`）、观果、发果、伍果因站点长期不可达 / 采集接口关闭，已整体移除（旧收藏与播放记录仍可识别其 ID，但不再显示或请求）。
 
 站源可用性、清晰度和区域限制取决于源站及网络；应用不解除源站 VIP 或其他授权限制。
 
@@ -220,21 +220,11 @@ iOS 需要 macOS、完整 Xcode 和 CocoaPods；macOS 同样需要 macOS 12+、�
 
 构建脚本对子进程默认设置 `GOPROXY=https://goproxy.cn,direct`、`GOSUMDB=off`，同名环境变量可覆盖。
 
-最小步骤(一次性,以后不再动)
-本机生成无口令密钥对:
-powershell
-
-ssh-keygen -t ed25519 -f "$env:USERPROFILE\guoapp-sources-deploy" -N '""' -C "guoappxp-ci"
-公钥 guoapp-sources-deploy.pub 内容 → guoapp-sources 仓库 Settings → Deploy keys → Add,不勾写权限。
-私钥全文(末尾带换行)→ guoappxp 仓库 Settings → Secrets → Actions 新增 SOURCES_DEPLOY_KEY。
-点 Run workflow 验一次真果鉴。之后每次出包自动,不用管。
-代码层无需任何改动——guoappxpx 和你现在的 CI 在这一段是同一套,站源引用也已是动态 github.repository_owner。
-
 ### 番茄内容引擎
 
-番茄短剧源随包内置，但**红果鉴不含它**（跟随全站源门控，与 30 个外置源一致）：
-红果鉴只带红果一个短剧源，首页开场是红果；番茄短剧源在真果鉴里才出现，
-在「全部站源」手动切换或用「全部源」搜索时才会用到引擎。
+番茄短剧源是 core 内置源（`provider_fanqie.go`），**红果鉴与真果鉴都保留**：
+两版首页开场都是红果，番茄要切到「全部站源」手动选择、或用「全部源」搜索时才会用到引擎
+（番茄听书是独立书源，走 `audiobook_*` action，不受此影响）。
 它的内容不在本站抓取，而是由本机的 Rust 核心（上游 GPL-3.0 的
 [ch6vip/fqapp](https://github.com/ch6vip/fqapp)）提供，监听 `127.0.0.1:18921`。
 Android 用的是仓库里预编译的 `jniLibs/arm64-v8a/libfanqie_shim.so`；
@@ -265,8 +255,8 @@ Go 侧跟引擎只走 loopback：`fanqieGetJSON` 先用应用统一传输（带�
 
 | 版本 | 内容 | 构建参数 |
 | --- | --- | --- |
-| 红果鉴（默认） | 只用 `native/core` 里的内置源：**红果、XBPQ、红果听书、番茄听书、直播** | 不加 `--sources` |
-| 真果鉴（全站源） | 内置源 + 外置仓库里的全部站源（30 个） | `--all-sources --sources ../guoapp-sources` |
+| 红果鉴（默认） | 只用 `native/core` 里的内置源：**红果、番茄短剧、XBPQ、红果听书、番茄听书、直播** | 不加 `--sources` |
+| 真果鉴（全站源） | 内置源 + 外置仓库里的全部站源（26 个） | `--all-sources --sources ../guoapp-sources` |
 
 `--all-sources` 只决定「这是全站源版本」（界面开关、`buildAllSources` 标记、站源可见性），
 外置站源本身要靠 `--sources` 编进来；两个参数要一起给，否则真果鉴会只剩内置源。
@@ -276,12 +266,55 @@ Go 侧跟引擎只走 loopback：`fanqieGetJSON` 先用应用统一传输（带�
 - 仓库 Secrets 增加 `SOURCES_DEPLOY_KEY`：给**当前账号/组织下的 `guoapp-sources` 私有仓库**
   （CI 用 `github.repository_owner` 动态拼仓库地址，无需手填）配一个**只读 Deploy Key**，
   把私钥整段贴进去。若主仓库不在该组织/账号下，改把站源仓库也放到同一 owner 即可。
+  **只需配一次**，详细步骤见下方「一次性配置 `SOURCES_DEPLOY_KEY`」。
 - 手动运行 **Build app packages**，用 `with_ios` / `with_macos` / `full_variants` 控制平台与版本数量。
   红果鉴与真果鉴在 Android / Windows 上是矩阵里的两个条目；iOS / macOS 在同一 job 内顺序构建；
   本地服务版一次出两个 zip（`hongguojian.zip` / `zhenguojian.zip`，合集 `zhenguoweb.zip`）。
 - 工作流按变体决定是否检出站源仓库：红果鉴那一路完全不碰私有仓库，真果鉴那一路检出到
   `guoapp-sources/` 并传 `--sources guoapp-sources`；缺 Secret 时直接给出明确报错。
 - `scripts/check_web.py` 会分别校验：红果鉴只有 `hongguo` 一个源，真果鉴至少 10 个源。
+
+#### 一次性配置 `SOURCES_DEPLOY_KEY`（只读 Deploy Key）
+
+站源仓库是私有的，CI 靠这把只读密钥以 SSH 检出。要点是**公钥挂在站源仓库、私钥存在主仓库**。
+配一次即可长期生效：之后每次构建真果鉴会自动从 Secrets 读取，不用再动。
+
+1. **生成无口令密钥对**（密码短语必须留空，CI 非交互无法输入）。Git Bash：
+
+   ~~~sh
+   ssh-keygen -t ed25519 -f "$HOME/guoapp-sources-deploy" -N "" -C "guoappxp-ci"
+   ~~~
+
+   PowerShell（`ssh-keygen` 会把 `-N '""'` 里的引号当成密码，故省略 `-N`，提示时连按两次回车留空）：
+
+   ~~~powershell
+   ssh-keygen -t ed25519 -f "$env:USERPROFILE\guoapp-sources-deploy" -C "guoappxp-ci"
+   ~~~
+
+   产出 `guoapp-sources-deploy`（私钥）与 `guoapp-sources-deploy.pub`（公钥）。
+
+2. **公钥挂到站源仓库**：打开站源仓库（当前为 `wokaotianshi123/guoapp-sources`）→
+   **Settings → Deploy keys → Add deploy key**，Title 随意（如 `guoappxp-ci`），
+   Key 贴 `.pub` 的**整段内容**，**不要勾** "Allow write access"（只读即可，最小权限）。
+   CI 里仓库地址是 `${{ github.repository_owner }}/guoapp-sources`，动态取主仓库的 owner，
+   因此站源仓库要与主仓库放在**同一账号/组织**下；改名或迁组织时公钥要重新挂。
+
+3. **私钥存进主仓库 Secrets**：打开主仓库（当前为 `wokaotianshi123/guoappxp`）→
+   **Settings → Secrets and variables → Actions → New repository secret**，
+   Name 必须一字不差填 `SOURCES_DEPLOY_KEY`，Secret 贴**私钥全文**（含
+   `-----BEGIN OPENSSH PRIVATE KEY-----` / `-----END OPENSSH PRIVATE KEY-----` 两行，
+   `END` 行后要带一个换行，否则 `actions/checkout` 偶发解析失败）。
+
+4. **验证**：**Actions → Build app packages → Run workflow** 跑一次真果鉴平台，
+   「检出外置站源」这步成功即配置完成。报 SSH / 403 多半是公钥挂错仓库，或私钥缺末尾换行。
+
+**红果鉴不用管**：它是编译期裁剪，根本不检出站源仓库、不读这个 Secret，任何情况下都能直接构建。
+红果鉴与真果鉴只是同一个仓库里的两个构建变体，共用这一个 Secret，无需分别配置。
+若有其它项目（如 `guoappxpx`）也检出同一个站源仓库，把**同一把公钥**留在站源仓库、
+**同一份私钥**再存一份到那个项目仓库的 `SOURCES_DEPLOY_KEY` 即可。
+
+只有以下情况才需要重新配：① 主动换 / 删 Deploy Key；② 站源仓库改名或迁组织；
+③ 要向站源仓库 push（需重新生成并勾选写权限）；④ 私钥泄露需吊销。日常出包、发版一律不用碰。
 
 本地复现同样的包（需要对应平台工具链）：
 
@@ -383,8 +416,8 @@ python scripts/build_native.py --platform windows --sources ../guoapp-sources --
 - legacy 家族（黄果 / 云栈 / 禁果）的 AES 协议与宽松解码由 core 导出：`LegacyCipher`、`LegacyEnvelope`、`LegacyDetail`、`LegacyTabList`、`LegacyCoverURL`、`IsLegacySessionExpired`。
 - `ValidCategory` 里不要再调 `core.ValidNativeCategory`：运行时会用无 Host 探针调站源，回头查注册表会绕回自己形成无限递归。
 - 站源自己的状态（线路缓存、会话、令牌、详情缓存）放在站源结构体里，不要往 `Downloader` 加字段。
-- 目前已外置（共 30 个）：A123、鬼片网、爱看机器人、XChina、河果、芽果、猫果、饭果、观果、星果、牛果、花果、发果、伍果、网果、黑桃、韩小圈、Theporny、剧果、野果、禁果、禁果短剧、青空、帝果、笔盒、黄豆、番茄、黄果旧版（legacy）、黄果视频、黄果 AI。
-- 尚未外置（仍在 `native/core`）：红果。它的剧库缓存、推荐流、弹幕与设备库都在 `nativeEngine` 里，要先抽 `SourceCatalogState` / `SourceDanmaku` / `SourceDevices` 三类运行态接口。
+- 目前已外置（共 26 个）：A123、鬼片网、爱看机器人、XChina、河果、芽果、猫果、饭果、星果、牛果、花果、网果、韩小圈、Theporny、剧果、野果、禁果、禁果短剧、青空、帝果、笔盒、黄豆、番茄、黄果旧版（legacy）、黄果视频、黄果 AI。（黑桃、观果、发果、伍果已因站点失效移除。）其中番茄在 `native/core` 另有内置实现（`provider_fanqie.go`）：注册表优先用外置版本，未编入外置模块时回落到 core 内置，让红果鉴也能用。
+- 尚未外置（仍在 `native/core`）：红果、番茄（内置实现）。红果的剧库缓存、推荐流、弹幕与设备库都在 `nativeEngine` 里，要先抽 `SourceCatalogState` / `SourceDanmaku` / `SourceDevices` 三类运行态接口。
 - 黄果家族的 HTML 解析（卡片 / 详情 / 分集 / data-hls）仍留在 `native/core/source_huangguo_parsers.go`：黄果 AI 与「排序详情」模块共用同一套正则，站源通过 `core.ParseHuangguoVideoCards` 等入口调用，不复制私有助手。
 - XBPQ 规则源、自定义 MacCMS 源的导入与设置、站点分析器，以及它们共用的 MacCMS 解析引擎保留在 `native/core`（外置站源同样经 `SourceHost` 调用这套引擎）。
 - `ValidCategory` 必须是纯函数：core 在校验分类时会用一个不带 Host 的探针实例调用它。

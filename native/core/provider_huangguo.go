@@ -122,7 +122,7 @@ func isHuangguoProviderSource(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHuangguoAI, sourceHuangguoVideo, sourceHuangdou, sourceHongguo, sourceHuangju, sourceYeguo,
 		sourceJinguoDuanju, sourceJinguo, sourceDSD, sourceCloudFront, sourceSorani, sourceGuipian,
-		sourceHanxiaoquan, sourceHeitao, sourceBeabox, sourceIkanbot, sourceA123, sourceFanqie,
+		sourceHanxiaoquan, sourceBeabox, sourceIkanbot, sourceA123, sourceFanqie,
 		sourceXChina, sourceTheporny:
 		return true
 	}

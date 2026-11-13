@@ -252,6 +252,16 @@ var duanjuStaticCategories = map[string][]duanjuCategory{
 	sourceHuaguo: {
 		{ID: "27", Name: "短剧"},
 	},
+	// 网果：分类 ID 存纯题材名（不能含 /，否则 validNativeCategory 会判无效），
+	// 目录页在 fetchMaccmsCatalogPage 的 sourceWangguo 分支里拼成
+	// /show/26---<题材>--------<page>---.html。题材取自站点首页导航。
+	sourceWangguo: {
+		{ID: "短剧", Name: "短剧"},
+		{ID: "古装仙侠", Name: "古装仙侠"},
+		{ID: "现代都市", Name: "现代都市"},
+		{ID: "女频恋爱", Name: "女频恋爱"},
+		{ID: "年代穿越", Name: "年代穿越"},
+	},
 }
 
 func duanjuQueryEscape(value string) string { return url.QueryEscape(strings.TrimSpace(value)) }

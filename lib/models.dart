@@ -19,7 +19,6 @@ class SourceSite {
       id == 'yeguo' ||
       id == 'jinguoduanju' ||
       id == 'jinguo' ||
-      id == 'heitao' ||
       id == 'beabox' ||
       id == 'huangguoai' ||
       id == 'dsd' ||
@@ -76,38 +75,29 @@ class SourceSite {
     SourceSite('yaguo', '芽果', '星芽短剧 · 登录接口'),
     SourceSite('maoguo', '猫果', '七猫短剧 · 签名接口'),
     SourceSite('fanguo', '饭果', '西饭短剧 · 搜索接口'),
-    SourceSite('guanguo', '观果', '围观短剧 · 分类接口'),
     SourceSite('heguo', '河果', '河马剧场 · 网页接口'),
     SourceSite('xingguo', '星果', '星星短剧 · 连载接口'),
     SourceSite('huaguo', '花果', '花生短剧 · 网页目录'),
     SourceSite('niuguo', '牛果', '牛牛短剧 · 分类接口'),
     SourceSite('wangguo', '网果', '短剧网站 · 网页目录'),
-    SourceSite('faguo', '发果', '168 短剧 · 网页目录'),
-    SourceSite('wuguo', '伍果', '五五短剧 · 网页目录'),
   ];
 
   static const _duanjuIds = {
     'yaguo',
     'maoguo',
     'fanguo',
-    'guanguo',
     'heguo',
     'xingguo',
     'huaguo',
     'niuguo',
     'wangguo',
-    'faguo',
-    'wuguo',
   };
 
   static const _duanjuPagedIds = {
     'yaguo',
-    'guanguo',
     'huaguo',
     'niuguo',
     'wangguo',
-    'faguo',
-    'wuguo',
   };
 
   static const primaryValues = [
@@ -128,7 +118,6 @@ class SourceSite {
     dsd,
     SourceSite('jinguoduanju', '禁果短剧', '推荐 · 分类短剧 · 在线搜索'),
     SourceSite('jinguo', '禁果', '精选 · 最新 · 分类短剧 · 在线搜索'),
-    SourceSite('heitao', '黑桃', '分类短剧 · 在线搜索'),
     // 笔盒：站点域名常换，默认关闭，在站源管理里打开。
     SourceSite('beabox', '笔盒', '分类视频 · 在线搜索'),
     SourceSite('xchina', 'XChina', '分类视频 · 在线搜索'),
@@ -142,7 +131,7 @@ class SourceSite {
 
   /// 红果鉴（非全站源版）保留两个 core 内置短剧源：红果（默认）与番茄。
   /// 番茄短剧实现已回迁到 native/core（provider_fanqie.go），不依赖外置站源
-  /// 模块，因此两种版本都能用；其余 30 个外置源仍跟随全站源门控。
+  /// 模块，因此两种版本都能用；其余 26 个外置源仍跟随全站源门控。
   /// 注意与「番茄听书」区分——听书是独立书源，走 audiobook_* action，
   /// 不经此列表，两种版本都保留。
   /// 真果鉴（`--dart-define=ALL_SOURCES=true`）才展开全部站源。

@@ -451,8 +451,14 @@ func (d *Downloader) fetchMaccmsCatalogPage(ctx context.Context, source string, 
 		class := strings.TrimSpace(category)
 		if class == "" {
 			address = fmt.Sprintf("%s/show/duanju-----------.html", base)
-		} else {
+		} else if strings.HasPrefix(class, "/") {
+			// 兼容旧的路径形式分类（历史收藏里可能残留）。
 			address = fmt.Sprintf("%s%s%d---.html", base, strings.SplitN(class, "---.html", 2)[0], page)
+		} else {
+			// 静态分类表里存的是纯题材名，按站点导航格式拼出分类页：
+			// /show/26---<题材>--------<page>---.html
+			address = fmt.Sprintf("%s/show/26---%s--------%d---.html", base,
+				url.PathEscape(class), page)
 		}
 	case isCustomMaccmsSource(source):
 		// 自定义 maccms 站点：按首页信号自动识别模板家族（index.php / myui 系），多候选探测。

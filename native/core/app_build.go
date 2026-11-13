@@ -6,8 +6,23 @@ var buildAllSources = "false"
 
 var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
+// 已下线的站源：站点长期不可达 / 采集接口关闭，从产品里整体移除。
+// ID 常量与归一化映射仍保留，让旧收藏、播放记录里的这些 ID 能被正确识别
+// （不至于变成「未知源」而丢失历史数据），但它们一律判定为不可用，
+// 列表、授权、聚合搜索、目录、取流都不会再带上它们。
+var removedProviderSources = map[string]bool{
+	sourceHeitao:  true,
+	sourceGuanguo: true,
+	sourceFaguo:   true,
+	sourceWuguo:   true,
+}
+
 func nativeSourceAvailable(source string) bool {
 	source = canonicalProviderSource(source)
+	// 已下线的站源一律不可用，优先于内置源与全站源门控。
+	if removedProviderSources[source] {
+		return false
+	}
 	// 红果与番茄是 core 内置源，红果鉴 / 真果鉴都保留。番茄短剧实现已回迁到
 	// core（见 provider_fanqie.go / source_fanqie_builtin.go），不依赖外置站源
 	// 模块，因此不再随 buildAllSources 门控。注意与「番茄听书」区分——听书走

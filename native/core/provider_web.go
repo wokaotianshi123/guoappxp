@@ -15,7 +15,7 @@ import (
 type providerTextUserAgentKey struct{}
 type providerTextNoCacheKey struct{}
 
-// providerTextCookieKey 让站点抓取附带年龄确认等 Cookie（目前是黑桃播放页需要）。
+// providerTextCookieKey 让站点抓取附带年龄确认等 Cookie。
 type providerTextCookieKey struct{}
 
 // providerTextHeadersKey 让调用方（目前是 XBPQ 自定义源的 头部集合/播放请求头）

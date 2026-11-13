@@ -64,9 +64,24 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 	if provider, ok := engine.downloader.sourceProvider(source); ok {
 		all = append(all, provider.Categories()...)
 		if len(all) == 1 {
-			// 站源自己声明「本来就没有分类」（如黄豆）时只有「全部」，不算失败。
-			if bare, ok := provider.(SourceCategoryLess); !ok || !bare.CategoryLess() {
-				return nil, errors.New("站源暂未返回内容分类，请稍后重试")
+			// 站源声明「本来就没有分类」（如黄豆）时只有「全部」，属于正常情况。
+			categoryLess := false
+			if bare, ok := provider.(SourceCategoryLess); ok && bare.CategoryLess() {
+				categoryLess = true
+			}
+			if !categoryLess {
+				// 实时抓分类失败（站点临时不可达、接口改版、数据超阈值等）会返回
+				// 空列表。以前这里直接抛错，导致「分类为空」连带把目录也一起显示
+				// 为空——用户看到的是整个站源打不开。这里改为先回退上次成功缓存，
+				// 没缓存就只给「全部」：目录请求不依赖分类参数，照样能加载内容。
+				engine.mu.Lock()
+				cached := append([]nativeCategory{}, engine.categoryOptions[source]...)
+				engine.mu.Unlock()
+				if len(cached) > 1 {
+					return cached, nil
+				}
+				// 只保留「全部」，不写缓存：下次站点恢复时能重新拿到完整分类。
+				return all, nil
 			}
 		}
 		engine.rememberCategories(source, all)
@@ -134,7 +149,15 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		return nil, err
 	}
 	if len(all) == 1 {
-		return nil, errors.New("站源暂未返回内容分类，请稍后重试")
+		// 与 provider 分支保持一致：分类暂时取不到时回退缓存或仅「全部」，
+		// 不让「分类为空」把目录一起拖垮。
+		engine.mu.Lock()
+		cached := append([]nativeCategory{}, engine.categoryOptions[source]...)
+		engine.mu.Unlock()
+		if len(cached) > 1 {
+			return cached, nil
+		}
+		return all, nil
 	}
 	engine.rememberCategories(source, all)
 	return all, nil

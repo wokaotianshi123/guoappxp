@@ -51,7 +51,7 @@ type nativeSearchAcrossResult struct {
 func nativeSourceSupportsSearch(source string) bool {
 	switch canonicalProviderSource(source) {
 	case sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo,
-		sourceHeitao, sourceBeabox, sourceDSD, sourceSorani,
+		sourceBeabox, sourceDSD, sourceSorani,
 		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie,
 		sourceXChina, sourceTheporny, sourceHuangguoAI:
 		return true

@@ -9,8 +9,8 @@ import 'package:flutter_test/flutter_test.dart';
 import 'support/fakes.dart';
 
 void main() {
-  test('新增的三个站源只在真果鉴出现且默认关闭', () {
-    for (final id in ['jinguoduanju', 'jinguo', 'heitao']) {
+  test('新增的站源只在真果鉴出现且默认关闭', () {
+    for (final id in ['jinguoduanju', 'jinguo']) {
       final site = SourceSite.byId(id);
       expect(site.id, id);
       // 放进 restrictedValues = 站源管理里默认关闭，用户可手动打开。
@@ -19,13 +19,12 @@ void main() {
     }
     expect(SourceSite.byId('jinguoduanju').name, '禁果短剧');
     expect(SourceSite.byId('jinguo').name, '禁果');
-    expect(SourceSite.byId('heitao').name, '黑桃');
   });
 
   test('站点角标随 Drama 读写与合并', () {
     const drama = Drama(
-      id: 'heitao:42',
-      source: 'heitao',
+      id: 'jinguo:42',
+      source: 'jinguo',
       title: '示例剧',
       badge: '6集',
       score: '9.2',
@@ -37,14 +36,14 @@ void main() {
 
     // 看过详情后如果没有站点角标，保留旧的；新角标优先。
     final merged = drama.merge(
-      const Drama(id: 'heitao:42', source: 'heitao', title: '示例剧'),
+      const Drama(id: 'jinguo:42', source: 'jinguo', title: '示例剧'),
     );
     expect(merged.badge, '6集');
     expect(merged.score, '9.2');
     final replaced = drama.merge(
       const Drama(
-        id: 'heitao:42',
-        source: 'heitao',
+        id: 'jinguo:42',
+        source: 'jinguo',
         title: '示例剧',
         badge: '完整版',
       ),
