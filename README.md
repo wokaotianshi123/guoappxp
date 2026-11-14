@@ -422,6 +422,7 @@ python scripts/build_native.py --platform windows --sources ../guoapp-sources --
   - helper 导出：`ExtractPageTitle` / `ExtractDescription` / `ExtractAttr` / `ExtractTags` / `FirstMatchText` / `NormalizeDate` / `EpisodeIndex` / `Pkcs7Pad` / `Pkcs7Unpad` / `MergeDramaMetadata` / `RehostProviderURL` / `ProviderSourceForURL` / `M3u8Duration` / `ProviderHTMLAttr` / `ProviderHTMLClass` / `ProviderHTMLNodes` / `ProviderHTMLFirstClass` / `ProviderHTMLText` / `FetchHostPage` / `CoverPathFromAny` / `ProviderCoverAddress` / `ProviderChinaTime` / `ReDateText` / `ReViewsText`。
   - 版本裁剪：站源模块可用 `core.RegisterFlavor("zhenguojian", []string{...})` 声明自己属于哪个版本（配合 `//go:build zhenguojian`），注册后以它为准，未注册时回落到 `-X buildAllSources`。
   - 新增的通用 action：`sourceDevices`（站源设备注册，未实现时回 `available:false`）。
+  - **示例源不进产品列表**：上游 `sources_example` 可以编进来验证契约，但 `example` 等示例源一律判定为不可用——不出现在站源下拉框、聚合搜索，直接请求也返回「当前版本不包含此站源」。判定同时看 ID 与描述符特征（名称/简介含「示例」「假数据」，或无 `BaseURL` 却声明 `AllowEmptyCatalog`），不依赖示例源自己声明 `DefaultOff`。
   - `source_upstream_compat_test.go` 锁定以上公开面，改动导出时会先红。
 - 需要账号的站源额外实现 `core.SourceAccount`（`Account(ctx, command, input json.RawMessage)`）；「需要登录 / 登录失效」用 `core.ErrSourceLoginRequired` / `core.ErrSourceLoginExpired` 包装，运行时会把错误码回成 `source_login`。
 - legacy 家族（黄果 / 云栈 / 禁果）的 AES 协议与宽松解码由 core 导出：`LegacyCipher`、`LegacyEnvelope`、`LegacyDetail`、`LegacyTabList`、`LegacyCoverURL`、`IsLegacySessionExpired`。

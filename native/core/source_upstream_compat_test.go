@@ -169,3 +169,66 @@ func TestRegisterFlavorGatesSources(t *testing.T) {
 		t.Fatal("不在 flavor 清单里的源必须不可用")
 	}
 }
+
+// 上游 sources_example 是「站源怎么写」的活文档，可以编进来验证契约，
+// 但绝不能出现在站源下拉框、聚合搜索或任何默认列表里。
+func TestDemoProviderSourcesAreHidden(t *testing.T) {
+	demo := SourceDescriptor{
+		ID:                "example",
+		Name:              "示例",
+		Description:       "假数据示例站源，不访问网络",
+		AllowEmptyCatalog: true,
+	}
+	if !isDemoProviderSource(demo) {
+		t.Fatal("上游示例源必须被判定为示例源")
+	}
+	// 只有描述符特征、没有固定 ID 的示例源同样要识别出来。
+	anonymous := SourceDescriptor{
+		ID:                "some-fixture",
+		Name:              "假数据",
+		AllowEmptyCatalog: true,
+	}
+	if !isDemoProviderSource(anonymous) {
+		t.Fatal("描述符自称假数据的源必须被判定为示例源")
+	}
+	// 正常站源不能被误判：有真实站点地址的不算示例源。
+	real := SourceDescriptor{
+		ID:                "realsite",
+		Name:              "真站",
+		Description:       "分类视频 · 在线搜索",
+		BaseURL:           "https://real.example.test",
+		AllowEmptyCatalog: false,
+	}
+	if isDemoProviderSource(real) {
+		t.Fatal("正常站源被误判为示例源")
+	}
+	// 真实源即使声明允许空目录，只要有站点地址就不算示例源。
+	emptyCatalog := SourceDescriptor{
+		ID:                "emptysite",
+		Name:              "空目录站",
+		BaseURL:           "https://empty.example.test",
+		AllowEmptyCatalog: true,
+	}
+	if isDemoProviderSource(emptyCatalog) {
+		t.Fatal("有站点地址的源不应被判为示例源")
+	}
+}
+
+// 示例源编进二进制后也必须判定为不可用（不进列表、不可直接请求）。
+func TestDemoSourceIsUnavailableEvenWhenRegistered(t *testing.T) {
+	previousFlavor, previousAll := activeFlavor, buildAllSources
+	t.Cleanup(func() { activeFlavor, buildAllSources = previousFlavor, previousAll })
+	activeFlavor = buildFlavorSpec{}
+	buildAllSources = "true"
+
+	descriptor := SourceDescriptor{
+		ID: "demo-fixture", Name: "示例", Description: "假数据示例站源",
+		AllowEmptyCatalog: true,
+	}
+	Register(descriptor, func(Host) Provider { return contractProbe{} })
+	t.Cleanup(func() { unregisterSource("demo-fixture") })
+
+	if nativeSourceAvailable("demo-fixture") {
+		t.Fatal("示例源即使注册了也必须判定为不可用")
+	}
+}

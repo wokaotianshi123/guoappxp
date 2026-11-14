@@ -1,6 +1,9 @@
 package core
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 var buildAllSources = "false"
 
@@ -50,10 +53,38 @@ var removedProviderSources = map[string]bool{
 	sourceNiuguo:  true,
 }
 
+// 示例 / 测试站源：上游仓库里的 sources_example 是「站源怎么写」的活文档，
+// 编译期可以编进来验证契约，但它不是产品内容，绝不能出现在站源下拉框、
+// 聚合搜索或任何默认列表里。
+//
+// 判定用 ID + 描述符双重条件：ID 命中，或描述符自称示例（Description 含
+// 「示例」「假数据」/ AllowEmptyCatalog 且无 BaseURL）。上游的 example 源
+// 描述符写的是「假数据示例站源，不访问网络」，三种特征都命中。
+var demoProviderSources = map[string]bool{
+	"example": true,
+}
+
+func isDemoProviderSource(descriptor SourceDescriptor) bool {
+	id := canonicalProviderSource(descriptor.ID)
+	if demoProviderSources[id] {
+		return true
+	}
+	text := descriptor.Name + descriptor.Description
+	if strings.Contains(text, "示例") || strings.Contains(text, "假数据") {
+		return true
+	}
+	// 没有站点地址却声明允许空目录，是「纯本地假数据」的典型特征。
+	return descriptor.AllowEmptyCatalog && strings.TrimSpace(descriptor.BaseURL) == ""
+}
+
 func nativeSourceAvailable(source string) bool {
 	source = canonicalProviderSource(source)
 	// 已下线的站源一律不可用，优先于内置源与全站源门控。
 	if removedProviderSources[source] {
+		return false
+	}
+	// 示例源只用于编译期验证契约，任何版本都不进产品列表。
+	if descriptor, ok := sourceDescriptorOf(source); ok && isDemoProviderSource(descriptor) {
 		return false
 	}
 	// 站源模块用 RegisterFlavor 声明了版本归属时以它为准（上游契约）：
@@ -134,4 +165,13 @@ func nativeAuthorizeInput(input nativeInput) error {
 		}
 	}
 	return nil
+}
+
+// sourceDescriptorOf 取某个站源注册的描述符，未注册返回 false。
+func sourceDescriptorOf(source string) (SourceDescriptor, bool) {
+	source = canonicalProviderSource(source)
+	sourceRegistry.RLock()
+	defer sourceRegistry.RUnlock()
+	descriptor, registered := sourceRegistry.descriptors[source]
+	return descriptor, registered
 }
