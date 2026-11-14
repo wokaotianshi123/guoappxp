@@ -16,6 +16,9 @@ type nativeCatalogState struct {
 	Page      int       `json:"page"`
 	HasMore   bool      `json:"hasMore"`
 	Warning   string    `json:"warning,omitempty"`
+	// ProviderState 是站源自己的翻页游标（上游 CatalogStateful 契约）。
+	// 连续信息流类站源靠它跨启动接着翻，别的源留空。
+	ProviderState json.RawMessage `json:"providerState,omitempty"`
 }
 
 type nativeCatalogDisk struct {
@@ -240,6 +243,11 @@ func (engine *nativeEngine) saveCatalogCache(source string, result *nativeCatalo
 	}
 	state.Page, state.HasMore = result.Page, result.HasMore
 	state.Warning = result.Warning
+	// 站源自己维护的翻页游标（连续信息流类源）随目录状态一起落盘，
+	// 下次启动前 restoreProviderCatalogState 会还给它。
+	if raw, ok := engine.downloader.providerCatalogState(source); ok && len(raw) > 0 {
+		state.ProviderState = raw
+	}
 	if result.Warning == "" {
 		state.UpdatedAt = time.Now()
 		result.Fresh = true
@@ -309,4 +317,15 @@ func (engine *nativeEngine) saveDetailMetadata(drama nativeDrama) error {
 		return engine.writeCatalogDiskLocked()
 	}
 	return nil
+}
+
+// catalogStateFor 取某个站源上次落盘的翻页游标（站源自己维护的那种）。
+func (engine *nativeEngine) catalogStateFor(source string) (json.RawMessage, bool) {
+	engine.mu.Lock()
+	defer engine.mu.Unlock()
+	state, found := engine.catalogStates[source]
+	if !found || len(state.ProviderState) == 0 {
+		return nil, false
+	}
+	return state.ProviderState, true
 }

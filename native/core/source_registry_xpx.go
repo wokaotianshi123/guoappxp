@@ -37,6 +37,9 @@ func registeredProviderSource(source string) bool {
 
 // providerCategories 取站源分类。失败时返回 nil 而不是把错误抛给调用方：
 // 分类抓不到不该连带把目录也打空，上层会回退上次成功的缓存或只展示「全部」。
+//
+// 站源返回 ErrCategoriesIncomplete（上游契约：只抓到一部分分类）时同样按
+// 这个口径处理——已拿到的分类照用，缺失的等下次刷新补，不整源报错。
 func providerCategories(ctx context.Context, provider Provider, force bool) []Category {
 	categories, err := provider.Categories(ctx, force)
 	if err != nil {

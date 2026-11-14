@@ -100,6 +100,11 @@ func nativeDoubanCoverReferer(parsed *url.URL) (string, bool) {
 }
 
 func nativeCoverReferer(downloader *Downloader, source, address string) string {
+	// 站源自己声明了封面 Referer 就优先用它（上游 CoverRefererProvider 契约），
+	// 例如图床按来源域防盗链的源。
+	if referer := downloader.providerCoverReferer(source, address); referer != "" {
+		return referer
+	}
 	if parsed, err := url.Parse(address); err == nil {
 		if referer, ok := nativeDoubanCoverReferer(parsed); ok {
 			return referer

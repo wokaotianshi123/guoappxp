@@ -487,14 +487,17 @@ const ProviderMaxBodyBytes = providerMaxBodyBytes
 // MediaCredentials 是播放请求要带的临时凭证。
 type MediaCredentials = providerMediaCredentials
 
+// MediaCredentialsKey 是播放凭证在 context 里的键（上游站源用它取凭据）。
+type MediaCredentialsKey = providerMediaCredentialsKey
+
 // NewMediaCredentials 构造播放凭证；站源只填自己知道的字段，其余留空。
 func NewMediaCredentials(cookie, origin, referer, userAgent string, expires time.Time) MediaCredentials {
-	return providerMediaCredentials{cookie: cookie, origin: origin, referer: referer, userAgent: userAgent, expires: expires}
+	return providerMediaCredentials{Cookie: cookie, Origin: origin, Referer: referer, UserAgent: userAgent, Expires: expires}
 }
 
 // WithMediaCredentials 给播放地址挂上临时凭证。
 func WithMediaCredentials(media ProviderMedia, credentials MediaCredentials) ProviderMedia {
-	media.credentials = &credentials
+	media.Credentials = &credentials
 	return media
 }
 

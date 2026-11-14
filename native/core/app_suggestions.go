@@ -8,9 +8,15 @@ import (
 	"unicode/utf8"
 )
 
-func (engine *nativeEngine) suggestions(ctx context.Context, query string) ([]string, error) {
+func (engine *nativeEngine) suggestions(ctx context.Context, source, query string) ([]string, error) {
 	if strings.TrimSpace(query) == "" {
 		return []string{}, nil
+	}
+	// 站源实现了 Suggester 就优先用它（上游契约），否则回落到红果内置联想。
+	if source != "" {
+		if items, handled, err := engine.downloader.providerSuggestions(ctx, source, query); handled {
+			return items, err
+		}
 	}
 	items, err := engine.downloader.hongguoSearchSuggestions(ctx, query)
 	names := make([]string, 0, len(items))

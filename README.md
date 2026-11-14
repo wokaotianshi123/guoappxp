@@ -415,6 +415,14 @@ python scripts/build_native.py --platform windows --sources ../guoapp-sources --
 - 只能经 `core.Host` 访问运行时：`Fetch` / `FetchText` / `FetchPlaylist`（统一请求，限流、超时、拦截判定都在运行时）、`BaseURL` / `PreferredSite` / `RememberSite`（站点地址与换线）、`LoadState` / `SaveState`（落盘登录态/访客会话）、`PrepareWebMedia` / `FinishMedia`（网页源播放地址校验与收尾）、`Reserve` / `Retries` / `MaxPages`（重试与翻页上限）；不要自建 `http.Client`。
 - 需要短剧 / MacCMS / legacy 引擎时，用 `core.AsRuntime(host)` 取 `core.RuntimeHost`：`DuanjuBaseURL` / `DuanjuJSON` / `DuanjuDo`、`MaccmsCatalogPage` / `MaccmsDetail` / `MaccmsSearch`、`DuanjuResolveMedia`、`LegacySettings` / `APIEndpoint` / `ResetAPIEndpoint`、`FetchPage` / `FetchTextFinal` / `PostJSON` / `BrowserPostJSON` / `DoPrepared`、`HTTPClient` / `Limiter` / `CatalogResponseError`、`ConfigURL` / `ConfigAPIURL`、`StateDir` / `RememberHost` / `ForgetHost`、`FetchMediaPlaylist`。这些是 guoappxp 在 guoappxpx 契约之外补的运行时能力，上游源不感知。
 - 可选接口：`core.SourceAccount`（账号登录）、`core.SourceRankings`（榜单，名次按位置算）、`core.SourceRankingEntries`（榜单，站点自带名次与指标文案，如黄果）、`core.SourceCategoryLess`（本来就没有分类，如黄豆 / 番茄）。
+- **上游 guoappxpx 源可直接编译**：`native/sources_example/provider_example.go` 原样放进站源仓库即可用，实测分类 / 目录 / 翻页 / 搜索 / 详情全通。为此对齐了这些公开面：
+  - 可选能力接口（运行时用类型断言调用，站源按需实现）：`CoverRepairer`、`CoverResolver`、`CoverRefererProvider`、`MediaAuthorizer`、`MetadataEnricher`、`SeasonProvider`、`DeviceProvider`、`DanmakuProvider`、`Recommender`、`Suggester`、`CatalogStateful`。
+  - 类型与常量：`LibraryDrama`（= `nativeDrama`）、`LibraryMoreKey`、`Season`、`DanmakuItem` / `DanmakuPage`、`RecommendationPage`、`ErrCategoriesIncomplete`、`DanmakuMaxDurationMS`、`MediaCredentialsKey`。
+  - `MediaCredentials` 与 `ProviderMedia.Credentials` 的字段全部导出（上游源直接赋值）。
+  - helper 导出：`ExtractPageTitle` / `ExtractDescription` / `ExtractAttr` / `ExtractTags` / `FirstMatchText` / `NormalizeDate` / `EpisodeIndex` / `Pkcs7Pad` / `Pkcs7Unpad` / `MergeDramaMetadata` / `RehostProviderURL` / `ProviderSourceForURL` / `M3u8Duration` / `ProviderHTMLAttr` / `ProviderHTMLClass` / `ProviderHTMLNodes` / `ProviderHTMLFirstClass` / `ProviderHTMLText` / `FetchHostPage` / `CoverPathFromAny` / `ProviderCoverAddress` / `ProviderChinaTime` / `ReDateText` / `ReViewsText`。
+  - 版本裁剪：站源模块可用 `core.RegisterFlavor("zhenguojian", []string{...})` 声明自己属于哪个版本（配合 `//go:build zhenguojian`），注册后以它为准，未注册时回落到 `-X buildAllSources`。
+  - 新增的通用 action：`sourceDevices`（站源设备注册，未实现时回 `available:false`）。
+  - `source_upstream_compat_test.go` 锁定以上公开面，改动导出时会先红。
 - 需要账号的站源额外实现 `core.SourceAccount`（`Account(ctx, command, input json.RawMessage)`）；「需要登录 / 登录失效」用 `core.ErrSourceLoginRequired` / `core.ErrSourceLoginExpired` 包装，运行时会把错误码回成 `source_login`。
 - legacy 家族（黄果 / 云栈 / 禁果）的 AES 协议与宽松解码由 core 导出：`LegacyCipher`、`LegacyEnvelope`、`LegacyDetail`、`LegacyTabList`、`LegacyCoverURL`、`IsLegacySessionExpired`。
 - 站源自己的状态（线路缓存、会话、令牌、详情缓存）放在站源结构体里，不要往 `Downloader` 加字段。

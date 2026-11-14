@@ -136,6 +136,25 @@ func (d *Downloader) doMediaRequestWithClient(request *http.Request, client *htt
 		}
 		client = credentials.client(client)
 	}
+	// 站源自己声明要鉴权的媒体地址（上游 MediaAuthorizer 契约）：临时 token /
+	// 签名头由站源提供，运行时只负责在发请求前写进头部。
+	if authorizer := d.providerMediaAuthorizer(request.URL); authorizer != nil {
+		header, value, err := authorizer.MediaAuthorization(request.Context(), request.URL, request.Header.Get("Referer"))
+		if err != nil {
+			return nil, err
+		}
+		if header != "" && value != "" {
+			request.Header.Set(header, value)
+			response, doErr := client.Do(request)
+			if doErr == nil && (response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusUnauthorized) {
+				// 凭证被站点判为失效：让站源作废缓存，下次重新签发。
+				response.Body.Close()
+				authorizer.RejectMediaAuthorization(request.URL, value)
+				return nil, errors.New("播放鉴权已失效，请重新解析播放")
+			}
+			return response, doErr
+		}
+	}
 	keyRequest := d.isHuangguoVideoURL(request.URL) && strings.HasPrefix(request.URL.Path, "/api/hls_key/")
 	origin := request.URL.Scheme + "://" + request.URL.Host
 	for attempt := 0; attempt < 2; attempt++ {

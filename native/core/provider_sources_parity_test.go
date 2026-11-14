@@ -56,7 +56,7 @@ func TestProviderMediaCredentialsLimitOriginAndUseBackupAddresses(t *testing.T) 
 	if err != nil || media.URL != primary || len(media.Variants) != 2 || media.Variants[1].URL != backup || media.Duration != 6*time.Second {
 		t.Fatalf("hongguo backup media fields were lost: %+v %v", media, err)
 	}
-	credentials := &providerMediaCredentials{origin: "https://media.example.test", cookie: "Signed=fixture", referer: "https://source.example.test/page", userAgent: "Agent"}
+	credentials := &providerMediaCredentials{Origin: "https://media.example.test", Cookie: "Signed=fixture", Referer: "https://source.example.test/page", UserAgent: "Agent"}
 	request, _ := http.NewRequest(http.MethodGet, "https://media.example.test/part", nil)
 	if err := credentials.apply(request); err != nil || request.Header.Get("Cookie") != "Signed=fixture" || request.Header.Get("Origin") != "https://source.example.test" || request.Header.Get("User-Agent") != "Agent" {
 		t.Fatal("credentials not applied on exact origin", err, request.Header)

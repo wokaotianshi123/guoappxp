@@ -12,16 +12,36 @@ func nativeNeedsExtraMetadata(drama nativeDrama) bool {
 		drama.Source == sourceHuangdou && (drama.Heat == "" || drama.VIP == nil)
 }
 
+// engineNeedsExtraMetadata 在原有内置判断之外，先问站源自己要不要补元数据
+// （上游 MetadataEnricher 契约），这样外置源可以自己声明需要补哪些字段。
+func (engine *nativeEngine) engineNeedsExtraMetadata(drama nativeDrama) bool {
+	if engine.downloader.providerNeedsExtraMetadata(drama) {
+		return true
+	}
+	return nativeNeedsExtraMetadata(drama)
+}
+
 func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativeDrama) (nativeDrama, error) {
 	source, id, valid := splitProviderDramaID(drama.ID)
 	if !valid {
 		return drama, errors.New("剧集信息无效")
 	}
-	if !nativeNeedsExtraMetadata(drama) {
+	if !engine.engineNeedsExtraMetadata(drama) {
 		return drama, nil
 	}
 	ctx, cancel := context.WithTimeout(context.WithValue(ctx, backgroundCatalogKey{}, true), 15*time.Second)
 	defer cancel()
+	// 站源实现了 MetadataEnricher 就优先用它（上游契约），
+	// 内置源（红果 / 黄豆）继续走下面的专用分支。
+	if fresh, handled, err := engine.downloader.providerExtraMetadata(ctx, drama, id); handled {
+		if err != nil {
+			return drama, err
+		}
+		if fresh.ID == drama.ID {
+			drama = mergeNativeDrama(drama, fresh)
+		}
+		return drama, nil
+	}
 	var raw Drama
 	switch source {
 	case sourceHongguo:

@@ -17,6 +17,10 @@ func (d *Downloader) nativeCoverAddress(ctx context.Context, drama nativeDrama) 
 		return "", errors.New("无效的剧集 ID")
 	}
 	if provider, ok := d.sourceProvider(source); ok {
+		// 站源实现了 CoverResolver 就让它直接给封面（比再拉一次详情省请求）。
+		if cover, handled, err := d.providerCoverAddress(ctx, drama, id); handled {
+			return cover, err
+		}
 		fresh, _, err := provider.Detail(ctx, id)
 		return nativeNormalize(fresh).Cover, err
 	} else {

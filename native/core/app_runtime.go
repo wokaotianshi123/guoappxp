@@ -439,7 +439,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "rankings":
 		return engine.nativeRanking(ctx, input)
 	case "suggestions":
-		items, err := engine.suggestions(ctx, input.Query)
+		items, err := engine.suggestions(ctx, input.Source, input.Query)
 		return map[string]any{"items": items}, err
 	case "audiobookFetch":
 		body, err := engine.downloader.fetchAudiobookRaw(ctx, input.Query, input.Content)
@@ -615,6 +615,18 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 会忽略上一次失败留下的暂停窗口。
 	case "hongguoDevices":
 		return engine.hongguoDevices(ctx, input.Command == "register")
+	// sourceDevices：通用的站源设备注册（上游 DeviceProvider 契约）。
+	// 站源自己管设备池时用它；未实现该接口的源返回 available=false，
+	// 前端据此隐藏入口，不会误报错。
+	case "sourceDevices":
+		registered, handled, err := engine.downloader.providerDevices(ctx, input.Source, input.Command == "register")
+		if err != nil {
+			return nil, err
+		}
+		if !handled {
+			return map[string]any{"available": false}, nil
+		}
+		return map[string]any{"available": true, "registered": registered}, nil
 	// soraniAccount：站源账号能力（登录 / 验证码 / 登出）。具体语义由站源自己定义，
 	// 运行时只按 action 找到站源并把 command 与 account 原样转过去。
 	case "soraniAccount":
@@ -731,6 +743,11 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	var items []Drama
 	var err error
 	if provider, ok := engine.downloader.sourceProvider(source); ok {
+		// 连续信息流类站源（上游 CatalogStateful）需要上次的翻页游标，
+		// 先把落盘的游标还给它，再请求这一页。
+		if saved, found := engine.catalogStateFor(source); found && len(saved) > 0 {
+			engine.downloader.restoreProviderCatalogState(source, saved)
+		}
 		items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
 	} else {
 		switch source {
