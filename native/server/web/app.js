@@ -3902,11 +3902,12 @@ function abListHeadHTML() {
     '</div>';
 }
 
-// 切换书源：红果听书（官方书城听书专辑）↔ 番茄听书（畅听男女榜），
+// 切换书源：红果听书（听书 / 小说两个频道）↔ 番茄听书（畅听男女榜 + 官方听书专辑），
 // 书池、分类、搜索一起重置，避免把上一源的书单混进来。
 function abSelectOrigin(origin) {
   if (audiobookState.origin === origin) { return; }
   audiobookState.origin = origin;
+  audiobookState.board = 0;
   audiobookState.category = '';
   audiobookState.query = '';
   audiobookState.shelf = false;
@@ -4235,10 +4236,13 @@ function renderAudiobookPlayer() {
 function renderAudiobookToolbar() {
   var toolbar = document.getElementById('ab-toolbar');
   if (!toolbar) { return; }
+  var labels = audiobookState.origin === 'hongguo'
+    ? ['听书', '小说']
+    : ['听书榜', '女生听书'];
   var boards = audiobookBoards.map(function (board, index) {
     return '<button type="button" class="btn mini ab-board' +
       (index === audiobookState.board && !audiobookState.shelf ? ' active' : '') +
-      '" data-index="' + index + '">' + escapeHTML(board.name) + '</button>';
+      '" data-index="' + index + '">' + escapeHTML(labels[index] || board.name) + '</button>';
   }).join('');
   toolbar.innerHTML =
     '<div class="ab-toolbar-row">' +

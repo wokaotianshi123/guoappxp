@@ -18,12 +18,16 @@ import (
 const visibilityFile = "source-visibility.json"
 
 // sourceVisibilityRevision 标记源显示列表的结构版本。
-// 新增内置源时递增，并在 loadVisibility 里把该版本新增的隐藏源补进旧存档，
-// 保证升级后的老用户也默认看不到新站源，同时不覆盖用户之后手动开启的选择。
-const sourceVisibilityRevision = 2
+// 新增默认隐藏的内置源时递增，并在 loadVisibility 里按版本把新增项补进旧存档，
+// 保证升级后的老用户也默认看不到这些站源，同时不覆盖用户之后手动开启的选择。
+const sourceVisibilityRevision = 3
 
-// revisionHiddenSources 是 revision 2 新增、默认隐藏的内置源。
-var revisionHiddenSources = []string{"xchina", "theporny"}
+// revisionHiddenSources 按版本记录「该版本起默认隐藏」的内置源。
+// 加载旧存档时只补 parsed.Revision 之后的版本，已经手动开启过的源不会被翻回隐藏。
+var revisionHiddenSources = map[int][]string{
+	2: {"xchina", "theporny"},
+	3: {"beabox", "jinguo", "jinguoduanju"},
+}
 
 // 从未保存过源显示列表时的默认隐藏集，与 App 端
 // SourceSite.defaultHiddenSiteIds 保持一致：
@@ -32,9 +36,10 @@ var defaultHiddenSources = map[string]bool{
 	"huangdou": true, "huangju": true, "yeguo": true, "dsd": true,
 	"xchina": true, "theporny": true,
 	"huangguo-video": true, "huangguoai": true, "cloudfront": true,
-	"yaguo": true, "maoguo": true, "fanguo": true, "guanguo": true,
-	"heguo": true, "xingguo": true, "huaguo": true, "niuguo": true,
+	"fanguo": true,
+	"huaguo": true,
 	"wangguo": true, "faguo": true, "wuguo": true,
+	"beabox": true, "jinguo": true, "jinguoduanju": true,
 }
 
 var (
@@ -71,8 +76,10 @@ func loadVisibility() {
 				}
 				visibilityLoaded = true
 				if parsed.Revision < sourceVisibilityRevision {
-					for _, id := range revisionHiddenSources {
-						hiddenSources[id] = true
+					for version := parsed.Revision + 1; version <= sourceVisibilityRevision; version++ {
+						for _, id := range revisionHiddenSources[version] {
+							hiddenSources[id] = true
+						}
 					}
 					_ = saveVisibility()
 				}

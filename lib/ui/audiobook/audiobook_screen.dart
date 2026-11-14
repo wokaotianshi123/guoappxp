@@ -131,19 +131,15 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     }
     try {
       if (_origin == 0) {
-        final official = await _api.officialAll();
+        // 红果听书：红果官方书城两个频道，听书进男栏、小说进女栏，
+        // 推荐流每次只回一批，多拉几批让首屏够看。
+        final listen = await _api.hongguoCatalog('listen', pages: 3);
+        final novel = await _api.hongguoCatalog('novel', pages: 2);
         if (!mounted || token != _poolGeneration) return;
         setState(() {
-          _officialCategories = official.categories;
-          // 官方书城按 gender 归到对应榜单，分类条仍按男 / 女两栏浏览。
-          _malePool = [
-            for (final book in official.books)
-              if (book.board == 0) book,
-          ];
-          _femalePool = [
-            for (final book in official.books)
-              if (book.board != 0) book,
-          ];
+          _officialCategories = const [];
+          _malePool = listen;
+          _femalePool = novel;
           _poolLoading = false;
           _poolDone = true;
           _rebuildSearch();
@@ -249,8 +245,8 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   void _rebuildSearch() {
     if (_query.isEmpty) return;
     final local = fanqieSearchInPool(_allPool, _query);
-    // 远程搜索命中的是番茄畅听的榜单书，红果听书只用官方书城书池。
-    final remote = _origin == 0 ? const <FanqieBook>[] : _remoteBooks;
+    // 两个书源都有远程搜索：番茄打畅听接口，红果打红果书城接口。
+    final remote = _remoteBooks;
     final seen = <String>{};
     _searchResults = [
       for (final book in [...local, ...remote])
@@ -310,6 +306,15 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _error = null;
     });
   }
+
+  /// 榜单 tab 的文案：红果听书是「听书 / 小说」两个频道，番茄是男女听书榜。
+  String _boardLabel(int index) {
+    if (_origin == 0) return index == 0 ? '听书' : '小说';
+    return fanqieAudiobookBoards[index].name;
+  }
+
+  String get _searchHint =>
+      _origin == 0 ? '搜索红果听书 / 小说' : '搜索番茄畅听全库';
 
   /// 分类条与「发现」页视频分类共用同一套横向 tab：榜单是「全部」入口，
   /// 其后是书池里真实存在的分类，再后面是搜索热词。三者用前缀区分，
@@ -373,9 +378,27 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _rebuildSearch(); // 本地书池匹配先出结果，不等网络
     });
     try {
-      // 红果听书只搜自己的官方书城书池，不再打番茄榜单的搜索接口。
+      // 红果听书：听书与小说两个频道各查一遍，合并去重后补进搜索结果。
       if (_origin == 0) {
+        final results = await Future.wait([
+          _api
+              .hongguoSearch('listen', query)
+              .catchError(
+                (Object _) => const FanqieSearchPage(books: [], hasMore: false),
+              ),
+          _api
+              .hongguoSearch('novel', query)
+              .catchError(
+                (Object _) => const FanqieSearchPage(books: [], hasMore: false),
+              ),
+        ]);
         if (!mounted || token != _searchGeneration) return;
+        final seen = <String>{};
+        _remoteBooks = [
+          for (final result in results)
+            for (final book in result.books)
+              if (seen.add(book.id)) book,
+        ];
         setState(() {
           _searchLoading = false;
           _rebuildSearch();
@@ -483,9 +506,9 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
               key: const ValueKey('audiobook-search'),
               controller: _search,
               textInputAction: TextInputAction.search,
-              decoration: const InputDecoration(
-                hintText: '搜索番茄畅听全库',
-                prefixIcon: Icon(Icons.search_rounded),
+              decoration: InputDecoration(
+                hintText: _searchHint,
+                prefixIcon: const Icon(Icons.search_rounded),
               ),
               onSubmitted: (_) => unawaited(_run()),
             ),
@@ -498,7 +521,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
               for (var index = 0;
                   index < fanqieAudiobookBoards.length;
                   index++)
-                ChoiceOption('b:$index', fanqieAudiobookBoards[index].name),
+                ChoiceOption('b:$index', _boardLabel(index)),
               for (final category in _categories)
                 ChoiceOption('c:$category', category),
               for (final word in fanqieSearchWords)
@@ -914,7 +937,17 @@ class _AudiobookCatalogScreenState extends State<AudiobookCatalogScreen> {
     });
     try {
       final report = await downloadAudiobookChapters(
-        media: widget.repository.audiobookMedia,
+        media: (bookId, chapterId) {
+          final repository = widget.repository;
+          // 红果听书的 ID 带 hg: 前缀，下载接口同样要剥掉。
+          if (bookId.startsWith(fanqieHongguoPrefix)) {
+            return repository.audiobookHongguoMedia(
+              bookId.substring(fanqieHongguoPrefix.length),
+              chapterId.substring(fanqieHongguoPrefix.length),
+            );
+          }
+          return repository.audiobookMedia(bookId, chapterId);
+        },
         store: widget.store,
         book: widget.book,
         chapters: selected,

@@ -23,7 +23,128 @@ const (
 	audiobookGenre      = "4" // 番茄听书频道 id
 	audiobookPageSize   = 20
 	audiobookChunkLimit = 50
+	// abHongguoBookPrefix 区分两个书源的书籍 ID：红果听书是纯数字 book_id，
+	// 与番茄可能重号，加上前缀后列表、进度、缓存都天然隔离。
+	abHongguoBookPrefix = "hg:"
 )
+
+// —— 红果听书（听书 / 小说）——
+//
+// 数据来自红果 App 的官方书城接口，与 Flutter 听书页共用 core 的
+// audiobookHongguo* 动作。board 0 = 听书、1 = 小说。
+
+func abHongguoCategory(board int) string {
+	if board == 1 {
+		return "novel"
+	}
+	return "listen"
+}
+
+func abHongguoPrefix(books []any) []map[string]any {
+	out := make([]map[string]any, 0, len(books))
+	for _, item := range books {
+		book, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		id := strings.TrimSpace(asString(book["id"]))
+		if id == "" {
+			continue
+		}
+		book["id"] = abHongguoBookPrefix + id
+		out = append(out, book)
+	}
+	return out
+}
+
+// abHongguoLibrary 返回红果听书的一页书单，字段与番茄书库保持一致。
+func abHongguoLibrary(board int, query string, page, size int) map[string]any {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 50 {
+		size = audiobookPageSize
+	}
+	category := abHongguoCategory(board)
+	var books []map[string]any
+	var hasMore bool
+	var err error
+	if strings.TrimSpace(query) != "" {
+		var data map[string]any
+		data, err = coreCall(map[string]any{
+			"action": "audiobookHongguoSearch", "category": category, "query": query, "page": page,
+		})
+		if err == nil {
+			books = abHongguoPrefix(audiobookAnyList(data["books"]))
+			hasMore = data["hasMore"] == true
+		}
+	} else {
+		var data map[string]any
+		data, err = coreCall(map[string]any{
+			"action": "audiobookHongguoCatalog", "category": category, "page": page,
+		})
+		if err == nil {
+			books = abHongguoPrefix(audiobookAnyList(data["books"]))
+			hasMore = data["hasMore"] == true
+		}
+	}
+	pageCount := page
+	if hasMore {
+		pageCount = page + 1
+	}
+	total := (page-1)*size + len(books)
+	if hasMore {
+		total++
+	}
+	answer := map[string]any{
+		"books":      books,
+		"total":      total,
+		"page":       page,
+		"pageCount":  pageCount,
+		"pageSize":   size,
+		"categories": []string{},
+		"origin":     "hongguo",
+		"library": map[string]any{
+			"loading": false, "done": !hasMore, "count": len(books), "error": "",
+		},
+	}
+	if err != nil {
+		answer["library"].(map[string]any)["error"] = err.Error()
+	}
+	return answer
+}
+
+// abHongguoChapters 取红果听书的目录，按页切片（与番茄目录接口同款回包）。
+func abHongguoChapters(bookID string, page int) (map[string]any, error) {
+	if page < 1 {
+		page = 1
+	}
+	data, err := coreCall(map[string]any{"action": "audiobookHongguoChapters", "query": bookID})
+	if err != nil {
+		return nil, err
+	}
+	chapters := make([]map[string]any, 0)
+	for _, item := range audiobookAnyList(data["chapters"]) {
+		if row, ok := item.(map[string]any); ok {
+			// 章节 ID 也加前缀：红果与番茄的 item_id 都是长数字，加前缀才能
+			// 让「正文 / 播放」两条按 ID 判书源的路径可靠区分。
+			if id := strings.TrimSpace(asString(row["id"])); id != "" {
+				row["id"] = abHongguoBookPrefix + id
+			}
+			chapters = append(chapters, row)
+		}
+	}
+	total := len(chapters)
+	start := (page - 1) * audiobookChunkLimit
+	if start >= total {
+		return map[string]any{"chapters": []map[string]any{}, "total": total, "hasMore": false}, nil
+	}
+	end := start + audiobookChunkLimit
+	if end > total {
+		end = total
+	}
+	return map[string]any{"chapters": chapters[start:end], "total": total, "hasMore": end < total}, nil
+}
 
 // —— 核心调用 ——
 
@@ -174,6 +295,16 @@ func handleAudiobookChapters(writer http.ResponseWriter, request *http.Request) 
 	if page < 1 {
 		page = 1
 	}
+	// 红果听书的目录走红果接口，书籍 ID 带 hg: 前缀。
+	if strings.HasPrefix(bookID, abHongguoBookPrefix) {
+		data, err := abHongguoChapters(strings.TrimPrefix(bookID, abHongguoBookPrefix), page)
+		if err != nil {
+			writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(writer, map[string]any{"ok": true, "data": data})
+		return
+	}
 	target := "https://fanqienovel.com/api/reader/directory/detail?bookId=" + url.QueryEscape(bookID)
 	root, err := audiobookFetchJSON(target, nil)
 	if err != nil {
@@ -243,6 +374,13 @@ func handleAudiobookText(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, map[string]any{"ok": false, "error": "缺少章节编号"})
 		return
 	}
+	// 红果听书暂时没有逐句正文，章节 ID 带 hg: 前缀，回空段落让前端直接播音频。
+	if strings.HasPrefix(chapterID, abHongguoBookPrefix) {
+		writeJSON(writer, map[string]any{"ok": true, "data": map[string]any{
+			"paragraphs": []any{}, "timed": false,
+		}})
+		return
+	}
 	data, err := coreCall(map[string]any{
 		"action":   "audiobookText",
 		"category": chapterID,
@@ -297,6 +435,33 @@ func (cache *audiobookMediaCache) get(id string) (audiobookMediaItem, bool) {
 func audiobookResolveMedia(bookID, chapterID string) (audiobookMediaItem, error) {
 	id := bookID + "\u0000" + chapterID
 	if item, ok := audiobookMedia.get(id); ok {
+		return item, nil
+	}
+	// 红果听书：红果接口直接给地址与 CENC key，不需要走番茄 playinfo。
+	if strings.HasPrefix(bookID, abHongguoBookPrefix) {
+		data, err := coreCall(map[string]any{
+			"action":   "audiobookHongguoMedia",
+			"query":    strings.TrimPrefix(bookID, abHongguoBookPrefix),
+			"category": strings.TrimPrefix(chapterID, abHongguoBookPrefix),
+		})
+		if err != nil {
+			return audiobookMediaItem{}, err
+		}
+		item := audiobookMediaItem{
+			url:      strings.TrimSpace(asString(data["url"])),
+			key:      strings.TrimSpace(asString(data["decryptionKey"])),
+			duration: int(liveNumber(data["duration"])),
+			headers:  map[string]string{},
+		}
+		if item.url == "" {
+			return audiobookMediaItem{}, errors.New("这一章暂时没有音频地址")
+		}
+		if rows, ok := data["headers"].(map[string]any); ok {
+			for name, value := range rows {
+				item.headers[name] = asString(value)
+			}
+		}
+		audiobookMedia.put(id, item)
 		return item, nil
 	}
 	data, err := coreCall(map[string]any{

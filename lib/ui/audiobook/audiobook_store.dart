@@ -343,6 +343,8 @@ class AudiobookStore extends ChangeNotifier {
       // 旧存档没有这两个字段，缺省空串即可，封面/简介为空时列表用占位。
       cover: '${json['cover'] ?? ''}',
       intro: '${json['intro'] ?? ''}',
+      // 旧存档没有 source，按番茄听书处理；红果听书写入 hongguo。
+      source: '${json['source'] ?? 'fanqie'}',
     );
   }
 
@@ -353,6 +355,7 @@ class AudiobookStore extends ChangeNotifier {
     'category': book.category,
     'cover': book.cover,
     'intro': book.intro,
+    'source': book.source,
   };
 }
 

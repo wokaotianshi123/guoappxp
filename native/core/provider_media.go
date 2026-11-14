@@ -47,6 +47,10 @@ func (d *Downloader) providerBaseURL(source string) string {
 		configured, fallback = d.cfg.SoraniURL, soraniSiteBaseURL
 	case sourceGuipian:
 		configured, fallback = d.cfg.GuipianURL, guipianSiteBaseURL
+	case sourceHanxiaoquan:
+		// 韩小圈站点地址只在 core 内置一份：外置源经 Host.BaseURL 取，
+		// 漏掉这个分支会落到 default 的云存储地址，表现为「有分类、没列表」。
+		fallback = hanxiaoquanSiteBaseURL
 	case sourceIkanbot:
 		fallback = ikanbotSiteBaseURL
 	case sourceA123:

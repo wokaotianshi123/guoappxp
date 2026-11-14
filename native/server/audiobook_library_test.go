@@ -160,8 +160,9 @@ func TestAbLibraryQueryPagingAndCategory(t *testing.T) {
 	}
 }
 
-// 两个书源必须各自独立：红果听书只看官方书城听书专辑，番茄听书只看畅听榜单，
-// 混在一起会让用户在两个 tab 里看到同一批书。
+// 番茄听书现在是「畅听榜单 + 官方书城听书专辑」的合并池：原来红果听书的
+// 真人剧内容并入番茄听书后，两个 tab 不再需要互斥；红果听书本身走红果接口，
+// query 层仍保留官方池作为兜底。
 func TestAbLibraryQuerySeparatesOrigins(t *testing.T) {
 	store := &audiobookLibraryStore{
 		boards: map[string][]audiobookBook{
@@ -192,9 +193,16 @@ func TestAbLibraryQuerySeparatesOrigins(t *testing.T) {
 	}
 
 	fanqie := store.query(abOriginFanqie, 0, "", "", 1, 10)
-	rank := fanqie["books"].([]map[string]any)
-	if len(rank) != 1 || rank[0]["id"] != "rank-1" {
-		t.Fatalf("番茄听书书池 = %v", rank)
+	merged := fanqie["books"].([]map[string]any)
+	if len(merged) != 3 {
+		t.Fatalf("番茄听书书池应为榜单 + 官方专辑合并，实际 = %v", merged)
+	}
+	ids := map[string]bool{}
+	for _, book := range merged {
+		ids[book["id"].(string)] = true
+	}
+	if !ids["rank-1"] || !ids["off-1"] || !ids["off-2"] {
+		t.Fatalf("番茄听书书池缺少来源：%v", ids)
 	}
 
 	// 不传 origin 时默认红果听书。

@@ -218,12 +218,18 @@ func TestDuanjuRejectsMismatchedSourceIDsAndCategories(t *testing.T) {
 func TestDuanjuSourceAvailabilityFollowsBuildVariant(t *testing.T) {
 	previous := buildAllSources
 	buildAllSources = "false"
-	if nativeSourceAvailable(sourceYaguo) {
+	if nativeSourceAvailable(sourceFanguo) {
 		t.Fatal("hongguo-only build must not expose duanju sources")
 	}
 	buildAllSources = "true"
-	if !nativeSourceAvailable(sourceYaguo) || !nativeSourceAvailable(sourceHuaguo) {
+	if !nativeSourceAvailable(sourceFanguo) || !nativeSourceAvailable(sourceHuaguo) {
 		t.Fatal("all-sources build must expose duanju sources")
+	}
+	// 芽果 / 猫果 / 河果 / 星果 / 牛果已整体下线，全站源版本也不该出现。
+	if nativeSourceAvailable(sourceYaguo) || nativeSourceAvailable(sourceMaoguo) ||
+		nativeSourceAvailable(sourceHeguo) || nativeSourceAvailable(sourceXingguo) ||
+		nativeSourceAvailable(sourceNiuguo) {
+		t.Fatal("removed duanju sources must stay unavailable in all-sources build")
 	}
 	buildAllSources = previous
 }

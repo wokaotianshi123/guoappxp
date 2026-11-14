@@ -471,6 +471,30 @@ func nativeDispatch(input nativeInput) (any, error) {
 			"duration":      int(media.Duration.Seconds()),
 			"headers":       map[string]string{"Referer": media.Referer, "User-Agent": "com.dragon.read"},
 		}, nil
+	// 红果听书（听书 / 小说）书源：与番茄听书并列的第二个书源，
+	// 数据来自红果 App 的官方书城接口，Flutter 与本地服务版共用。
+	case "audiobookHongguoCats":
+		return map[string]any{"items": AudiobookHongguoCategories()}, nil
+	case "audiobookHongguoCatalog":
+		books, hasMore, err := engine.downloader.audiobookHongguoCatalog(ctx, input.Category, input.Page, nil)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"books": books, "hasMore": hasMore, "origin": "hongguo"}, nil
+	case "audiobookHongguoSearch":
+		books, hasMore, err := engine.downloader.audiobookHongguoSearch(ctx, input.Category, input.Query, input.Page)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"books": books, "hasMore": hasMore, "origin": "hongguo"}, nil
+	case "audiobookHongguoChapters":
+		book, chapters, err := engine.downloader.audiobookHongguoChapters(ctx, input.Query)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"book": book, "chapters": chapters}, nil
+	case "audiobookHongguoMedia":
+		return engine.downloader.audiobookHongguoMedia(ctx, input.Query, input.Category)
 	case "downloadDirectory":
 		engine.downloads.mu.Lock()
 		root := engine.downloads.root

@@ -71,32 +71,21 @@ class SourceSite {
   static const a123 = SourceSite('a123', 'A123', '电影 · 连续剧 · 综艺 · 动漫 · 多线路');
 
   /// 短剧家族内置源（全剧视界可用），与 Go 侧 duanjuProviderCatalog 对齐。
+  /// 芽果 / 猫果 / 河果 / 星果 / 牛果已因接口失效与内容质量下线。
   static const duanjuValues = [
-    SourceSite('yaguo', '芽果', '星芽短剧 · 登录接口'),
-    SourceSite('maoguo', '猫果', '七猫短剧 · 签名接口'),
     SourceSite('fanguo', '饭果', '西饭短剧 · 搜索接口'),
-    SourceSite('heguo', '河果', '河马剧场 · 网页接口'),
-    SourceSite('xingguo', '星果', '星星短剧 · 连载接口'),
     SourceSite('huaguo', '花果', '花生短剧 · 网页目录'),
-    SourceSite('niuguo', '牛果', '牛牛短剧 · 分类接口'),
     SourceSite('wangguo', '网果', '短剧网站 · 网页目录'),
   ];
 
   static const _duanjuIds = {
-    'yaguo',
-    'maoguo',
     'fanguo',
-    'heguo',
-    'xingguo',
     'huaguo',
-    'niuguo',
     'wangguo',
   };
 
   static const _duanjuPagedIds = {
-    'yaguo',
     'huaguo',
-    'niuguo',
     'wangguo',
   };
 
@@ -131,7 +120,7 @@ class SourceSite {
 
   /// 红果鉴（非全站源版）保留两个 core 内置短剧源：红果（默认）与番茄。
   /// 番茄短剧实现已回迁到 native/core（provider_fanqie.go），不依赖外置站源
-  /// 模块，因此两种版本都能用；其余 26 个外置源仍跟随全站源门控。
+  /// 模块，因此两种版本都能用；其余外置源仍跟随全站源门控。
   /// 注意与「番茄听书」区分——听书是独立书源，走 audiobook_* action，
   /// 不经此列表，两种版本都保留。
   /// 真果鉴（`--dart-define=ALL_SOURCES=true`）才展开全部站源。

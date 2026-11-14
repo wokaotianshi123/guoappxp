@@ -272,6 +272,31 @@ abstract class AppRepository {
     Map<String, String> headers = const {},
   }) async => throw AppFailure('当前环境不支持听书源');
 
+  // ---- 红果听书（听书 / 小说）：与番茄听书并列的第二个书源 ----
+
+  /// 红果书城目录。category 是 `listen`（听书）或 `novel`（小说）。
+  Future<Map<String, dynamic>> audiobookHongguoCatalog(
+    String category,
+    int page,
+  ) async => throw AppFailure('当前环境不支持红果听书');
+
+  /// 红果书城搜索，按频道（听书 / 小说）各查各的。
+  Future<Map<String, dynamic>> audiobookHongguoSearch(
+    String category,
+    String query,
+    int page,
+  ) async => throw AppFailure('当前环境不支持红果听书');
+
+  /// 红果听书详情 + 全量目录。
+  Future<Map<String, dynamic>> audiobookHongguoChapters(String bookId) async =>
+      throw AppFailure('当前环境不支持红果听书');
+
+  /// 红果听书单章音频（加密音频带 CENC key）。
+  Future<Map<String, dynamic>> audiobookHongguoMedia(
+    String bookId,
+    String chapterId,
+  ) async => throw AppFailure('当前环境不支持红果听书');
+
   /// 投屏：核心把当前播放会话再挂一份到 0.0.0.0，返回电视能访问的内网基址。
   /// [peer] 是电视的地址，核心据此确定手机这一侧用哪块网卡（Android 上
   /// 枚举网卡不一定拿得到地址，按路由挑出口最可靠）。
@@ -1194,6 +1219,42 @@ class NativeRepository extends AppRepository {
     }
     return body;
   }
+
+  @override
+  Future<Map<String, dynamic>> audiobookHongguoCatalog(
+    String category,
+    int page,
+  ) => _call({
+    'action': 'audiobookHongguoCatalog',
+    'category': category,
+    'page': page,
+  });
+
+  @override
+  Future<Map<String, dynamic>> audiobookHongguoSearch(
+    String category,
+    String query,
+    int page,
+  ) => _call({
+    'action': 'audiobookHongguoSearch',
+    'category': category,
+    'query': query,
+    'page': page,
+  });
+
+  @override
+  Future<Map<String, dynamic>> audiobookHongguoChapters(String bookId) =>
+      _call({'action': 'audiobookHongguoChapters', 'query': bookId});
+
+  @override
+  Future<Map<String, dynamic>> audiobookHongguoMedia(
+    String bookId,
+    String chapterId,
+  ) => _call({
+    'action': 'audiobookHongguoMedia',
+    'query': bookId,
+    'category': chapterId,
+  });
 
   @override
   Future<String> castBase({String peer = ''}) async {

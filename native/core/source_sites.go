@@ -45,6 +45,8 @@ const (
 	a123SiteBaseURL    = "https://a123tv.com"
 	guipianSiteBaseURL = "https://guipianwu.com"
 	ikanbotSiteBaseURL = "https://www1.ikanbot.com"
+	// 韩小圈：站点会换域名，外置源与封面拼接都经 Host.BaseURL 取这里。
+	hanxiaoquanSiteBaseURL = "https://www.jennyhow.com"
 	xchinaBaseURL      = "https://v2.cdn199.com"
 	thepornyBaseURL    = "https://theporny.com"
 	huangjuBaseURL     = "https://huangju.net"

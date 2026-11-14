@@ -143,12 +143,18 @@ class FanqieBook {
     this.intro = '',
     this.board = 0,
     this.anchor = '',
+    this.source = 'fanqie',
   });
 
   final String id;
   final String title;
   final String author;
   final String category;
+
+  /// 书源：`hongguo` = 红果听书（听书 / 小说），其余按番茄听书处理。
+  final String source;
+
+  bool get isHongguo => source == 'hongguo';
 
   /// 有声书主播名；为空说明这条没有真人录制。
   final String anchor;
@@ -390,10 +396,73 @@ class FanqieAudiobookApi {
     return fanqieSearchPage(jsonDecode(await _fetch(url)));
   }
 
+  // —— 红果听书（听书 / 小说）：数据来自红果 App 官方书城，与短剧共用设备签名 ----
+
+  /// 拉红果书城某个频道的书单。推荐流每次只回一批，pages 控制连拉几批。
+  Future<List<FanqieBook>> hongguoCatalog(
+    String category, {
+    int page = 1,
+    int pages = 1,
+  }) async {
+    final core = repository;
+    if (core == null) return const [];
+    final out = <FanqieBook>[];
+    final seen = <String>{};
+    for (var index = 0; index < pages; index++) {
+      final reply = await core.audiobookHongguoCatalog(category, page + index);
+      for (final book in fanqieHongguoBooks(reply)) {
+        if (seen.add(book.id)) out.add(book);
+      }
+    }
+    return out;
+  }
+
+  Future<FanqieSearchPage> hongguoSearch(
+    String category,
+    String query, {
+    int page = 1,
+  }) async {
+    final text = query.trim();
+    final core = repository;
+    if (text.isEmpty || core == null) {
+      return const FanqieSearchPage(books: [], hasMore: false);
+    }
+    final reply = await core.audiobookHongguoSearch(category, text, page);
+    return FanqieSearchPage(
+      books: fanqieHongguoBooks(reply),
+      hasMore: reply['hasMore'] == true,
+    );
+  }
+
+  Future<List<FanqieChapter>> _hongguoChapters(String bookId) async {
+    final core = repository;
+    if (core == null) return const [];
+    final reply = await core.audiobookHongguoChapters(bookId);
+    final rows = reply['chapters'];
+    if (rows is! List) return const [];
+    final chapters = <FanqieChapter>[];
+    for (final row in rows) {
+      if (row is! Map) continue;
+      final id = '${row['id'] ?? ''}'.trim();
+      if (id.isEmpty) continue;
+      chapters.add(
+        FanqieChapter(
+          id: id,
+          title: '${row['title'] ?? ''}'.trim(),
+          order: (row['order'] as num?)?.toInt() ?? chapters.length + 1,
+          locked: row['locked'] == true,
+        ),
+      );
+    }
+    return chapters;
+  }
+
   Future<List<FanqieChapter>> allChapters(String bookId) async {
     final cached = _chapters[bookId];
     if (cached != null) return List<FanqieChapter>.of(cached);
-    final all = await _loadChapters(bookId);
+    final all = bookId.startsWith(fanqieHongguoPrefix)
+        ? await _hongguoChapters(bookId.substring(fanqieHongguoPrefix.length))
+        : await _loadChapters(bookId);
     _chapters[bookId] = all;
     return List<FanqieChapter>.of(all);
   }
@@ -444,6 +513,40 @@ class FanqieAudiobookApi {
     }
     return _defaultGet(url, headers: headers);
   }
+}
+
+/// 红果听书的书籍 ID 前缀：两边都是纯数字 book_id，加前缀区分书源，
+/// 书架、进度、下载目录也随之隔离。
+const fanqieHongguoPrefix = 'hg:';
+
+/// 解析红果书城 / 搜索的 `{books: [...]}` 回包。
+List<FanqieBook> fanqieHongguoBooks(Object? decoded) {
+  final root = decoded is Map ? decoded : const {};
+  final rows = root['books'];
+  if (rows is! List) return const [];
+  final books = <FanqieBook>[];
+  for (final row in rows) {
+    if (row is! Map) continue;
+    final rawId = '${row['id'] ?? ''}'.trim();
+    final title = '${row['title'] ?? ''}'.trim();
+    if (rawId.isEmpty || title.isEmpty) continue;
+    books.add(
+      FanqieBook(
+        id: rawId.startsWith(fanqieHongguoPrefix)
+            ? rawId
+            : '$fanqieHongguoPrefix$rawId',
+        title: title,
+        author: '${row['author'] ?? ''}'.trim(),
+        category: '${row['category'] ?? ''}'.trim(),
+        cover: '${row['cover'] ?? ''}'.trim(),
+        intro: '${row['intro'] ?? ''}'.trim(),
+        anchor: '${row['anchor'] ?? ''}'.trim(),
+        board: (row['board'] as num?)?.toInt() ?? 0,
+        source: 'hongguo',
+      ),
+    );
+  }
+  return books;
 }
 
 FanqieSearchPage fanqieSearchPage(Object? decoded) {
