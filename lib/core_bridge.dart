@@ -280,6 +280,11 @@ abstract class AppRepository {
     int page,
   ) async => throw AppFailure('当前环境不支持红果听书');
 
+  /// 红果书城全量书池：一直翻到底，首屏建池用。
+  /// 单页接口只有 12 本，靠它才能拿到完整目录。
+  Future<Map<String, dynamic>> audiobookHongguoPool(String category) async =>
+      throw AppFailure('当前环境不支持红果听书');
+
   /// 红果书城搜索，按频道（听书 / 小说）各查各的。
   Future<Map<String, dynamic>> audiobookHongguoSearch(
     String category,
@@ -292,6 +297,9 @@ abstract class AppRepository {
       throw AppFailure('当前环境不支持红果听书');
 
   /// 红果听书单章音频（加密音频带 CENC key）。
+  ///
+  /// 传进来的 ID 可以带 `hg:` 前缀也可以不带，这里统一剥掉再发给核心——
+  /// 调用方（播放会话、下载）不必各自处理前缀。
   Future<Map<String, dynamic>> audiobookHongguoMedia(
     String bookId,
     String chapterId,
@@ -1201,7 +1209,7 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<Map<String, dynamic>> audiobookText(String chapterId) =>
-      _call({'action': 'audiobookText', 'category': chapterId});
+      _call({'action': 'audiobookText', 'category': _stripHongguoPrefix(chapterId)});
 
   @override
   Future<String> audiobookFetch(
@@ -1231,6 +1239,13 @@ class NativeRepository extends AppRepository {
   });
 
   @override
+  Future<Map<String, dynamic>> audiobookHongguoPool(String category) => _call({
+    'action': 'audiobookHongguoPool',
+    'category': category,
+    'page': 80,
+  });
+
+  @override
   Future<Map<String, dynamic>> audiobookHongguoSearch(
     String category,
     String query,
@@ -1252,8 +1267,8 @@ class NativeRepository extends AppRepository {
     String chapterId,
   ) => _call({
     'action': 'audiobookHongguoMedia',
-    'query': bookId,
-    'category': chapterId,
+    'query': _stripHongguoPrefix(bookId),
+    'category': _stripHongguoPrefix(chapterId),
   });
 
   @override
@@ -1361,4 +1376,11 @@ class NativeRepository extends AppRepository {
     });
     return Map<String, dynamic>.from(result as Map);
   }
+}
+
+/// 红果听书的书籍与章节 ID 带 `hg:` 前缀（与番茄的纯数字 ID 隔离），
+/// 发给 Go 核心前必须剥掉。
+String _stripHongguoPrefix(String id) {
+  const prefix = 'hg:';
+  return id.startsWith(prefix) ? id.substring(prefix.length) : id;
 }

@@ -622,7 +622,7 @@ func handleAudiobookLibrary(writer http.ResponseWriter, request *http.Request) {
 	// 不再从番茄书库里拼数据；番茄听书保留原书库（畅听榜 + 官方听书专辑）。
 	if abNormalizeOrigin(params.Get("origin")) == abOriginHongguo {
 		writeJSON(writer, map[string]any{"ok": true, "data": abHongguoLibrary(
-			board, strings.TrimSpace(params.Get("q")), page, size,
+			board, strings.TrimSpace(params.Get("category")), strings.TrimSpace(params.Get("q")), page, size,
 		)})
 		return
 	}

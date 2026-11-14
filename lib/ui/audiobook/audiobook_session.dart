@@ -207,12 +207,9 @@ class AudiobookSession extends ChangeNotifier {
     try {
       Map<String, dynamic>? remote;
       if (!localFile) {
-        // 红果听书的 ID 带 hg: 前缀，播放接口要裸 ID；番茄原样传。
+        // 红果听书的 ID 带 hg: 前缀，桥接层会统一剥掉，这里直接传即可。
         remote = book.isHongguo
-            ? await repository.audiobookHongguoMedia(
-                book.id.substring(fanqieHongguoPrefix.length),
-                current.id.substring(fanqieHongguoPrefix.length),
-              )
+            ? await repository.audiobookHongguoMedia(book.id, current.id)
             : await repository.audiobookMedia(book.id, current.id);
         if (generation != _generation) {
           _opening = false;

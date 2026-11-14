@@ -399,6 +399,15 @@ class FanqieAudiobookApi {
   // —— 红果听书（听书 / 小说）：数据来自红果 App 官方书城，与短剧共用设备签名 ----
 
   /// 拉红果书城某个频道的书单。推荐流每次只回一批，pages 控制连拉几批。
+  /// 拉红果书城整个频道的书池。书城单页只有 12 本，靠 pool 接口一次翻到底，
+  /// 否则列表会停在十几本。
+  Future<List<FanqieBook>> hongguoPool(String category) async {
+    final core = repository;
+    if (core == null) return const [];
+    final reply = await core.audiobookHongguoPool(category);
+    return fanqieHongguoBooks(reply);
+  }
+
   Future<List<FanqieBook>> hongguoCatalog(
     String category, {
     int page = 1,
@@ -443,8 +452,13 @@ class FanqieAudiobookApi {
     final chapters = <FanqieChapter>[];
     for (final row in rows) {
       if (row is! Map) continue;
-      final id = '${row['id'] ?? ''}'.trim();
-      if (id.isEmpty) continue;
+      final raw = '${row['id'] ?? ''}'.trim();
+      if (raw.isEmpty) continue;
+      // 章节 ID 也要带 hg: 前缀：播放与下载都按前缀判断书源，
+      // 少了前缀会走番茄接口（红果 item_id 拿去查番茄必然拿不到地址）。
+      final id = raw.startsWith(fanqieHongguoPrefix)
+          ? raw
+          : '$fanqieHongguoPrefix$raw';
       chapters.add(
         FanqieChapter(
           id: id,
@@ -888,6 +902,26 @@ List<String> fanqieCategoriesFrom(
     if (counts.containsKey(name) && seen.add(name)) result.add(name);
   }
   return result;
+}
+
+/// 红果听书的分类：直接按书池里真实出现的题材统计，不套番茄的固定分类表。
+///
+/// 红果的题材名（战神赘婿 / 科幻末世 / 都市高武…）与番茄畅听的分类词完全不同，
+/// 用番茄那套顺序过滤会把几乎所有题材都漏掉，分类条只剩零星几个。
+List<String> fanqieHongguoCategoriesFrom(Iterable<FanqieBook> pool) {
+  final counts = <String, int>{};
+  for (final book in pool) {
+    for (final tag in book.category.split(RegExp(r'[·,，、/\s|]+'))) {
+      final name = tag.trim();
+      if (name.isNotEmpty) counts[name] = (counts[name] ?? 0) + 1;
+    }
+  }
+  final names = counts.keys.toList()
+    ..sort((a, b) {
+      final byCount = counts[b]!.compareTo(counts[a]!);
+      return byCount != 0 ? byCount : a.compareTo(b);
+    });
+  return names.length > 40 ? names.sublist(0, 40) : names;
 }
 
 /// 在全量书池里按关键词匹配书名 / 作者 / 分类 / 简介。

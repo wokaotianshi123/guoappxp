@@ -131,10 +131,10 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     }
     try {
       if (_origin == 0) {
-        // 红果听书：红果官方书城两个频道，听书进男栏、小说进女栏，
-        // 推荐流每次只回一批，多拉几批让首屏够看。
-        final listen = await _api.hongguoCatalog('listen', pages: 3);
-        final novel = await _api.hongguoCatalog('novel', pages: 2);
+        // 红果听书：红果官方书城两个频道。书城单页只有 12 本，必须用 pool
+        // 接口一次翻到底，否则列表会停在十几本。
+        final listen = await _api.hongguoPool('listen');
+        final novel = await _api.hongguoPool('novel');
         if (!mounted || token != _poolGeneration) return;
         setState(() {
           _officialCategories = const [];
@@ -212,8 +212,21 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   }
 
   /// 分类只展示书池里确实有书的：高频基线标签 + 官方书城实时学到的分类。
-  List<String> get _categories =>
-      fanqieCategoriesFrom(_allPool, preferred: _officialCategories);
+  /// 分类条：红果听书按**当前频道**书池里的真实题材统计（听书只出听书的题材、
+  /// 小说只出小说的题材，两者不混），番茄沿用固定分类表的顺序。
+  List<String> get _categories => _origin == 0
+      ? fanqieHongguoCategoriesFrom(_boardPool)
+      : fanqieCategoriesFrom(_allPool, preferred: _officialCategories);
+
+  /// 当前频道（听书 / 小说 或 男 / 女榜）自己的书池。
+  /// 按 tab 索引取而不是按 board.type：红果的两个频道是「听书 / 小说」，
+  /// 与番茄「男生榜 / 女生榜」的 type 语义不同，按索引才不会错位。
+  List<FanqieBook> get _boardPool {
+    final index = fanqieAudiobookBoards.indexWhere(
+      (board) => board.type == _board.type,
+    );
+    return index <= 0 ? _malePool : _femalePool;
+  }
 
   /// 男女榜合并去重后的完整听书书库。
   List<FanqieBook> get _allPool {
@@ -224,10 +237,20 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     ];
   }
 
-  /// 当前数据源：选分类时按真实标签过滤全量书库，否则只看选中的榜。
+  /// 当前数据源：选分类时按真实标签过滤，否则只看选中的榜。
+  /// 红果听书的两个频道内容完全不同（听书 / 小说），分类过滤只在当前频道内做，
+  /// 否则选「都市高武」会把听书里的同名题材也带进来。
   List<FanqieBook> get _pool {
+    if (_origin == 0) {
+      final base = _boardPool;
+      if (_category.isEmpty) return base;
+      return [
+        for (final book in base)
+          if (_matchesCategory(book, _category)) book,
+      ];
+    }
     if (_category.isEmpty) {
-      return _board.type == 0 ? _femalePool : _malePool;
+      return _boardPool;
     }
     return [
       for (final book in _allPool)
@@ -236,7 +259,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   }
 
   bool _matchesCategory(FanqieBook book, String category) => book.category
-      .split(RegExp(r'[·,，、/\s]+'))
+      .split(RegExp(r'[·,，、/\s|]+'))
       .any((tag) => tag.trim() == category);
 
   /// 搜索以本地全量书库匹配为主（覆盖全部书目、命中的都是可播放的听书），
@@ -939,12 +962,9 @@ class _AudiobookCatalogScreenState extends State<AudiobookCatalogScreen> {
       final report = await downloadAudiobookChapters(
         media: (bookId, chapterId) {
           final repository = widget.repository;
-          // 红果听书的 ID 带 hg: 前缀，下载接口同样要剥掉。
+          // 红果听书的 ID 带 hg: 前缀，桥接层会统一剥掉。
           if (bookId.startsWith(fanqieHongguoPrefix)) {
-            return repository.audiobookHongguoMedia(
-              bookId.substring(fanqieHongguoPrefix.length),
-              chapterId.substring(fanqieHongguoPrefix.length),
-            );
+            return repository.audiobookHongguoMedia(bookId, chapterId);
           }
           return repository.audiobookMedia(bookId, chapterId);
         },
@@ -1370,6 +1390,21 @@ class _AudiobookPlayerScreenState extends State<AudiobookPlayerScreen> {
     final itemId = _chapter.id;
     final generation = ++_textGeneration;
     _textChapterId = itemId;
+    // 红果听书没有逐句正文，章节 ID 带 hg: 前缀，直接跳过正文请求：
+    // 拿红果 item_id 去查番茄正文必然失败，白等一次网络。
+    if (itemId.startsWith(fanqieHongguoPrefix)) {
+      setState(() {
+        _textLoading = false;
+        _texts = const [];
+        _timedText = null;
+        _timed = false;
+        _lines = const [];
+        _line = -1;
+        _shownLine = -1;
+        _textError = null;
+      });
+      return;
+    }
     setState(() {
       _textLoading = true;
       _textError = null;

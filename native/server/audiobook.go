@@ -6,6 +6,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,16 +29,223 @@ const (
 	abHongguoBookPrefix = "hg:"
 )
 
-// —— 红果听书（听书 / 小说）——
+// abHongguoStore 缓存红果听书两个频道的全量书池。
 //
-// 数据来自红果 App 的官方书城接口，与 Flutter 听书页共用 core 的
-// audiobookHongguo* 动作。board 0 = 听书、1 = 小说。
+// 红果书城单页只有 12 本，翻页接口每页 10 本且相邻页有重叠，边翻边供数会让
+// 前端看到「只有十几本」。这里像番茄书库一样后台抓全量并缓存，列表直接按
+// 缓存分页；抓取中先用已有部分顶上，前端按 library.loading 轮询补全。
+type abHongguoStore struct {
+	mu         sync.Mutex
+	books      map[string][]map[string]any // category → 书单
+	loading    map[string]bool
+	done       map[string]bool
+	errText    map[string]string
+	finished   map[string]time.Time
+	generation map[string]uint64
+}
 
+var abHongguo = &abHongguoStore{
+	books:      map[string][]map[string]any{},
+	loading:    map[string]bool{},
+	done:       map[string]bool{},
+	errText:    map[string]string{},
+	finished:   map[string]time.Time{},
+	generation: map[string]uint64{},
+}
+
+const abHongguoTtl = 30 * time.Minute
+
+// ensure 在缓存过期或首次访问时触发后台抓取，已有书池继续可用。
+func (store *abHongguoStore) ensure(category string) {
+	store.mu.Lock()
+	if store.loading[category] {
+		store.mu.Unlock()
+		return
+	}
+	if store.done[category] && time.Since(store.finished[category]) < abHongguoTtl {
+		store.mu.Unlock()
+		return
+	}
+	store.generation[category]++
+	generation := store.generation[category]
+	store.loading[category] = true
+	store.done[category] = false
+	store.errText[category] = ""
+	store.mu.Unlock()
+	go store.load(category, generation)
+}
+
+func (store *abHongguoStore) load(category string, generation uint64) {
+	data, err := coreCall(map[string]any{
+		"action": "audiobookHongguoPool", "category": category, "page": 80,
+	})
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.generation[category] != generation {
+		return
+	}
+	store.loading[category] = false
+	if err != nil {
+		store.errText[category] = err.Error()
+		// 抓失败但已有旧书池时继续用旧的，不清空。
+		store.done[category] = len(store.books[category]) > 0
+		return
+	}
+	books := make([]map[string]any, 0)
+	for _, item := range audiobookAnyList(data["books"]) {
+		if row, ok := item.(map[string]any); ok {
+			books = append(books, row)
+		}
+	}
+	store.books[category] = books
+	store.done[category] = true
+	store.finished[category] = time.Now()
+}
+
+// snapshot 返回当前书池与抓取状态。
+func (store *abHongguoStore) snapshot(category string) ([]map[string]any, map[string]any) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	books := append([]map[string]any(nil), store.books[category]...)
+	info := map[string]any{
+		"loading": store.loading[category],
+		"done":    store.done[category],
+		"count":   len(books),
+		"error":   store.errText[category],
+	}
+	return books, info
+}
+
+// abHongguoCategory 把前端 board（0 听书 / 1 小说）映射成红果频道。
 func abHongguoCategory(board int) string {
 	if board == 1 {
 		return "novel"
 	}
 	return "listen"
+}
+
+// abHongguoLibrary 返回红果听书的一页书单，字段与番茄书库保持一致。
+// category 参数是题材小分类（如「战神赘婿」），空串表示全部。
+func abHongguoLibrary(board int, category, query string, page, size int) map[string]any {
+	if page < 1 {
+		page = 1
+	}
+	if size < 1 || size > 50 {
+		size = audiobookPageSize
+	}
+	channel := abHongguoCategory(board)
+	abHongguo.ensure(channel)
+
+	// 搜索走红果自己的搜索接口，不依赖缓存书池（能搜到池外的书）。
+	if strings.TrimSpace(query) != "" {
+		data, err := coreCall(map[string]any{
+			"action": "audiobookHongguoSearch", "category": channel, "query": query, "page": page,
+		})
+		answer := map[string]any{
+			"books": []map[string]any{}, "total": 0, "page": page, "pageCount": 1,
+			"pageSize": size, "categories": []string{}, "origin": "hongguo",
+			"library": map[string]any{"loading": false, "done": true, "count": 0, "error": ""},
+		}
+		if err != nil {
+			answer["library"].(map[string]any)["error"] = err.Error()
+			return answer
+		}
+		books := abHongguoPrefix(audiobookAnyList(data["books"]))
+		hasMore := data["hasMore"] == true
+		pageCount := page
+		if hasMore {
+			pageCount = page + 1
+		}
+		answer["books"] = books
+		answer["total"] = (page-1)*size + len(books)
+		answer["pageCount"] = pageCount
+		return answer
+	}
+
+	pool, info := abHongguo.snapshot(channel)
+	list := make([]map[string]any, 0, len(pool))
+	for _, book := range pool {
+		if category != "" && !abHongguoMatchesCategory(book, category) {
+			continue
+		}
+		list = append(list, book)
+	}
+	total := len(list)
+	pageCount := (total + size - 1) / size
+	if pageCount < 1 {
+		pageCount = 1
+	}
+	if page > pageCount {
+		page = pageCount
+	}
+	start := (page - 1) * size
+	end := start + size
+	if end > total {
+		end = total
+	}
+	pageBooks := make([]any, 0, end-start)
+	for _, book := range list[start:end] {
+		pageBooks = append(pageBooks, book)
+	}
+	return map[string]any{
+		"books":      abHongguoPrefix(pageBooks),
+		"total":      total,
+		"page":       page,
+		"pageCount":  pageCount,
+		"pageSize":   size,
+		"categories": abHongguoCategories(pool),
+		"origin":     "hongguo",
+		"library":    info,
+	}
+}
+
+// abHongguoMatchesCategory 判断一本书是否属于某个题材分类。
+// 红果的 category 字段是「战神赘婿」这类题材名，可能带顿号分隔的多个标签。
+func abHongguoMatchesCategory(book map[string]any, category string) bool {
+	text := strings.TrimSpace(asString(book["category"]))
+	if text == "" {
+		return false
+	}
+	for _, tag := range strings.FieldsFunc(text, func(r rune) bool {
+		return r == '·' || r == ',' || r == '，' || r == '、' || r == '/' || r == ' ' || r == '|'
+	}) {
+		if strings.TrimSpace(tag) == category {
+			return true
+		}
+	}
+	return false
+}
+
+// abHongguoCategories 统计书池里真实出现的题材分类，按出现次数降序。
+func abHongguoCategories(pool []map[string]any) []string {
+	counts := map[string]int{}
+	for _, book := range pool {
+		text := strings.TrimSpace(asString(book["category"]))
+		if text == "" {
+			continue
+		}
+		for _, tag := range strings.FieldsFunc(text, func(r rune) bool {
+			return r == '·' || r == ',' || r == '，' || r == '、' || r == '/' || r == ' ' || r == '|'
+		}) {
+			if tag = strings.TrimSpace(tag); tag != "" {
+				counts[tag]++
+			}
+		}
+	}
+	out := make([]string, 0, len(counts))
+	for name := range counts {
+		out = append(out, name)
+	}
+	sort.SliceStable(out, func(i, j int) bool {
+		if counts[out[i]] != counts[out[j]] {
+			return counts[out[i]] > counts[out[j]]
+		}
+		return out[i] < out[j]
+	})
+	if len(out) > 40 {
+		out = out[:40]
+	}
+	return out
 }
 
 func abHongguoPrefix(books []any) []map[string]any {
@@ -55,63 +263,6 @@ func abHongguoPrefix(books []any) []map[string]any {
 		out = append(out, book)
 	}
 	return out
-}
-
-// abHongguoLibrary 返回红果听书的一页书单，字段与番茄书库保持一致。
-func abHongguoLibrary(board int, query string, page, size int) map[string]any {
-	if page < 1 {
-		page = 1
-	}
-	if size < 1 || size > 50 {
-		size = audiobookPageSize
-	}
-	category := abHongguoCategory(board)
-	var books []map[string]any
-	var hasMore bool
-	var err error
-	if strings.TrimSpace(query) != "" {
-		var data map[string]any
-		data, err = coreCall(map[string]any{
-			"action": "audiobookHongguoSearch", "category": category, "query": query, "page": page,
-		})
-		if err == nil {
-			books = abHongguoPrefix(audiobookAnyList(data["books"]))
-			hasMore = data["hasMore"] == true
-		}
-	} else {
-		var data map[string]any
-		data, err = coreCall(map[string]any{
-			"action": "audiobookHongguoCatalog", "category": category, "page": page,
-		})
-		if err == nil {
-			books = abHongguoPrefix(audiobookAnyList(data["books"]))
-			hasMore = data["hasMore"] == true
-		}
-	}
-	pageCount := page
-	if hasMore {
-		pageCount = page + 1
-	}
-	total := (page-1)*size + len(books)
-	if hasMore {
-		total++
-	}
-	answer := map[string]any{
-		"books":      books,
-		"total":      total,
-		"page":       page,
-		"pageCount":  pageCount,
-		"pageSize":   size,
-		"categories": []string{},
-		"origin":     "hongguo",
-		"library": map[string]any{
-			"loading": false, "done": !hasMore, "count": len(books), "error": "",
-		},
-	}
-	if err != nil {
-		answer["library"].(map[string]any)["error"] = err.Error()
-	}
-	return answer
 }
 
 // abHongguoChapters 取红果听书的目录，按页切片（与番茄目录接口同款回包）。
