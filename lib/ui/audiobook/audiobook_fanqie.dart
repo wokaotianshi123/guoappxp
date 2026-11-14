@@ -244,11 +244,15 @@ class FanqieBookPool {
     required this.books,
     this.loading = false,
     this.stale = false,
+    this.total = 0,
   });
 
   final List<FanqieBook> books;
   final bool loading;
   final bool stale;
+
+  /// 服务端书池的完整长度（[books] 是增量时它比 books.length 大）。
+  final int total;
 
   bool get isEmpty => books.isEmpty;
 }
@@ -420,16 +424,21 @@ class FanqieAudiobookApi {
   /// 拉红果书城整个频道的书池。
   ///
   /// 书城单页只有 12 本，靠 pool 接口一次翻到底，否则列表会停在十几本。
-  /// core 侧带进程内缓存：命中缓存立即返回；缓存为空且已有请求在抓时返回空列表，
-  /// 调用方按 [loading] 稍后重试即可，不要重复翻页。
-  Future<FanqieBookPool> hongguoPool(String category) async {
+  /// core 侧带进程内缓存 + 后台增量抓取。
+  ///
+  /// [since] 传调用方**已持有的书数**时只返回新增部分（配合 [FanqieBookPool.total]
+  /// 追加即可）。轮询务必用增量：上千本书含封面 / 简介，每次全量过 IPC 会拖垮界面。
+  Future<FanqieBookPool> hongguoPool(String category, {int since = 0}) async {
     final core = repository;
-    if (core == null) return const FanqieBookPool(books: [], loading: false);
-    final reply = await core.audiobookHongguoPool(category);
+    if (core == null) {
+      return const FanqieBookPool(books: [], loading: false);
+    }
+    final reply = await core.audiobookHongguoPool(category, since: since);
     return FanqieBookPool(
       books: fanqieHongguoBooks(reply),
       loading: reply['loading'] == true,
       stale: reply['stale'] == true,
+      total: (reply['total'] as num?)?.toInt() ?? 0,
     );
   }
 

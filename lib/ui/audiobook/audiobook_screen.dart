@@ -247,19 +247,22 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
 
   /// 红果书池还在后台翻页时轮询补全。
   ///
-  /// 全量翻页受站点限流约需一分钟，但每攒够一批 core 就会发布，所以这里每
-  /// 1.5 秒取一次快照，书池逐步变大，用户不必干等。页面离开或切走书源即停。
+  /// 全量翻页受站点限流约需一分钟，core 每攒一批就发布。这里用**增量**拉取
+  /// （只回新增那几本），避免每次把上千本书含封面/简介序列化过 IPC——那是
+  /// 界面卡顿的主因。间隔自适应：有新增就快拉，连续空转则退避。
   Future<void> _pollHongguoPool(int origin, int token) async {
-    var quiet = 0;
+    var idle = 0;
     while (mounted && token == _poolGeneration && _origin == origin) {
-      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      await Future<void>.delayed(
+        Duration(milliseconds: idle == 0 ? 1200 : 3000),
+      );
       if (!mounted || token != _poolGeneration || _origin != origin) return;
       FanqieBookPool listen;
       FanqieBookPool novel;
       try {
         final results = await Future.wait([
-          _api.hongguoPool('listen'),
-          _api.hongguoPool('novel'),
+          _api.hongguoPool('listen', since: _malePool.length),
+          _api.hongguoPool('novel', since: _femalePool.length),
         ]);
         listen = results[0];
         novel = results[1];
@@ -267,14 +270,16 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         return;
       }
       if (!mounted || token != _poolGeneration || _origin != origin) return;
-      final grew = listen.books.length != _malePool.length ||
-          novel.books.length != _femalePool.length;
+      final added = listen.books.length + novel.books.length;
       final stillLoading = listen.loading || novel.loading;
-      if (grew) quiet = 0;
-      if (grew || !stillLoading) {
+      idle = added > 0 ? 0 : idle + 1;
+      if (added > 0 || !stillLoading) {
         setState(() {
-          _malePool = listen.books;
-          _femalePool = novel.books;
+          if (added > 0) {
+            // 增量：追加到已有书池尾部（core 按翻页顺序发布，顺序稳定）。
+            _malePool = [..._malePool, ...listen.books];
+            _femalePool = [..._femalePool, ...novel.books];
+          }
           _poolLoading = stillLoading;
           _poolDone = !stillLoading;
           _rebuildSearch();
@@ -285,8 +290,8 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         _rememberPool(origin);
       }
       if (!stillLoading) return;
-      // 连续几轮都没增长说明抓取停了（失败或已到底），别无限轮询。
-      if (!grew && ++quiet >= 6) {
+      // 连续空转说明抓取停了（失败或已到底），别无限轮询。
+      if (idle >= 5) {
         setState(() => _poolLoading = false);
         return;
       }

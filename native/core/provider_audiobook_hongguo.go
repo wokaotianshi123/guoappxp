@@ -303,6 +303,10 @@ var audiobookHongguoPoolCache = struct {
 
 const audiobookHongguoPoolTTL = 30 * time.Minute
 
+// audiobookHongguoPoolBudget 是单轮全量抓取的时间上限。
+// 正常约 60 秒能翻完；给 5 分钟余量，站点卡住时也不会无限占资源。
+const audiobookHongguoPoolBudget = 5 * time.Minute
+
 // audiobookHongguoPoolSnapshot 读某频道的书池快照与状态。
 func audiobookHongguoPoolSnapshot(category string) (books []map[string]any, loading, stale, ok bool) {
 	spec, valid := audiobookHongguoCategoryFor(category)
@@ -323,15 +327,18 @@ func audiobookHongguoPoolSnapshot(category string) (books []map[string]any, load
 	return books, loading, stale, true
 }
 
-// audiobookHongguoPoolStart 确保某频道有后台抓取在跑，并返回当前快照。
+// audiobookHongguoPoolStart 确保某频道有后台抓取在跑，并返回书池。
 //
-// 首次调用（缓存为空）会**短暂阻塞**等首屏那一批（约 1.5 秒，只有一次请求），
-// 让界面立刻有书可看；之后的全量翻页在后台继续，调用方按 loading 轮询补全。
-// 已有缓存时立即返回，切换书源零等待。force 为 true 时即使缓存新鲜也重抓。
-func (d *Downloader) audiobookHongguoPoolStart(ctx context.Context, category string, maxPages int, force bool) ([]map[string]any, bool, bool) {
+// since 是调用方已持有的书数：传 0 返回全量；传已持有的数量则只返回**新增**
+// 那部分（增量），配合 total 字段让前端追加即可。轮询时用增量能避免每次把
+// 上千本书（含封面 / 简介）重复序列化过 IPC——那是卡顿的主因。
+//
+// 首次调用（缓存为空）会短暂阻塞等首屏那一批，让界面立刻有书可看；
+// 之后的全量翻页在后台继续，调用方按 loading 轮询补全。
+func (d *Downloader) audiobookHongguoPoolStart(ctx context.Context, category string, maxPages int, force bool, since int) (books []map[string]any, total int, loading, needFetch bool) {
 	spec, ok := audiobookHongguoCategoryFor(category)
 	if !ok {
-		return nil, false, false
+		return nil, 0, false, false
 	}
 	cache := &audiobookHongguoPoolCache
 	cache.Lock()
@@ -341,31 +348,41 @@ func (d *Downloader) audiobookHongguoPoolStart(ctx context.Context, category str
 		cache.entries[spec.ID] = entry
 	}
 	fresh := !entry.loadedAt.IsZero() && time.Since(entry.loadedAt) < audiobookHongguoPoolTTL
-	needFetch := force || !fresh
+	needFetch = force || !fresh
 	empty := len(entry.books) == 0
 	alreadyLoading := entry.loading
 	if needFetch && !alreadyLoading {
 		entry.loading = true
-		go d.audiobookHongguoPoolRun(context.WithoutCancel(ctx), spec, maxPages)
+		// 后台抓取带超时：站点卡住时不会永远占着那一个并发槽。
+		// 用 WithoutCancel 是为了用户切页/关页面时别丢掉已抓到的数据，
+		// 但抓取本身必须有上限，否则会一直耗资源。
+		runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audiobookHongguoPoolBudget)
+		go func() {
+			defer cancel()
+			d.audiobookHongguoPoolRun(runCtx, spec, maxPages)
+		}()
 	}
-	books := append([]map[string]any(nil), entry.books...)
 	cache.Unlock()
 
 	// 缓存为空且本轮刚开始：等首屏那一批，别让界面空着。
 	// 窗口给 8 秒：两个频道并发时请求要排队过限流（同一 host 每 250ms 一次），
 	// 首个 feed 加上排队大约 1.5~4 秒，窗口太短会白等一场空。
 	if empty && !alreadyLoading {
-		if seeded := d.audiobookHongguoPoolWaitSeed(ctx, spec.ID, 8*time.Second); len(seeded) > 0 {
-			books = seeded
-		}
+		d.audiobookHongguoPoolWaitSeed(ctx, spec.ID, 8*time.Second)
 	}
-	cache.Lock()
-	loading := cache.entries[spec.ID].loading
-	if len(books) == 0 {
-		books = append([]map[string]any(nil), cache.entries[spec.ID].books...)
+	all, loading, _, _ := audiobookHongguoPoolSnapshot(spec.ID)
+	total = len(all)
+	books = audiobookHongguoPoolSlice(all, since)
+	return books, total, loading, needFetch
+}
+
+// audiobookHongguoPoolSlice 按 since 切出增量。since 越界时回退到全量，
+// 保证前端拿到的数据始终能拼出完整书池（例如换设备 / 重启后本地为空）。
+func audiobookHongguoPoolSlice(all []map[string]any, since int) []map[string]any {
+	if since <= 0 || since > len(all) {
+		return all
 	}
-	cache.Unlock()
-	return books, loading, needFetch
+	return all[since:]
 }
 
 // audiobookHongguoPoolWaitSeed 短暂等待后台任务发布第一批书。
@@ -413,14 +430,31 @@ func (d *Downloader) audiobookHongguoPoolRun(ctx context.Context, spec audiobook
 			}
 		}
 	}
+	// 兜底：无论正常结束、超时还是 panic，都必须把 loading 复位，
+	// 否则前端会永远轮询下去，看起来就是「一直加载不完」。
+	defer func() {
+		cache.Lock()
+		entry := cache.entries[spec.ID]
+		loading := entry != nil && entry.loading
+		cache.Unlock()
+		if loading {
+			publish(nil, true)
+		}
+	}()
 	// 每攒够一批就发布一次：首屏很快有内容，后面继续补。
-	// 第一批用 20 本这个较低的门槛，保证首屏 1~2 秒内就有书可看。
+	// 阈值随进度放大（20 → 40 → 80）：前期小步快跑让界面尽早有书，
+	// 后期大步减少 IPC 往返次数——948 本按 40 一批要轮询 24 次。
 	published := 0
 	threshold := 20
 	progress := func(books []map[string]any) {
 		if len(books)-published >= threshold {
 			published = len(books)
-			threshold = 40
+			switch {
+			case threshold < 40:
+				threshold = 40
+			case threshold < 80:
+				threshold = 80
+			}
 			publish(books, false)
 		}
 	}

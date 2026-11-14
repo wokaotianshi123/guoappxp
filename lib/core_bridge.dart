@@ -282,8 +282,11 @@ abstract class AppRepository {
 
   /// 红果书城全量书池：一直翻到底，首屏建池用。
   /// 单页接口只有 12 本，靠它才能拿到完整目录。
-  Future<Map<String, dynamic>> audiobookHongguoPool(String category) async =>
-      throw AppFailure('当前环境不支持红果听书');
+  /// [since] 传调用方已持有的书数时只回增量（轮询务必用增量，别每次拉全量）。
+  Future<Map<String, dynamic>> audiobookHongguoPool(
+    String category, {
+    int since = 0,
+  }) async => throw AppFailure('当前环境不支持红果听书');
 
   /// 红果书城搜索，按频道（听书 / 小说）各查各的。
   Future<Map<String, dynamic>> audiobookHongguoSearch(
@@ -1239,10 +1242,14 @@ class NativeRepository extends AppRepository {
   });
 
   @override
-  Future<Map<String, dynamic>> audiobookHongguoPool(String category) => _call({
+  Future<Map<String, dynamic>> audiobookHongguoPool(
+    String category, {
+    int since = 0,
+  }) => _call({
     'action': 'audiobookHongguoPool',
     'category': category,
     'page': 80,
+    if (since > 0) 'offset': since,
   });
 
   @override

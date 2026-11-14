@@ -149,13 +149,19 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		}
 		delay := time.Until(gate.lastStart.Add(limiter.interval))
 		if background {
-
+			// 后台任务主动让路：前台刚发过请求就等一个间隔，避免和用户操作抢节奏。
 			if idleDelay := time.Until(limiter.lastForeground.Add(limiter.interval)); idleDelay > delay {
 				delay = idleDelay
 			}
 		}
+		// 后台任务最多占 1 个并发槽：红果听书这类「翻近百页」的抓取如果占满
+		// 全部 3 个槽，用户点剧集、加载封面都会被排队，表现为整体卡顿。
+		concurrency := limiter.concurrency
+		if background {
+			concurrency = 1
+		}
 		lowPriorityReady := !background || limiter.foregroundWaiting == 0 && limiter.active == 0
-		if lowPriorityReady && !gate.busy && limiter.active < limiter.concurrency && delay <= 0 {
+		if lowPriorityReady && !gate.busy && limiter.active < concurrency && delay <= 0 {
 			gate.busy = true
 			gate.lastStart = time.Now()
 			limiter.active++

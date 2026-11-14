@@ -79,12 +79,16 @@ func (store *abHongguoStore) load(category string, generation uint64) {
 	// core 侧的 pool 是「边翻边发布」的异步实现：首次调用很快返回第一批，
 	// 之后要轮询到 loading=false 才算抓全。这里一直轮询到底，
 	// 期间把已有进度先写进书池，前端能看到书库逐步变大。
+	//
+	// 轮询用 offset 增量：只取新增那几本，避免每次把上千本书（含封面/简介）
+	// 在 core 与 server 之间反复序列化——书库大时那是明显的 CPU 与内存开销。
 	books := make([]map[string]any, 0)
 	deadline := time.Now().Add(6 * time.Minute)
 	var lastErr error
 	for {
 		data, err := coreCall(map[string]any{
 			"action": "audiobookHongguoPool", "category": category, "page": 80,
+			"offset": len(books),
 		})
 		store.mu.Lock()
 		if store.generation[category] != generation {
@@ -96,16 +100,25 @@ func (store *abHongguoStore) load(category string, generation uint64) {
 			store.mu.Unlock()
 			break
 		}
+		total, _ := data["total"].(float64)
 		batch := make([]map[string]any, 0)
 		for _, item := range audiobookAnyList(data["books"]) {
 			if row, ok := item.(map[string]any); ok {
 				batch = append(batch, row)
 			}
 		}
-		if len(batch) > 0 {
+		// 增量返回时直接追加；若 core 回了全量（total 与已有不符），以它为准。
+		switch {
+		case len(batch) == 0:
+			// 没有新增，保持现有书池。
+		case int(total) == len(batch):
 			books = batch
+		default:
+			books = append(books, batch...)
+		}
+		if len(books) > 0 {
 			// 先把当前进度写进去，前端轮询能看到书库在长。
-			store.books[category] = books
+			store.books[category] = append([]map[string]any(nil), books...)
 		}
 		loading := data["loading"] == true
 		store.mu.Unlock()
