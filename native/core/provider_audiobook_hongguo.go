@@ -206,6 +206,10 @@ func (d *Downloader) audiobookHongguoFeed(ctx context.Context, category audioboo
 // 单页返回 10~12 本且与上一页有重叠（实测 offset=10 的 12 本里只有 4 本是新的），
 // 所以调用方必须按 book_id 去重。
 func (d *Downloader) audiobookHongguoCellPage(ctx context.Context, category audiobookHongguoCategory, cellID, showType, session string, offset int) ([]map[string]any, bool, int, error) {
+	// 听书翻页单独一条 lane：书城接口与红果短剧共用同一个 host，
+	// 共用 gate 时翻近百页会把短剧首页/详情一起堵住（用户感知就是「刚打开
+	// 软件就卡」）。分 lane 后两边各走各的节奏，互不阻塞。
+	ctx = context.WithValue(ctx, requestLaneKey{}, "hongguo-audiobook")
 	extra := url.Values{
 		"cell_id":         {cellID},
 		"change_type":     {"0"},
@@ -353,22 +357,37 @@ func (d *Downloader) audiobookHongguoPoolStart(ctx context.Context, category str
 	alreadyLoading := entry.loading
 	if needFetch && !alreadyLoading {
 		entry.loading = true
+	}
+	cache.Unlock()
+
+	// 缓存为空且本轮刚开始：先把首屏那一批抢出来，别让界面空着。
+	//
+	// 关键：这次用**前台**身份请求（不带 backgroundCatalogKey）。首屏只有 1 次
+	// 请求、用户正在等，如果也当后台任务，就得排队等短剧请求全空闲，
+	// 用户感知就是「刚打开软件点听书半天没反应」。后续那近百页翻页才走后台。
+	//
+	// 顺序也很重要：必须**先** seed **再**启动后台翻页，否则两者同时抢
+	// 同一个 host 的限流节奏，首屏反而被自己人堵住。
+	if empty && !alreadyLoading {
+		seedCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
+		d.audiobookHongguoPoolSeed(seedCtx, spec)
+		cancel()
+	}
+
+	if needFetch && !alreadyLoading {
 		// 后台抓取带超时：站点卡住时不会永远占着那一个并发槽。
 		// 用 WithoutCancel 是为了用户切页/关页面时别丢掉已抓到的数据，
 		// 但抓取本身必须有上限，否则会一直耗资源。
+		//
+		// 打上 backgroundCatalogKey 是关键：让限流器把它当后台任务，
+		// 只占 1 个并发槽、且必须等前台空闲才发请求。否则这近百次翻页
+		// 会以前台身份抢资源，用户刚打开软件点什么都卡。
 		runCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), audiobookHongguoPoolBudget)
+		runCtx = context.WithValue(runCtx, backgroundCatalogKey{}, true)
 		go func() {
 			defer cancel()
 			d.audiobookHongguoPoolRun(runCtx, spec, maxPages)
 		}()
-	}
-	cache.Unlock()
-
-	// 缓存为空且本轮刚开始：等首屏那一批，别让界面空着。
-	// 窗口给 8 秒：两个频道并发时请求要排队过限流（同一 host 每 250ms 一次），
-	// 首个 feed 加上排队大约 1.5~4 秒，窗口太短会白等一场空。
-	if empty && !alreadyLoading {
-		d.audiobookHongguoPoolWaitSeed(ctx, spec.ID, 8*time.Second)
 	}
 	all, loading, _, _ := audiobookHongguoPoolSnapshot(spec.ID)
 	total = len(all)
@@ -385,28 +404,43 @@ func audiobookHongguoPoolSlice(all []map[string]any, since int) []map[string]any
 	return all[since:]
 }
 
-// audiobookHongguoPoolWaitSeed 短暂等待后台任务发布第一批书。
-func (d *Downloader) audiobookHongguoPoolWaitSeed(ctx context.Context, key string, limit time.Duration) []map[string]any {
-	deadline := time.Now().Add(limit)
-	for {
-		cache := &audiobookHongguoPoolCache
-		cache.Lock()
-		entry := cache.entries[key]
-		var books []map[string]any
-		loading := false
-		if entry != nil {
-			books = append([]map[string]any(nil), entry.books...)
-			loading = entry.loading
+// audiobookHongguoPoolSeed 同步抓首屏那一批并立刻发布。
+//
+// 只发 1 次请求（书城 tab 首屏，12~24 本），用前台身份跑，保证用户刚点进
+// 听书页就能看到内容。全量翻页由 audiobookHongguoPoolRun 在后台继续。
+func (d *Downloader) audiobookHongguoPoolSeed(ctx context.Context, spec audiobookHongguoCategory) {
+	// 显式清掉后台标记：这条路径是用户在等的，不该被降级排队。
+	ctx = context.WithValue(ctx, backgroundCatalogKey{}, false)
+	first, _, _, _, _, err := d.audiobookHongguoFeed(ctx, spec, 0)
+	if err != nil {
+		return
+	}
+	books := make([]map[string]any, 0, len(first))
+	seen := map[string]bool{}
+	for _, raw := range first {
+		entry := audiobookHongguoBook(raw, spec)
+		if entry == nil {
+			continue
 		}
-		cache.Unlock()
-		if len(books) > 0 || !loading || time.Now().After(deadline) || ctx.Err() != nil {
-			return books
+		if id := entry["id"].(string); !seen[id] {
+			seen[id] = true
+			books = append(books, entry)
 		}
-		select {
-		case <-ctx.Done():
-			return nil
-		case <-time.After(120 * time.Millisecond):
-		}
+	}
+	if len(books) == 0 {
+		return
+	}
+	cache := &audiobookHongguoPoolCache
+	cache.Lock()
+	defer cache.Unlock()
+	entry := cache.entries[spec.ID]
+	if entry == nil {
+		entry = &audiobookHongguoPoolEntry{}
+		cache.entries[spec.ID] = entry
+	}
+	// 只填空白：后台可能已经发布了更多，别用首屏覆盖回去。
+	if len(entry.books) < len(books) {
+		entry.books = books
 	}
 }
 

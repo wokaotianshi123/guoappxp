@@ -160,7 +160,10 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		if background {
 			concurrency = 1
 		}
-		lowPriorityReady := !background || limiter.foregroundWaiting == 0 && limiter.active == 0
+		// 后台让路条件：前台没有排队的请求即可，不要求 active 归零。
+		// 原来要求 active==0 太严——用户刚打开软件时前台几乎一直有请求在飞，
+		// 后台永远等不到机会，听书书池会一直停在 0 本。
+		lowPriorityReady := !background || limiter.foregroundWaiting == 0
 		if lowPriorityReady && !gate.busy && limiter.active < concurrency && delay <= 0 {
 			gate.busy = true
 			gate.lastStart = time.Now()
