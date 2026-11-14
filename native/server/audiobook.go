@@ -76,28 +76,63 @@ func (store *abHongguoStore) ensure(category string) {
 }
 
 func (store *abHongguoStore) load(category string, generation uint64) {
-	data, err := coreCall(map[string]any{
-		"action": "audiobookHongguoPool", "category": category, "page": 80,
-	})
+	// core 侧的 pool 是「边翻边发布」的异步实现：首次调用很快返回第一批，
+	// 之后要轮询到 loading=false 才算抓全。这里一直轮询到底，
+	// 期间把已有进度先写进书池，前端能看到书库逐步变大。
+	books := make([]map[string]any, 0)
+	deadline := time.Now().Add(6 * time.Minute)
+	var lastErr error
+	for {
+		data, err := coreCall(map[string]any{
+			"action": "audiobookHongguoPool", "category": category, "page": 80,
+		})
+		store.mu.Lock()
+		if store.generation[category] != generation {
+			store.mu.Unlock()
+			return
+		}
+		if err != nil {
+			lastErr = err
+			store.mu.Unlock()
+			break
+		}
+		batch := make([]map[string]any, 0)
+		for _, item := range audiobookAnyList(data["books"]) {
+			if row, ok := item.(map[string]any); ok {
+				batch = append(batch, row)
+			}
+		}
+		if len(batch) > 0 {
+			books = batch
+			// 先把当前进度写进去，前端轮询能看到书库在长。
+			store.books[category] = books
+		}
+		loading := data["loading"] == true
+		store.mu.Unlock()
+		if !loading {
+			break
+		}
+		if time.Now().After(deadline) {
+			lastErr = errors.New("红果听书抓取超时")
+			break
+		}
+		time.Sleep(1200 * time.Millisecond)
+	}
+
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.generation[category] != generation {
 		return
 	}
 	store.loading[category] = false
-	if err != nil {
-		store.errText[category] = err.Error()
-		// 抓失败但已有旧书池时继续用旧的，不清空。
+	if lastErr != nil && len(books) == 0 {
+		store.errText[category] = lastErr.Error()
 		store.done[category] = len(store.books[category]) > 0
 		return
 	}
-	books := make([]map[string]any, 0)
-	for _, item := range audiobookAnyList(data["books"]) {
-		if row, ok := item.(map[string]any); ok {
-			books = append(books, row)
-		}
+	if len(books) > 0 {
+		store.books[category] = books
 	}
-	store.books[category] = books
 	store.done[category] = true
 	store.finished[category] = time.Now()
 }

@@ -483,12 +483,21 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]any{"books": books, "hasMore": hasMore, "origin": "hongguo"}, nil
 	// 全量书池：把整个频道一直翻到底。服务端建书库、App 首屏建池都用它，
 	// 单页接口只有 12 本，靠它才能拿到完整目录。
+	// 走进程内缓存 + 后台增量抓取：首次请求立刻返回已抓到的第一批（不阻塞到
+	// 全量翻完），切换书源命中缓存瞬时返回，前端按 loading 轮询补全。
 	case "audiobookHongguoPool":
-		books, err := engine.downloader.AudiobookHongguoPool(ctx, input.Category, input.Page)
-		if err != nil {
-			return nil, err
+		books, loading, _ := engine.downloader.audiobookHongguoPoolStart(ctx, input.Category, input.Page, input.Force)
+		stale := false
+		if snapshot, _, snapshotStale, ok := audiobookHongguoPoolSnapshot(input.Category); ok {
+			stale = snapshotStale
+			if len(books) == 0 && len(snapshot) > 0 {
+				books = snapshot
+			}
 		}
-		return map[string]any{"books": books, "origin": "hongguo"}, nil
+		return map[string]any{
+			"books": books, "origin": "hongguo",
+			"loading": loading, "stale": stale,
+		}, nil
 	case "audiobookHongguoSearch":
 		books, hasMore, err := engine.downloader.audiobookHongguoSearch(ctx, input.Category, input.Query, input.Page)
 		if err != nil {

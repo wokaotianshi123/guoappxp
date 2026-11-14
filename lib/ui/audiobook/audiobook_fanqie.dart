@@ -234,6 +234,25 @@ class FanqieOfficialResult {
   final List<String> tabs;
 }
 
+/// 红果书城全量书池的一次返回。
+///
+/// 全量翻页很慢（近百次请求、受站点限流约 70 秒），core 侧因此带缓存：
+/// [loading] 表示后台正在抓（此时 [books] 可能是空或旧数据），
+/// [stale] 表示返回的是过期缓存、正在后台刷新。
+class FanqieBookPool {
+  const FanqieBookPool({
+    required this.books,
+    this.loading = false,
+    this.stale = false,
+  });
+
+  final List<FanqieBook> books;
+  final bool loading;
+  final bool stale;
+
+  bool get isEmpty => books.isEmpty;
+}
+
 class FanqieChapterPage {
   const FanqieChapterPage({
     required this.chapters,
@@ -398,14 +417,20 @@ class FanqieAudiobookApi {
 
   // —— 红果听书（听书 / 小说）：数据来自红果 App 官方书城，与短剧共用设备签名 ----
 
-  /// 拉红果书城某个频道的书单。推荐流每次只回一批，pages 控制连拉几批。
-  /// 拉红果书城整个频道的书池。书城单页只有 12 本，靠 pool 接口一次翻到底，
-  /// 否则列表会停在十几本。
-  Future<List<FanqieBook>> hongguoPool(String category) async {
+  /// 拉红果书城整个频道的书池。
+  ///
+  /// 书城单页只有 12 本，靠 pool 接口一次翻到底，否则列表会停在十几本。
+  /// core 侧带进程内缓存：命中缓存立即返回；缓存为空且已有请求在抓时返回空列表，
+  /// 调用方按 [loading] 稍后重试即可，不要重复翻页。
+  Future<FanqieBookPool> hongguoPool(String category) async {
     final core = repository;
-    if (core == null) return const [];
+    if (core == null) return const FanqieBookPool(books: [], loading: false);
     final reply = await core.audiobookHongguoPool(category);
-    return fanqieHongguoBooks(reply);
+    return FanqieBookPool(
+      books: fanqieHongguoBooks(reply),
+      loading: reply['loading'] == true,
+      stale: reply['stale'] == true,
+    );
   }
 
   Future<List<FanqieBook>> hongguoCatalog(

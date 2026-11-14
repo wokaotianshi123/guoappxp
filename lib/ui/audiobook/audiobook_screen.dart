@@ -122,6 +122,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   /// 不再互相混入，切换书源时列表和分类一起换掉。
   Future<void> _loadPools() async {
     final token = ++_poolGeneration;
+    final origin = _origin;
     if (mounted) {
       setState(() {
         _poolLoading = true;
@@ -130,21 +131,30 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       });
     }
     try {
-      if (_origin == 0) {
-        // 红果听书：红果官方书城两个频道。书城单页只有 12 本，必须用 pool
-        // 接口一次翻到底，否则列表会停在十几本。
-        final listen = await _api.hongguoPool('listen');
-        final novel = await _api.hongguoPool('novel');
+      if (origin == 0) {
+        // 红果听书：红果官方书城两个频道。书城单页只有 12 本，靠 pool 接口
+        // 在后台翻到底；首次请求会立刻返回已抓到的第一批，不等全量翻完。
+        // 两个频道并发拉，别串行等。
+        final first = await Future.wait([
+          _api.hongguoPool('listen'),
+          _api.hongguoPool('novel'),
+        ]);
         if (!mounted || token != _poolGeneration) return;
+        final stillLoading = first[0].loading || first[1].loading;
         setState(() {
           _officialCategories = const [];
-          _malePool = listen;
-          _femalePool = novel;
-          _poolLoading = false;
-          _poolDone = true;
+          _malePool = first[0].books;
+          _femalePool = first[1].books;
+          _poolLoading = stillLoading;
+          _poolDone = !stillLoading;
           _rebuildSearch();
-          _error = _pool.isEmpty ? '红果听书暂时没有书' : null;
+          _error = _pool.isEmpty && !stillLoading ? '红果听书暂时没有书' : null;
         });
+        _rememberPool(origin);
+        if (stillLoading) {
+          // 后台还在翻页：轮询补全，书池逐步变大，界面一直可用。
+          unawaited(_pollHongguoPool(origin, token));
+        }
         return;
       }
 
@@ -182,6 +192,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         _rebuildSearch();
         _error = _pool.isEmpty ? '番茄畅听榜单暂时没有书' : null;
       });
+      _rememberPool(origin);
     } catch (error) {
       if (!mounted || token != _poolGeneration) return;
       setState(() {
@@ -191,13 +202,19 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     }
   }
 
-  /// 切书源：清掉当前书池、分类与搜索，重新按新书源加载。
+  /// 两个书源各自缓存一份书池：来回切换时直接复用，不重新翻页。
+  ///
+  /// 红果听书的全量书池要翻近百页（受站点限流约 70 秒），如果每次切书源都
+  /// 清空重抓，用户来回点两下就会卡死。这里把「书源 → 书池」存下来，
+  /// 切回去时立刻有内容，后台再按需刷新。
+  final Map<int, _AudiobookPoolCache> _poolCaches = {};
+
+  /// 切书源：有缓存就立刻显示，没有才加载。
   void _switchOrigin(int type) {
     if (_origin == type) return;
+    final cached = _poolCaches[type];
     setState(() {
       _origin = type;
-      _malePool = const [];
-      _femalePool = const [];
       _officialCategories = const [];
       _searchResults = const [];
       _remoteBooks = const [];
@@ -206,9 +223,126 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _page = 1;
       _board = fanqieAudiobookBoards.first;
       _error = null;
+      if (cached != null && cached.hasBooks) {
+        _malePool = cached.male;
+        _femalePool = cached.female;
+        _officialCategories = cached.categories;
+        _poolLoading = false;
+        _poolDone = cached.done;
+      } else {
+        _malePool = const [];
+        _femalePool = const [];
+        _poolLoading = true;
+        _poolDone = false;
+      }
     });
     _search.text = '';
-    unawaited(_loadPools());
+    if (cached != null && cached.hasBooks) {
+      // 已有内容：先让用户能看能播，过期数据交给后台刷新（core 侧带 TTL 缓存）。
+      unawaited(_refreshPoolsQuietly(type));
+    } else {
+      unawaited(_loadPools());
+    }
+  }
+
+  /// 红果书池还在后台翻页时轮询补全。
+  ///
+  /// 全量翻页受站点限流约需一分钟，但每攒够一批 core 就会发布，所以这里每
+  /// 1.5 秒取一次快照，书池逐步变大，用户不必干等。页面离开或切走书源即停。
+  Future<void> _pollHongguoPool(int origin, int token) async {
+    var quiet = 0;
+    while (mounted && token == _poolGeneration && _origin == origin) {
+      await Future<void>.delayed(const Duration(milliseconds: 1500));
+      if (!mounted || token != _poolGeneration || _origin != origin) return;
+      FanqieBookPool listen;
+      FanqieBookPool novel;
+      try {
+        final results = await Future.wait([
+          _api.hongguoPool('listen'),
+          _api.hongguoPool('novel'),
+        ]);
+        listen = results[0];
+        novel = results[1];
+      } catch (_) {
+        return;
+      }
+      if (!mounted || token != _poolGeneration || _origin != origin) return;
+      final grew = listen.books.length != _malePool.length ||
+          novel.books.length != _femalePool.length;
+      final stillLoading = listen.loading || novel.loading;
+      if (grew) quiet = 0;
+      if (grew || !stillLoading) {
+        setState(() {
+          _malePool = listen.books;
+          _femalePool = novel.books;
+          _poolLoading = stillLoading;
+          _poolDone = !stillLoading;
+          _rebuildSearch();
+          if (!stillLoading) {
+            _error = _pool.isEmpty ? '红果听书暂时没有书' : null;
+          }
+        });
+        _rememberPool(origin);
+      }
+      if (!stillLoading) return;
+      // 连续几轮都没增长说明抓取停了（失败或已到底），别无限轮询。
+      if (!grew && ++quiet >= 6) {
+        setState(() => _poolLoading = false);
+        return;
+      }
+    }
+  }
+
+  /// 后台静默刷新：不清空当前列表，只在拿到新数据后替换。
+  ///
+  /// 红果书池由 core 后台增量抓取，这里只触发一次并交给轮询补全；
+  /// 番茄榜单走 rankAll 的进度回调，直接覆盖即可。
+  Future<void> _refreshPoolsQuietly(int origin) async {
+    final token = ++_poolGeneration;
+    try {
+      if (origin == 0) {
+        final first = await Future.wait([
+          _api.hongguoPool('listen'),
+          _api.hongguoPool('novel'),
+        ]);
+        if (!mounted || token != _poolGeneration || _origin != origin) return;
+        final stillLoading = first[0].loading || first[1].loading;
+        setState(() {
+          _malePool = first[0].books;
+          _femalePool = first[1].books;
+          _poolLoading = stillLoading;
+          _poolDone = !stillLoading;
+          _rebuildSearch();
+        });
+        _rememberPool(origin);
+        if (stillLoading) unawaited(_pollHongguoPool(origin, token));
+        return;
+      }
+      final results = await Future.wait([
+        _api.rankAll(fanqieAudiobookBoards[0]),
+        _api.rankAll(fanqieAudiobookBoards[1]),
+      ]);
+      if (!mounted || token != _poolGeneration || _origin != origin) return;
+      setState(() {
+        _malePool = results[0];
+        _femalePool = results[1];
+        _poolDone = true;
+        _rebuildSearch();
+      });
+      _rememberPool(origin);
+    } catch (_) {
+      // 静默刷新失败不影响已显示的内容。
+    }
+  }
+
+  /// 把当前书池记到对应书源的缓存里。
+  void _rememberPool(int origin) {
+    _poolCaches[origin] = _AudiobookPoolCache(
+      male: _malePool,
+      female: _femalePool,
+      categories: _officialCategories,
+      done: _poolDone,
+    );
   }
 
   /// 分类只展示书池里确实有书的：高频基线标签 + 官方书城实时学到的分类。
@@ -2081,4 +2215,21 @@ class AudiobookNowPlayingBar extends StatelessWidget {
       },
     );
   }
+}
+
+/// 单个书源的书池快照，供切换书源时直接复用。
+class _AudiobookPoolCache {
+  const _AudiobookPoolCache({
+    required this.male,
+    required this.female,
+    required this.categories,
+    required this.done,
+  });
+
+  final List<FanqieBook> male;
+  final List<FanqieBook> female;
+  final List<String> categories;
+  final bool done;
+
+  bool get hasBooks => male.isNotEmpty || female.isNotEmpty;
 }

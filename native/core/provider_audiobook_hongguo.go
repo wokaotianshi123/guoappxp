@@ -22,6 +22,8 @@ import (
 	"net/url"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 )
 
 const (
@@ -282,16 +284,194 @@ func (d *Downloader) audiobookHongguoCatalog(ctx context.Context, category strin
 	return out, hasMore, ctx.Err()
 }
 
+// audiobookHongguoPoolEntry 是某个频道的书池缓存。
+//
+// 全量翻页要近百次请求，受「同一 host 每 250ms 一次」的限流约束，实测约 60 秒。
+// 用户在两个书源之间来回切换时如果每次都重抓，必然卡死。这里按频道缓存，
+// 并且**边翻边发布**：首屏只等第一批，其余在后台继续累积，
+// 前端按 loading 标记轮询即可逐步补全，不用干等一分钟。
+type audiobookHongguoPoolEntry struct {
+	books    []map[string]any
+	loadedAt time.Time // 全量抓完的时间；零值表示还没抓完过
+	loading  bool
+}
+
+var audiobookHongguoPoolCache = struct {
+	sync.Mutex
+	entries map[string]*audiobookHongguoPoolEntry
+}{entries: map[string]*audiobookHongguoPoolEntry{}}
+
+const audiobookHongguoPoolTTL = 30 * time.Minute
+
+// audiobookHongguoPoolSnapshot 读某频道的书池快照与状态。
+func audiobookHongguoPoolSnapshot(category string) (books []map[string]any, loading, stale, ok bool) {
+	spec, valid := audiobookHongguoCategoryFor(category)
+	if !valid {
+		return nil, false, false, false
+	}
+	cache := &audiobookHongguoPoolCache
+	cache.Lock()
+	defer cache.Unlock()
+	entry := cache.entries[spec.ID]
+	if entry == nil {
+		return nil, false, false, true
+	}
+	books = append([]map[string]any(nil), entry.books...)
+	loading = entry.loading
+	// loadedAt 为零说明从没抓完过，这份数据只是「不完整」，不算过期。
+	stale = !entry.loadedAt.IsZero() && time.Since(entry.loadedAt) >= audiobookHongguoPoolTTL
+	return books, loading, stale, true
+}
+
+// audiobookHongguoPoolStart 确保某频道有后台抓取在跑，并返回当前快照。
+//
+// 首次调用（缓存为空）会**短暂阻塞**等首屏那一批（约 1.5 秒，只有一次请求），
+// 让界面立刻有书可看；之后的全量翻页在后台继续，调用方按 loading 轮询补全。
+// 已有缓存时立即返回，切换书源零等待。force 为 true 时即使缓存新鲜也重抓。
+func (d *Downloader) audiobookHongguoPoolStart(ctx context.Context, category string, maxPages int, force bool) ([]map[string]any, bool, bool) {
+	spec, ok := audiobookHongguoCategoryFor(category)
+	if !ok {
+		return nil, false, false
+	}
+	cache := &audiobookHongguoPoolCache
+	cache.Lock()
+	entry := cache.entries[spec.ID]
+	if entry == nil {
+		entry = &audiobookHongguoPoolEntry{}
+		cache.entries[spec.ID] = entry
+	}
+	fresh := !entry.loadedAt.IsZero() && time.Since(entry.loadedAt) < audiobookHongguoPoolTTL
+	needFetch := force || !fresh
+	empty := len(entry.books) == 0
+	alreadyLoading := entry.loading
+	if needFetch && !alreadyLoading {
+		entry.loading = true
+		go d.audiobookHongguoPoolRun(context.WithoutCancel(ctx), spec, maxPages)
+	}
+	books := append([]map[string]any(nil), entry.books...)
+	cache.Unlock()
+
+	// 缓存为空且本轮刚开始：等首屏那一批，别让界面空着。
+	// 窗口给 8 秒：两个频道并发时请求要排队过限流（同一 host 每 250ms 一次），
+	// 首个 feed 加上排队大约 1.5~4 秒，窗口太短会白等一场空。
+	if empty && !alreadyLoading {
+		if seeded := d.audiobookHongguoPoolWaitSeed(ctx, spec.ID, 8*time.Second); len(seeded) > 0 {
+			books = seeded
+		}
+	}
+	cache.Lock()
+	loading := cache.entries[spec.ID].loading
+	if len(books) == 0 {
+		books = append([]map[string]any(nil), cache.entries[spec.ID].books...)
+	}
+	cache.Unlock()
+	return books, loading, needFetch
+}
+
+// audiobookHongguoPoolWaitSeed 短暂等待后台任务发布第一批书。
+func (d *Downloader) audiobookHongguoPoolWaitSeed(ctx context.Context, key string, limit time.Duration) []map[string]any {
+	deadline := time.Now().Add(limit)
+	for {
+		cache := &audiobookHongguoPoolCache
+		cache.Lock()
+		entry := cache.entries[key]
+		var books []map[string]any
+		loading := false
+		if entry != nil {
+			books = append([]map[string]any(nil), entry.books...)
+			loading = entry.loading
+		}
+		cache.Unlock()
+		if len(books) > 0 || !loading || time.Now().After(deadline) || ctx.Err() != nil {
+			return books
+		}
+		select {
+		case <-ctx.Done():
+			return nil
+		case <-time.After(120 * time.Millisecond):
+		}
+	}
+}
+
+// audiobookHongguoPoolRun 后台翻页，边翻边发布，让前端逐步看到书池变大。
+func (d *Downloader) audiobookHongguoPoolRun(ctx context.Context, spec audiobookHongguoCategory, maxPages int) {
+	cache := &audiobookHongguoPoolCache
+	publish := func(books []map[string]any, done bool) {
+		cache.Lock()
+		defer cache.Unlock()
+		entry := cache.entries[spec.ID]
+		if entry == nil {
+			return
+		}
+		if len(books) > 0 {
+			entry.books = books
+		}
+		if done {
+			entry.loading = false
+			if len(entry.books) > 0 {
+				entry.loadedAt = time.Now()
+			}
+		}
+	}
+	// 每攒够一批就发布一次：首屏很快有内容，后面继续补。
+	// 第一批用 20 本这个较低的门槛，保证首屏 1~2 秒内就有书可看。
+	published := 0
+	threshold := 20
+	progress := func(books []map[string]any) {
+		if len(books)-published >= threshold {
+			published = len(books)
+			threshold = 40
+			publish(books, false)
+		}
+	}
+	books, err := d.audiobookHongguoPoolCollect(ctx, spec, maxPages, progress)
+	if err != nil && len(books) == 0 {
+		// 一本都没抓到：结束本轮，下次请求会重试。
+		publish(nil, true)
+		return
+	}
+	publish(books, true)
+}
+
+// audiobookHongguoPoolRefresh 同步抓取并写回缓存（测试与需要阻塞的调用方用）。
+func (d *Downloader) audiobookHongguoPoolRefresh(ctx context.Context, spec audiobookHongguoCategory, maxPages int) ([]map[string]any, error) {
+	books, err := d.AudiobookHongguoPool(ctx, spec.ID, maxPages)
+	cache := &audiobookHongguoPoolCache
+	cache.Lock()
+	defer cache.Unlock()
+	entry := cache.entries[spec.ID]
+	if entry == nil {
+		entry = &audiobookHongguoPoolEntry{}
+		cache.entries[spec.ID] = entry
+	}
+	entry.loading = false
+	// 抓失败但已有旧数据时保留旧的，避免站点抖动把书池清空。
+	if err == nil && len(books) > 0 {
+		entry.books = books
+		entry.loadedAt = time.Now()
+	}
+	return books, err
+}
+
 // AudiobookHongguoPool 连续翻页抓取整个频道，返回去重后的书单。
 //
 // 服务端要一次供全量书库（前端本地分页/分类都靠它），单页接口只给 12 本，
 // 因此这里把 cell/change 一直翻到底。maxPages 是安全上限，避免站点异常时
 // 无限请求；每页之间会检查 ctx，前端关页面能立刻停。
+//
+// 注意：这是「无条件重抓」的底层实现（约 60 秒），调用方一般应该用
+// audiobookHongguoPoolStart，否则每次切书源都要等一分钟。
 func (d *Downloader) AudiobookHongguoPool(ctx context.Context, category string, maxPages int) ([]map[string]any, error) {
 	spec, ok := audiobookHongguoCategoryFor(category)
 	if !ok {
 		return nil, errors.New("红果听书分类无效")
 	}
+	return d.audiobookHongguoPoolCollect(ctx, spec, maxPages, nil)
+}
+
+// audiobookHongguoPoolCollect 是翻页抓取的实际实现。
+// progress 非空时每抓完一页回调一次，供后台任务增量发布。
+func (d *Downloader) audiobookHongguoPoolCollect(ctx context.Context, spec audiobookHongguoCategory, maxPages int, progress func([]map[string]any)) ([]map[string]any, error) {
 	if maxPages < 1 || maxPages > 200 {
 		maxPages = 60
 	}
@@ -319,6 +499,10 @@ func (d *Downloader) AudiobookHongguoPool(ctx context.Context, category string, 
 		return added
 	}
 	appendBooks(first)
+	// 首屏这批立刻回调：界面马上有书可看，不用等 cell 翻页攒够一批。
+	if progress != nil && len(out) > 0 {
+		progress(append([]map[string]any(nil), out...))
+	}
 	if cellID == "" {
 		return out, ctx.Err()
 	}
@@ -336,6 +520,9 @@ func (d *Downloader) AudiobookHongguoPool(ctx context.Context, category string, 
 			return nil, err
 		}
 		added := appendBooks(books)
+		if progress != nil && added > 0 {
+			progress(append([]map[string]any(nil), out...))
+		}
 		if !hasMore || added == 0 {
 			break
 		}
