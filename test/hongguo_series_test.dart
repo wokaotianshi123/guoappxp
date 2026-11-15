@@ -22,6 +22,18 @@ void main() {
       expect(entries.map((entry) => entry.season).toList(), [1, 2, 3]);
     });
 
+    test('打开第二季时，不带季号的第一季仍出现在系列里', () {
+      // 与 Go 侧 seasons 分组一致：红果第一季常只叫基础名，不写「第一季」。
+      final anchor = _hongguoDrama('1', '长夜将明第二季');
+      final entries = hongguoSeriesEntries(anchor, [
+        _hongguoDrama('2', '长夜将明'),
+        _hongguoDrama('3', '长夜将明第三季'),
+        _hongguoDrama('4', '长夜将明之归途第二季'),
+      ]);
+      expect(entries.map((entry) => entry.season).toList(), [1, 2, 3]);
+      expect(entries.first.drama.id, 'hongguo:2');
+    });
+
     test('当前剧没写季号时按第 1 季算，后续季仍能识别', () {
       final anchor = _hongguoDrama('10', '旧城故事');
       final entries = hongguoSeriesEntries(anchor, [
