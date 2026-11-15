@@ -732,6 +732,14 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if !isHuangguoProviderSource(source) {
 		return nativeCatalogResult{}, errors.New("请选择有效站源")
 	}
+	// 站源模块的分类由它自己的 JS 判定（descriptor.ValidCategory 指向模块的
+	// validCategory），而 JS 实例是取 Provider 时才建出来的。这里先把 Provider
+	// 建好，否则「实例还不存在」会让模块源第一次带分类的请求被判成无效分类；
+	// 前端先拉分类再进目录时看不出来，直接带分类请求（单源搜索、恢复上次分类）
+	// 就会踩。
+	if isModuleProviderSource(source) {
+		engine.downloader.sourceProvider(source)
+	}
 	category := strings.TrimSpace(input.Category)
 	if !validNativeCategory(source, category) {
 		return nativeCatalogResult{}, errors.New("内容分类无效")

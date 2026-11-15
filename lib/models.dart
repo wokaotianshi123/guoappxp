@@ -134,7 +134,7 @@ class SourceSite {
   /// 自定义源 ID → 显示名，让观看记录、追剧、下载等处的来源标签能显示真实名称。
   static final Map<String, String> customNames = {};
 
-  /// 已安装站源模块提供的源 ID（与本体同名时是核心改过的 `mod:<标识>`）。
+  /// 已安装站源模块提供的源 ID（与本体同名时是核心改过的 `mod-<标识>`）。
   /// 模块源的启用状态、显示名称、来源标签都按这个表走，与内置源同一套逻辑。
   static final Set<String> moduleIds = {};
 

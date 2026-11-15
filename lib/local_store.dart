@@ -280,20 +280,19 @@ class LocalStore extends ChangeNotifier {
       final serialized = jsonEncode(
         sorted.map((site) => site.toJson()).toList(),
       );
-      Error? failure;
       if (serialized != _string('moduleSources')) {
         try {
           await _commit({'moduleSources': serialized});
-        } catch (error) {
-          // 与自定义源同理：写盘失败也要让内存里的模块源生效，
-          // 否则刚装好的模块在重启前一直不可见。
-          failure = error is Error ? error : StateError('$error');
+        } catch (_) {
+          // 这里刻意不把写盘失败抛给界面：模块源是核心状态的缓存——真正的事实
+          // 在核心的模块目录里，每次启动都会重新同步一次。写盘失败（例如字段表
+          // 与旧版本不一致）不该让「模块」页整页报错、也不该挡住安装。
+          // 内存里的列表照样生效（见下面的 _syncModuleIds）。
         }
       }
       _moduleSources = sorted;
       _syncModuleIds();
       _notify();
-      if (failure != null) throw failure;
     });
   }
 

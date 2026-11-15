@@ -44,7 +44,7 @@ type nativeModuleInfo struct {
 	Previous     string   `json:"previous,omitempty"`
 	Token        string   `json:"token,omitempty"`
 	Error        string   `json:"error,omitempty"`
-	// SourceID 是模块在站源列表里实际用的 ID。与本体站源同名时带 mod: 前缀，
+	// SourceID 是模块在站源列表里实际用的 ID。与本体站源同名时带 mod- 前缀，
 	// 前端用它把模块源登记进源列表并与同名的本体源区分开。
 	SourceID string `json:"sourceId,omitempty"`
 }

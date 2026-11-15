@@ -656,7 +656,7 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 		}
 	}
 	// 并入站源模块提供的站源，使装上的模块也能在下拉框里切换。
-	// 与本体同名的模块在核心侧已改名成 mod:<标识>，两者各占一个条目。
+	// 与本体同名的模块在核心侧已改名成 mod-<标识>，两者各占一个条目。
 	for source, name := range moduleSources {
 		if sourceAvailable(source) {
 			items = append(items, map[string]any{

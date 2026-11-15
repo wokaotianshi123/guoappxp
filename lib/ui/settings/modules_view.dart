@@ -21,7 +21,7 @@ import 'settings_rows.dart';
 ///
 /// 模块是可安装的站源。装上的模块提供的站源会立刻出现在站源管理与源显示列表里，
 /// 与内置源、自定义源用同一套开关；与本体同名的模块（例如红果、笔盒）由核心
-/// 改成 `mod:<标识>` 登记，界面标出「（模块）」，两者共存互不影响。
+/// 改成 `mod-<标识>` 登记，界面标出「（模块）」，两者共存互不影响。
 class ModulesView extends StatefulWidget {
   const ModulesView({super.key, required this.store});
   final LocalStore store;

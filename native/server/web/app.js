@@ -2353,7 +2353,7 @@ function bindSourceVisibilityView() {
 //
 // 模块是运行时加载的 JS 站源：装上之后它提供的站源会出现在站源下拉框与
 // 源显示列表里，与内置源、自定义源一样可以开关。与本体同名的模块由 Go 核心
-// 改名成 mod:<标识>，两者共存互不影响。
+// 改名成 mod-<标识>，两者共存互不影响。
 
 function moduleList() {
   return fetch('/api/modules')

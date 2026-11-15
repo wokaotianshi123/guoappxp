@@ -110,18 +110,8 @@ func splitProviderDramaID(id string) (source, sourceID string, ok bool) {
 		}
 		return "", "", false
 	}
-	// 与本体站源同名的模块会以 mod:<标识> 登记（见 moduleSourceID），标识里的冒号
-	// 同样要按第二个冒号拆，否则模块源的剧集一切到详情就被判成源名 "mod"。
-	if strings.HasPrefix(trimmed, moduleSourcePrefix) {
-		if rest, tail, found := strings.Cut(strings.TrimPrefix(trimmed, moduleSourcePrefix), ":"); found && strings.TrimSpace(rest) != "" && strings.TrimSpace(tail) != "" {
-			source = moduleSourcePrefix + rest
-			if !isModuleProviderSource(source) {
-				return "", "", false
-			}
-			return source, strings.TrimSpace(tail), true
-		}
-		return "", "", false
-	}
+	// 与本体站源同名的模块会以 mod-<标识> 登记（见 moduleSourceID）。前缀刻意不带
+	// 冒号，剧集 ID 就是普通的「<站源 ID>:<站内 ID>」，这里不需要特殊拆分。
 	source, sourceID, ok = strings.Cut(trimmed, ":")
 	source = canonicalProviderSource(source)
 	if !ok || strings.TrimSpace(sourceID) == "" || !isHuangguoProviderSource(source) {

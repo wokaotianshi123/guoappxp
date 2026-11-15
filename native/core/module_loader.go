@@ -7,7 +7,7 @@ package core
 //
 // 与上游的唯一差别在冲突处理：guoappxp 已经把红果、番茄、笔盒等源编进本体，
 // 上游模块商店里的同名模块（hongguo、beabox…）会撞车。上游遇到冲突直接判失败，
-// 这里改成「模块另行标记、两边共存」——模块标识被占用时以 mod:<标识> 登记
+// 这里改成「模块另行标记、两边共存」——模块标识被占用时以 mod-<标识> 登记
 // （见 moduleSourceID），界面上一律标出它是模块源。
 
 import (
@@ -35,9 +35,12 @@ const (
 	moduleEntry       = "main.js"
 	moduleEntryBytes  = 4 << 20
 	moduleStatePrefix = "module-"
-	// moduleSourcePrefix 是模块标识与已有站源冲突时加的前缀。带冒号是为了和自定义源
-	// 的 custom: 保持一致，拆剧集 ID 时按同样的规则处理（见 splitProviderDramaID）。
-	moduleSourcePrefix = "mod:"
+	// moduleSourcePrefix 是模块标识与已有站源冲突时加的前缀。
+	//
+	// 必须去掉冒号：模块拿到的 task.dramaId 是「<站源 ID>:<站内 ID>」，而模块
+	// 按上游契约自行解析它（典型写法是取第一个冒号前后两段），带冒号的前缀会把
+	// 它的解析整段错位——实测笔盒模块直接抛「播放信息无效」，目录能看、点播就挂。
+	moduleSourcePrefix = "mod-"
 )
 
 var moduleIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
@@ -99,7 +102,7 @@ type jsModule struct {
 	capabilities map[reflect.Type]bool
 	active       atomic.Pointer[jsProvider]
 	// registeredID 是真正登记进站源注册表的 ID。与已有站源冲突时是
-	// mod:<标识>，其余情况等于 manifest.ID。剧集 ID 与 host.source 都用它。
+	// mod-<标识>，其余情况等于 manifest.ID。剧集 ID 与 host.source 都用它。
 	registeredID string
 }
 
@@ -116,7 +119,11 @@ var loadedModules = struct {
 }{byName: map[string]string{}, sources: map[string]bool{}}
 
 // moduleSourceID 决定模块登记用的站源 ID：标识没被占用就用模块自己的标识，
-// 被占用（例如本体已编入红果、笔盒）时加 mod: 前缀另行标记，与本体源共存。
+// 被占用（例如本体已编入红果、笔盒）时加 mod- 前缀另行标记，与本体源共存。
+//
+// 前缀不能带冒号：剧集 ID 是「<站源 ID>:<站内 ID>」，模块自己按第一个冒号拆它
+// （上游契约的通用写法），带冒号的前缀会让模块把前缀当成站源 ID，取流时判为
+// 「播放信息无效」。
 func moduleSourceID(manifest ModuleManifest) string {
 	if !registeredProviderSource(manifest.ID) {
 		return manifest.ID
@@ -124,7 +131,7 @@ func moduleSourceID(manifest ModuleManifest) string {
 	return moduleSourcePrefix + manifest.ID
 }
 
-// isModuleProviderSource 判断站源是不是运行时加载的模块（含冲突改名后的 mod: 前缀）。
+// isModuleProviderSource 判断站源是不是运行时加载的模块（含冲突改名后的 mod- 前缀）。
 //
 // 模块源不受本体的「版本裁剪」门控：它不在编译期的源清单里，用户在模块页装上
 // 就应该能用，红果鉴与真果鉴一致。
@@ -333,7 +340,7 @@ func (d *Downloader) registerModuleLocked(name string) {
 	loadedModules.sources[module.registeredID] = true
 	if module.registeredID != module.manifest.ID {
 		// 冲突改名是正常情况（本体已经有同名站源），记一条信息日志方便排查
-		// 「为什么模块装上了却多出一个带 mod: 前缀的源」。
+		// 「为什么模块装上了却多出一个带 mod- 前缀的源」。
 		d.recordDiagnostic(diagnosticEvent{Time: time.Now(), Level: "info", Event: "module_load", Source: name,
 			Message: fmt.Sprintf("模块 %s 与已有站源同名，改以站源 %s 注册", module.manifest.ID, module.registeredID)})
 	}

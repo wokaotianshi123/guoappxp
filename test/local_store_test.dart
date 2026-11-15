@@ -113,7 +113,7 @@ void main() {
     test('module sources round-trip without locking the store', () async {
       final store = await openStore();
       await store.syncModuleSources(const [
-        ModuleSourceSite(id: 'mod:hongguo', name: '红果', search: true),
+        ModuleSourceSite(id: 'mod-hongguo', name: '红果', search: true),
         ModuleSourceSite(id: 'missav', name: 'MissAV'),
       ]);
 
@@ -124,14 +124,14 @@ void main() {
       final restarted = restartStore(store);
       expect(restarted.moduleSources.map((site) => site.id), [
         'missav',
-        'mod:hongguo',
+        'mod-hongguo',
       ]);
       // 模块源要登记进 SourceSite 才在源栏、搜索与源显示列表里可用，
       // 并且一律带「（模块）」标注，与同名的本体源区分开。
-      expect(restarted.sources.map((site) => site.id), contains('mod:hongguo'));
-      expect(SourceSite.isAvailable('mod:hongguo'), isTrue);
+      expect(restarted.sources.map((site) => site.id), contains('mod-hongguo'));
+      expect(SourceSite.isAvailable('mod-hongguo'), isTrue);
       expect(SourceSite.isAvailable('missav'), isTrue);
-      expect(SourceSite.byId('mod:hongguo').name, '红果（模块）');
+      expect(SourceSite.byId('mod-hongguo').name, '红果（模块）');
     });
 
     test('the cross-source search switch survives a restart', () async {

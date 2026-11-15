@@ -54,7 +54,7 @@ func moduleItems() []moduleInfo {
 
 // moduleSourceNames 返回模块提供的站源：(站源 ID → 显示名)。
 //
-// 站源 ID 与模块标识同名时带 mod: 前缀（核心侧改名，见 core.moduleSourceID），
+// 站源 ID 与模块标识同名时带 mod- 前缀（核心侧改名，见 core.moduleSourceID），
 // 显示名统一带「（模块）」标注，与同名的本体源区分开。
 func moduleSourceNames() map[string]string {
 	names := map[string]string{}

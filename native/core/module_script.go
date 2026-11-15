@@ -3,7 +3,7 @@ package core
 // JS 模块站源的执行层：把模块导出的函数映射成 Provider 接口的实现。
 //
 // 移植自 guoappxpx。与上游的差别只有三处：
-//   - 站源标识用 module.id()（冲突改名后可能带 mod: 前缀）；
+//   - 站源标识用 module.id()（冲突改名后可能带 mod- 前缀）；
 //   - 文本请求不带镜像列表（guoappxp 的 TextRequest 没有 Mirrors 字段）；
 //   - 日志落到运行时的诊断日志（host 是 xpxHost 包装，不是 Downloader 本身）。
 
@@ -444,7 +444,8 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 	return host
 }
 
-// moduleStateName 拼站源状态文件名。模块站源 ID 可能带 mod: 前缀，
+// moduleStateName 拼站源状态文件名。前缀本身不带冒号，这里只是沿用同一套
+// 文件名清洗（冒号在 Windows 文件名里非法），防止将来换前缀时踩坑。
 // 而冒号在 Windows 文件名里非法，因此写盘前把它换成连字符。
 func moduleStateName(id, name string) string {
 	return moduleStatePrefix + strings.ReplaceAll(id, ":", "-") + "-" + name
