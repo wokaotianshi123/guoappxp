@@ -2,6 +2,24 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 未发布：系列多季补齐第一季、启动默认发现页不加载听书
+
+### 系列多季缺第一季
+- 问题：打开第二季及以后时，「系列多季」卡片条里缺少第一季。红果的第一季通常不写季号、标题就是基础名（如「长夜将明」），而 `hongguoSeasonGroup` 与缺失季补搜循环把 `hongguoSearchSeason` 返回 `season==0` 的候选一律丢弃。
+- 修复：`native/core/provider_hongguo_seasons.go` 新增 `hongguoSeasonMember()`，把「无季号后缀、标题归一化后正好等于系列基础名」的候选识别为第 1 季；带季号的候选仍校验单位与基础名，「某某之续集」「第X部」不会混入。分组和补搜两处统一走这个判定。
+- 另外，当前剧标题明确带季号时，即使首轮搜索候选不足两季也不再立即放弃，而是继续补搜第一季（原先 `len(member) < 2` 直接返回空，补搜根本没机会跑）。
+- 新增回归测试：`native/core/provider_hongguo_seasons_test.go` 4 例（含「部」单位、打开第一季行为不变、只有精确基础名才认第一季）；`test/hongguo_series_test.dart` 补 1 例保持 Dart 侧一致。
+
+### 启动默认「发现」时不加载听书模块
+- 问题：`AppShell` 用 `IndexedStack` 一次性构建全部 5 个标签的 `Navigator` 与根页面，启动停在「发现」时 `AudiobookScreen` 也会 `initState → _loadPools()`，红果听书首屏请求和发现页抢限流 / IPC / CPU。
+- 修复：`lib/ui/shell/app_shell.dart` 引入 `initialMountedTabs()` 与 `_mountedTabs`：启动时听书位置用空占位对齐 index，不构建页面、不触发任何数据加载；用户第一次切到「听书」时由 `_select` 在同一次 build 里换成真实 `Navigator` 并加载，之后一直保留状态，切回不重建、不重复加载。其余标签行为不变，顶栏焦点由宿主持有不受影响。
+- 新增 `test/app_shell_lazy_tabs_test.dart`（2 例）锁住「启动不挂载听书」与「切回幂等」策略。
+
+### 验证
+- `go build ./core ./server`、`go vet ./core ./server` 通过；`go test ./core -run HongguoSeason` 8 例全绿、`go test ./server` 全绿。
+- `go test ./core` 全量仍有 4 例因沙箱环境失败（ffmpeg 缺 `libx264` 编码器、`/var/tmp` 缓存目录策略），与本次改动无关，且与上一批结果完全一致。
+- 改动 Dart 文件经 Dart 3.12 `dart format` 语法解析通过；Flutter widget 测试因环境 Flutter SDK 自带 Dart 2.17 低于项目 `>=3.12.0` 未运行，需本地 `flutter test` 复跑。
+
 ## 未发布：红果听书改为按需加载
 
 修复打开软件时红果听书抢占资源、把界面拖卡的问题，App 端与本地 Web 服务版一起改。
