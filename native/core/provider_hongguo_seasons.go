@@ -19,6 +19,32 @@ type hongguoSeason struct {
 	Drama  Drama
 }
 
+// hongguoSeasonMember 判断候选剧是否属于同一系列，并返回它的季号。
+//
+// 红果的第一季通常不写季号，标题就是基础名（如「长夜将明」），
+// hongguoSearchSeason 对这种标题返回 season=0。以前分组和补搜都把
+// season==0 直接丢掉，导致打开第二季及以后时「系列多季」里永远缺第一季。
+// 这里把「无季号但标题归一化后正好等于系列基础名」的候选按第 1 季处理；
+// 带季号的候选仍要求单位与基础名都一致，避免把「某某之续集」「第X部」混进来。
+func hongguoSeasonMember(title, key, unit string) (int, string, bool) {
+	if key == "" || unit == "" {
+		return 0, "", false
+	}
+	text := strings.TrimSpace(title)
+	base, season, candidateUnit, label := hongguoSearchSeason(text)
+	if season == 0 {
+		// 没有季号后缀：只有标题本身就是系列基础名时才算第一季。
+		if candidateUnit == "" && hongguoSearchText(text) == key {
+			return 1, "", true
+		}
+		return 0, "", false
+	}
+	if candidateUnit != unit || hongguoSearchText(base) != key {
+		return 0, "", false
+	}
+	return season, label, true
+}
+
 // hongguoSeasonGroup 把同一部剧的各季收成一组。
 //
 // 红果官方没有单独的「系列剧」接口：同一部剧的每季是独立剧集，标题带
@@ -67,8 +93,8 @@ func hongguoSeasonGroup(anchor Drama, candidates []Drama) (map[int]Drama, string
 		if drama.ID == "" || drama.ID == anchor.ID {
 			continue
 		}
-		candidateBase, season, candidateUnit, _ := hongguoSearchSeason(drama.DisplayTitle())
-		if season == 0 || candidateUnit != unit || hongguoSearchText(candidateBase) != key {
+		season, _, ok := hongguoSeasonMember(drama.DisplayTitle(), key, unit)
+		if !ok {
 			continue
 		}
 		if _, exists := member[season]; exists {
@@ -109,7 +135,10 @@ func (downloader *Downloader) hongguoSeriesSeasons(ctx context.Context, sourceID
 		}
 	}
 	member, key, unit := hongguoSeasonGroup(anchor, candidates)
-	if len(member) < 2 {
+	if len(member) < 2 && number == 0 {
+		// 当前剧没写季号、同名候选也没凑出多季：按单季处理，不显示卡片条。
+		// 但标题明确写着「第二季」时必然存在第一季，即便首轮搜索没带回来，
+		// 也要继续走下面的补搜，把第一季补出来。
 		return nil, nil
 	}
 
@@ -144,8 +173,8 @@ func (downloader *Downloader) hongguoSeriesSeasons(ctx context.Context, sourceID
 			if drama.ID == "" || drama.ID == anchorID {
 				continue
 			}
-			candidateBase, season, candidateUnit, label := hongguoSearchSeason(drama.DisplayTitle())
-			if season == 0 || candidateUnit != unit || hongguoSearchText(candidateBase) != key {
+			season, label, ok := hongguoSeasonMember(drama.DisplayTitle(), key, unit)
+			if !ok {
 				continue
 			}
 			if _, exists := member[season]; exists {

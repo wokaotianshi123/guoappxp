@@ -33,6 +33,15 @@ enum AppTab {
   final IconData selectedIcon;
 }
 
+/// 启动时就挂载的标签：默认停在「发现」，听书页暂不进树。
+///
+/// [IndexedStack] 会一次性构建所有 children，听书页只要在树里就会立刻
+/// `initState → _loadPools()`，红果听书首屏请求和发现页抢限流 / IPC / CPU，
+/// 打开软件就被拖卡。听书改为用户第一次切过去时才挂载（见 [_AppShellState]）。
+/// 单独抽出来便于回归测试锁住这条策略。
+Set<AppTab> initialMountedTabs() =>
+    <AppTab>{...AppTab.values}..remove(AppTab.audiobook);
+
 Future<T?> openPage<T>(BuildContext context, WidgetBuilder builder) =>
     Navigator.of(
       context,
@@ -69,6 +78,11 @@ class _AppShellState extends State<AppShell> {
   var _tab = AppTab.explore;
   var _headerFocused = false;
   FocusNode? _lastFocus;
+
+  /// 只有访问过的标签才把根页面挂进 [IndexedStack]；未访问的用空占位保持
+  /// index 对齐，不构建页面、不触发任何数据加载。切到某标签时由 [_select]
+  /// 同帧换成真实 Navigator，之后一直保留状态，不会重复初始化或重复加载。
+  final Set<AppTab> _mountedTabs = initialMountedTabs();
 
   /// 首页「再按一次返回退出应用」的倒计时窗口；非空时下一次返回键才真正退出。
   Timer? _exitWindow;
@@ -122,7 +136,11 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
-  void _select(AppTab tab) => setState(() => _tab = tab);
+  void _select(AppTab tab) => setState(() {
+    _tab = tab;
+    // 切过去的同时把该标签挂进树里，同一次 build 生效，不会闪出空白页。
+    _mountedTabs.add(tab);
+  });
 
   /// 点底部导航 / 侧栏：
   /// - 换标签：直接切；
@@ -314,20 +332,25 @@ class _AppShellState extends State<AppShell> {
         index: _tab.index,
         children: [
           for (final tab in AppTab.values)
-            Navigator(
-              key: _navigators[tab.index],
-              routeTraversalEdgeBehavior: TraversalEdgeBehavior.parentScope,
-              routeDirectionalTraversalEdgeBehavior:
-                  TraversalEdgeBehavior.parentScope,
-              onGenerateInitialRoutes: (_, _) => [
-                MaterialPageRoute<void>(
-                  builder: (_) => PrimaryScrollController(
-                    controller: _tabScrolls[tab.index],
-                    child: _root(tab),
+            if (_mountedTabs.contains(tab))
+              Navigator(
+                key: _navigators[tab.index],
+                routeTraversalEdgeBehavior: TraversalEdgeBehavior.parentScope,
+                routeDirectionalTraversalEdgeBehavior:
+                    TraversalEdgeBehavior.parentScope,
+                onGenerateInitialRoutes: (_, _) => [
+                  MaterialPageRoute<void>(
+                    builder: (_) => PrimaryScrollController(
+                      controller: _tabScrolls[tab.index],
+                      child: _root(tab),
+                    ),
                   ),
-                ),
-              ],
-            ),
+                ],
+              )
+            else
+              // 未访问过的标签用空占位对齐 index：不构建根页面，
+              // 也就不会在默认「发现」页时提前加载听书模块。
+              const SizedBox.shrink(),
         ],
       ),
     );
