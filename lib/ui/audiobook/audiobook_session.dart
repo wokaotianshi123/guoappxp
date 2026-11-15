@@ -7,6 +7,7 @@ import 'package:media_kit/media_kit.dart';
 import 'audiobook_download.dart';
 import 'audiobook_fanqie.dart';
 import 'audiobook_store.dart';
+import 'audiobook_stream_proxy.dart';
 import '../../core_bridge.dart';
 
 enum AudiobookSleep {
@@ -229,6 +230,24 @@ class AudiobookSession extends ChangeNotifier {
         remote: remote,
       );
       if (target.url.isEmpty) throw AppFailure('这一章暂时没有音频地址');
+      // 在线音频一律走本机代理：URL 带 .m4a 扩展名让 libmpv 能稳定探测
+      // 容器，上游 Referer / User-Agent 由 Dart 侧注入，不再依赖播放器转发
+      // 请求头（Windows 的 libmpv 常忽略 httpHeaders，红果 CDN 返回非音频
+      // 内容，表现正是「进度在走但没有声音」）。核心较新时已给出指向本机
+      // 的 streamUrl，那段地址直接复用、不再二次代理。
+      var playUrl = target.url;
+      var playHeaders = target.headers;
+      if (!target.local && !isLoopbackAudiobookUrl(playUrl)) {
+        try {
+          playUrl = await AudiobookStreamProxy.instance.register(
+            target.url,
+            target.headers,
+          );
+          playHeaders = const <String, String>{};
+        } catch (_) {
+          // 极端环境起不了本机服务：退回直连，至少还能尝试播放。
+        }
+      }
       final platform = player.platform;
       if (platform is NativePlayer) {
         if (Platform.isAndroid) {
@@ -251,17 +270,10 @@ class AudiobookSession extends ChangeNotifier {
             if (target.key.isNotEmpty) 'decryption_key=${target.key}',
           ].join(','),
         );
-        // Windows 的 libmpv 在 URL 无扩展名时探测不到 mov 容器，mov
-        // demuxer 的私有选项 decryption_key 就不会被应用，CENC 音频被
-        // 解成静音（时长与进度都正常）。走本机流地址后扩展名已确定，
-        // 这里对加密音频再显式锁定格式，避免回退直连时复现无声。
-        if (Platform.isWindows && target.key.isNotEmpty) {
-          try {
-            await platform.setProperty('demuxer-lavf-format', 'mov');
-          } catch (_) {
-            // 当前 libmpv 不支持该属性时忽略：本机流地址已能保证探测。
-          }
-        }
+        // 不显式锁定 demuxer-lavf-format：红果 / 番茄的章节可能是 mp4、
+        // m4a、mp3 或 HLS 分片，强行锁 mov 反而会让非 mov 容器解不出音轨。
+        // 本机代理给的地址带 .m4a 扩展名，libmpv 自己探测即可；CENC 的
+        // decryption_key 仍通过上面的 demuxer-lavf-o 传给 mov demuxer。
         if (!target.local) await platform.setProperty('network-timeout', '20');
       }
       if (generation != _generation) {
@@ -271,8 +283,8 @@ class AudiobookSession extends ChangeNotifier {
       await player.setRate(speed);
       await player.open(
         Media(
-          target.url,
-          httpHeaders: target.headers,
+          playUrl,
+          httpHeaders: playHeaders,
           start: _resumeFloor > 0.5
               ? Duration(milliseconds: (_resumeFloor * 1000).round())
               : null,

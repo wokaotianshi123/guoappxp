@@ -2,7 +2,36 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
-<<<<<<< HEAD
+## 未发布：重试修复（桌面系列多季 UI / 纯 Dart 音频代理 / 切源单飞）
+
+> 上一轮三处修复在实际运行的包里都没有生效。本轮先查清「为什么没生效」，再按新方案重做；请务必先读下面的构建前提。
+
+### 先决条件：必须重新完整构建，只覆盖源码不会进产物
+- Go 核心不是运行时编译：`build_native.py` 把 `./bridge` 编成 `windows/runner/duanju_core.dll` / `android/app/src/main/jniLibs/<abi>/libduanju_core.so`；`flutter build` 只是把现成的 dll/so 拷进包（`windows/CMakeLists.txt:110`），Android 也只是把 jniLibs 打进 APK。Dart 代码同样以 AOT 编进 `libapp.so` / `data/app.so`。**只把源码推到 GitHub、或沿用旧 Release 包 / 旧 build 缓存，任何改动都不会进运行产物** —— 这是三个问题「同时仍在」最共性的原因。
+- 打包脚本会先重编核心、再编 Flutter，请整体重跑：
+  - Windows：`python3 scripts/build_windows.py`
+  - Android：`python3 scripts/build_android.py`
+  - 或由 CI `build.yml` 重新出 Release。
+- 确认产物已更新：比对包内 `duanju_core.dll` / `libduanju_core.so` 与 `libapp.so` / `data/app.so` 的时间戳；Windows 可在应用内日记页查看核心日志。
+
+### Windows 红果听书「有进度没声音」：改为纯 Dart 本机代理
+- 上一轮把本机流代理放在 Go 核心（新增 `streamUrl` 字段）。核心没重编时该字段不存在，`audiobookOpenTarget` 自动回退裸 CDN URL，问题原样复现。
+- 新增 `lib/ui/audiobook/audiobook_stream_proxy.dart`：只监听 127.0.0.1 的轻量 `HttpServer`，把在线音频登记成 `http://127.0.0.1:<port>/audio/<token>.m4a`。`AudiobookSession.open()` 对所有非本机地址统一走它：播放器拿到带容器扩展名的本机地址，上游 `Referer` / `User-Agent`（红果是 `com.dragon.read`）由 Dart 注入，不再依赖 libmpv 转发 `httpHeaders`（Windows 构建常忽略它们，CDN 返回非音频内容 → 进度在走但无声）；`Range` 原样透传，拖动进度不受影响。
+- 核心较新、已给出 `streamUrl` 时直接复用、不二次代理；核心较旧时由 Dart 兜底。**两种情况都不依赖重新编译 Go 核心**。
+- 移除上一轮加的 `demuxer-lavf-format=mov` 强锁：章节可能是 mp4 / m4a / mp3 / HLS，锁死 mov 反而解不出音轨；CENC 的 `decryption_key` 仍由 `demuxer-lavf-o` 传给 mov demuxer。
+- 实测：用独立 Dart 直跑代理，验证请求头注入、206 Range 分片、响应体一致、重复登记 token 稳定；回归用例见 `test/audiobook_stream_proxy_test.dart`。
+
+### Windows 没有「系列多季」：真正原因是宽屏布局没画卡片条
+- **推翻上一轮判断**：`detail_page.dart` 的 `_SeasonStrip` 只在 `_phonePage` 渲染；Windows 桌面 → `FormFactor.window` → `_widePage`，而 `_widePage` 的 body 只有 `info` + `episodes`，完全没有季列表。上一轮改 `app_seasons.go` 的数据、或只补数据不补 UI，都不可能让卡片条出现。
+- 修复：`_widePage` 在信息区与分集区之间补上整宽的 `_SeasonStrip`（与手机页共用同一组件和 `_selectSeason`），条件同为 `details.seasons.length > 1`。
+- 配套保留 `drama_details.dart` 的 Dart 层兜底：核心返回的季不足两季时，用站源搜索按基础名补搜，再由 `hongguoSeriesEntries()` 分组（含不带季号后缀的第一季）。核心是旧版、没有内置补搜时数据也不会为空。
+- `test/detail_page_wide_seasons_test.dart` 锁住「宽屏布局必须画 `_SeasonStrip`」，防止再只补数据不补 UI。
+
+### Android 切换红果书源卡顿：请求单飞 + 短缓存
+- 上一轮只把首屏从两个频道减到一个，但 `++_poolGeneration` 只让 Dart 丢弃旧结果，**Go 核心里正在跑的设备签名请求无法取消**：快速切源会在限流 lane 上排队堆积，越切越慢直到假死。
+- `FanqieAudiobookApi.hongguoCatalogPage()` 增加单飞（同一 `category+page` 在途时复用同一个 `Future`）与 2 分钟短缓存：来回切源、连点都只产生一个核心请求；不同频道 / 页码仍各自独立，翻页照常。
+- `test/hongguo_catalog_singleflight_test.dart` 覆盖并发单飞、缓存命中、频道/页码隔离、页码钳制。
+
 ## 未发布：Windows 红果听书无声、切书源卡顿、桌面端系列多季
 
 ### Windows 红果听书「有进度没声音」
@@ -25,8 +54,6 @@
 - `go build ./core ./server`、`go vet ./core ./server` 通过；新增 4 例全绿，`go test ./server` 全绿；`go test ./core` 全量仍为与之前完全一致的 4 个环境性失败（ffmpeg 缺 `libx264`、`/var/tmp` 缓存路径策略）。
 - 改动 Dart 文件经 Dart 3.12 语法解析通过；Flutter widget 测试需本地 `flutter test` / `dart analyze` 复跑。
 
-=======
->>>>>>> a3a9cdb512125d80b0f591592eae54cab7243e59
 ## 未发布：系列多季补齐第一季、启动默认发现页不加载听书
 
 ### 系列多季缺第一季

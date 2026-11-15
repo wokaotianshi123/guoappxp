@@ -50,10 +50,14 @@ AudiobookOpenTarget audiobookOpenTarget({
     );
   }
   final plan = remote ?? const <String, dynamic>{};
-  // 核心会给在线音频附一个本机明文流地址（带 .m4a 扩展名，上游
-  // Referer / User-Agent 由 Go 侧统一注入）。优先播它：桌面端 libmpv
-  // 对「无扩展名裸 URL + CENC decryption_key」的容器探测不稳定，会
-  // 出现进度在走但没声音；本地流与短剧播放同链路，各平台一致。
+  // 较新的核心会给在线音频附一个本机明文流地址（带 .m4a 扩展名，上游
+  // Referer / User-Agent 由 Go 侧统一注入），优先播它。
+  //
+  // 但 duanju_core.dll / libduanju_core.so 是编译产物，没有重新执行
+  // build_native.py 时核心里根本没有这段逻辑，streamUrl 不存在。这时
+  // 保留原始 url 和 headers，由 AudiobookSession 用纯 Dart 的本机代理
+  // 再包一层（见 audiobook_stream_proxy.dart）——不管核心新旧，播放器
+  // 最终拿到的都是带扩展名的本机地址，不依赖播放器转发请求头。
   // 下载路径仍用原始 url，不受这里影响。
   final streamUrl = '${plan['streamUrl'] ?? ''}'.trim();
   final rawHeaders = plan['headers'];

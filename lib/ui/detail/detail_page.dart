@@ -679,22 +679,44 @@ class _DetailPageState extends State<DetailPage> {
           top + 336,
           Padding(
             padding: EdgeInsets.fromLTRB(inset, top + 4, inset, 40),
-            child: LayoutBuilder(
-              builder: (context, constraints) =>
-                  constraints.maxWidth >= side + gap + 480
-                  ? Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      spacing: gap,
-                      children: [
-                        SizedBox(width: side, child: info),
-                        Expanded(child: episodes),
-                      ],
-                    )
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      spacing: gap,
-                      children: [info, episodes],
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              children: [
+                // 桌面 / 平板宽屏布局以前只画 info + episodes，完全漏掉了
+                // 「系列多季」卡片条：手机页 _phonePage 有，Windows 走 _widePage
+                // 就永远看不到。以前几轮改 Go 核心 / Dart 补搜只动数据，
+                // 数据再全也不会自己长出一个 widget。这里补上整宽的季列表，
+                // 与手机页共用同一个 _SeasonStrip 和 _selectSeason。
+                if (details.seasons.length > 1)
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 18),
+                    child: _SeasonStrip(
+                      seasons: details.seasons,
+                      current: details.drama.id,
+                      store: widget.store,
+                      metrics: m,
+                      swipeHint: !AppScope.of(context).television,
+                      onSelected: (season) => unawaited(_selectSeason(season)),
                     ),
+                  ),
+                LayoutBuilder(
+                  builder: (context, constraints) =>
+                      constraints.maxWidth >= side + gap + 480
+                      ? Row(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          spacing: gap,
+                          children: [
+                            SizedBox(width: side, child: info),
+                            Expanded(child: episodes),
+                          ],
+                        )
+                      : Column(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          spacing: gap,
+                          children: [info, episodes],
+                        ),
+                ),
+              ],
             ),
           ),
         ),

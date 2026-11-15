@@ -279,6 +279,10 @@ class FanqieAudiobookApi {
   final AppRepository? repository;
   final Map<String, List<FanqieChapter>> _chapters = {};
 
+  /// 红果书城按页请求的单飞表：同一 category+page 在途时复用同一个 Future。
+  final Map<String, Future<FanqieSearchPage>> _catalogInflight = {};
+  final Map<String, _HongguoCatalogCache> _catalogCache = {};
+
   /// 实时拉取官方书城某个一级分类（tab_type）。
   Future<FanqieOfficialPage> officialTab(int tabType) async {
     final url = '$novelfmBookmallUrl?$novelfmCommonQuery&tab_type=$tabType';
@@ -457,11 +461,33 @@ class FanqieAudiobookApi {
       return const FanqieSearchPage(books: [], hasMore: false);
     }
     final number = page < 1 ? 1 : page;
-    final reply = await core.audiobookHongguoCatalog(category, number);
-    return FanqieSearchPage(
-      books: fanqieHongguoBooks(reply),
-      hasMore: reply['hasMore'] == true,
-    );
+    final key = '$category:$number';
+    // 切书源 / 连点会在 Go 核心里堆积「不可取消」的设备签名请求：
+    // ++_poolGeneration 只让 Dart 丢弃旧结果，核心那边仍在排队等限流 lane，
+    // 越切越慢直到假死。这里做单飞 + 短缓存：同一页在途时所有调用者复用
+    // 同一个 Future，两分钟内来回切源直接吃缓存，核心侧永远只跑一个请求。
+    final inflight = _catalogInflight[key];
+    if (inflight != null) return inflight;
+    final cached = _catalogCache[key];
+    if (cached != null &&
+        DateTime.now().difference(cached.time) < const Duration(minutes: 2)) {
+      return cached.page;
+    }
+    final future = () async {
+      final reply = await core.audiobookHongguoCatalog(category, number);
+      return FanqieSearchPage(
+        books: fanqieHongguoBooks(reply),
+        hasMore: reply['hasMore'] == true,
+      );
+    }();
+    _catalogInflight[key] = future;
+    try {
+      final result = await future;
+      _catalogCache[key] = _HongguoCatalogCache(result, DateTime.now());
+      return result;
+    } finally {
+      _catalogInflight.remove(key);
+    }
   }
 
   /// 连续取 [pages] 页（需要一次多页时用），按 book_id 去重。
@@ -1077,4 +1103,12 @@ Future<String> _defaultGet(String url, {Map<String, String>? headers}) async {
   } finally {
     client.close(force: true);
   }
+}
+
+/// 红果书城单页结果的短时缓存项。
+class _HongguoCatalogCache {
+  const _HongguoCatalogCache(this.page, this.time);
+
+  final FanqieSearchPage page;
+  final DateTime time;
 }
