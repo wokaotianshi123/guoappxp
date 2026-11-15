@@ -2,6 +2,26 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 未发布：红果听书改为按需加载
+
+修复打开软件时红果听书抢占资源、把界面拖卡的问题，App 端与本地 Web 服务版一起改。
+
+### 问题根因
+- App 默认书源是红果听书。进听书页会走 `hongguoPool()` → core 的 `audiobookHongguoPoolStart`（后台全量翻约 80 页）→ Dart 每 1.2s / 3s 轮询增量，期间上千本书（含封面 / 简介）反复序列化过 IPC，与短剧、其它书源争抢限流 lane 和 CPU。
+- 切书源命中缓存时还会静默后台刷新，等于再跑一遍全量抓取。
+- 本地 Web 服务版的 `abHongguoStore.load` 同样有 6 分钟、每 1.2s 一次的池轮询，前端也靠 `library.loading` 定时补全。
+
+### 改动
+- `lib/ui/audiobook/audiobook_fanqie.dart`：新增 `hongguoCatalogPage(category, page)`，按页调 core 的 `audiobookHongguoCatalog`（不会启动后台全量翻页）；`hongguoCatalog()` 改为复用它连续取页。
+- `lib/ui/audiobook/audiobook_screen.dart`：首屏只对「听书 / 小说」两个频道并发各取第 1 页，取完即停；删除 `_pollHongguoPool()` 与 `_refreshPoolsQuietly()`；切书源命中缓存不再静默刷新；新增 `_loadNextHongguoPage()`，仅在用户主动点「下一页」且已加载数据不够时补页（按 book_id 去重追加、最多补 3 页、失败即停、不重试不后台续抓）；翻页标签改为「已加载 N 本 · 翻页继续加载」；补页请求作废或失败时统一在 `finally` 清理加载态，不残留「正在加载」。
+- `native/server/audiobook.go`：`abHongguoStore` 去掉后台 goroutine、6 分钟超时循环和 `time.Sleep(1200ms)`，改为 `ensurePages(category, needPages)` 按请求页同步补页（页数有界、同一频道 inflight 单飞、上游到底或失败即停）；`snapshot()` 的 `library.loading` 恒为 `false`、`done` 恒为 `true`，前端的 `abScheduleLibraryRefresh()` 定时器因此不再启动；`abHongguoLibrary()` 搜索分支完全不取书池页，普通列表按 `page`/`size` 换算需要的 catalog 页数，且上游 `hasMore` 时 `pageCount` 多留一页，用户点「下一页」才触发下一次加载。前端 JS 无需改动。
+
+### 验证
+- `go build ./core ./server`、`go vet ./core ./server` 通过；`go test ./server` 全绿，`go test ./core -run Hongguo` 全绿。
+- 新增 `native/server/audiobook_hongguo_lazy_test.go`（6 例：snapshot 恒不报后台加载、已够页数不请求、上游到底不空转、并发补页不抢资源、pageCount 留一页按需加载、未加载的空页不越界）与 `test/audiobook_hongguo_lazy_load_test.dart`（3 例：按需分页不触发全量书池、页码钳制与无仓库降级、连续多页去重）。
+- 改动文件经 Dart 3.12 `dart format` 语法解析通过。
+- 说明：`go test ./core` 全量另有 4 例因沙箱环境失败（ffmpeg 缺 `libx264` 编码器、`/var/tmp` 缓存目录策略），与本次改动无关；Flutter widget 测试因环境内 Flutter SDK 自带 Dart 2.17 低于项目要求的 `>=3.12.0` 未能运行，需在本地 `flutter test` 复跑。
+
 ## 1.6.0+123
 
 补齐上一批暂缓的三项：红果听书、黄果 AI 取流、红果系列剧。

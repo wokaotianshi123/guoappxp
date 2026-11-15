@@ -442,18 +442,39 @@ class FanqieAudiobookApi {
     );
   }
 
+  /// 红果听书**按需分页**入口：只取第 [page] 页，并带回上游的 hasMore。
+  ///
+  /// 与 [hongguoPool] 的关键区别：这个 action 不会触发 core 的后台全量翻页，
+  /// 页面停留期间也不会持续轮询。点开书源取第 1 页、用户翻页取下一页，
+  /// 取完即停，不与其他书源 / 短剧请求争抢限流资源，也不把上千本书反复
+  /// 序列化过 IPC——这是原先打开软件就卡的主因。
+  Future<FanqieSearchPage> hongguoCatalogPage(
+    String category, {
+    int page = 1,
+  }) async {
+    final core = repository;
+    if (core == null) {
+      return const FanqieSearchPage(books: [], hasMore: false);
+    }
+    final number = page < 1 ? 1 : page;
+    final reply = await core.audiobookHongguoCatalog(category, number);
+    return FanqieSearchPage(
+      books: fanqieHongguoBooks(reply),
+      hasMore: reply['hasMore'] == true,
+    );
+  }
+
+  /// 连续取 [pages] 页（需要一次多页时用），按 book_id 去重。
   Future<List<FanqieBook>> hongguoCatalog(
     String category, {
     int page = 1,
     int pages = 1,
   }) async {
-    final core = repository;
-    if (core == null) return const [];
     final out = <FanqieBook>[];
     final seen = <String>{};
     for (var index = 0; index < pages; index++) {
-      final reply = await core.audiobookHongguoCatalog(category, page + index);
-      for (final book in fanqieHongguoBooks(reply)) {
+      final result = await hongguoCatalogPage(category, page: page + index);
+      for (final book in result.books) {
         if (seen.add(book.id)) out.add(book);
       }
     }

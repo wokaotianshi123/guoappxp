@@ -3,6 +3,7 @@ package main
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/url"
@@ -29,137 +30,119 @@ const (
 	abHongguoBookPrefix = "hg:"
 )
 
-// abHongguoStore 缓存红果听书两个频道的全量书池。
+// abHongguoCatalogPageSize 是 core 的 audiobookHongguoCatalog 单页条数
+// （page 1 首屏 12 本，之后每次 offset 步进 10）。按请求页换算需要取几页。
+const abHongguoCatalogPageSize = 10
+
+// abHongguoStore 缓存红果听书两个频道「已按需取到」的书页。
 //
-// 红果书城单页只有 12 本，翻页接口每页 10 本且相邻页有重叠，边翻边供数会让
-// 前端看到「只有十几本」。这里像番茄书库一样后台抓全量并缓存，列表直接按
-// 缓存分页；抓取中先用已有部分顶上，前端按 library.loading 轮询补全。
+// 旧实现在首次访问时启动 goroutine，用 6 分钟、每 1.2 秒一次的循环把
+// audiobookHongguoPool 的 80 页全量翻完，期间 core 还在后台持续抓取，前端
+// 也要定时轮询 library.loading 补全——这正是打开软件时争抢限流、IPC 与
+// CPU、把界面拖卡的主因。
+//
+// 现在与 App 端一致改成按需加载：点开书源只取第 1 页；用户翻到第几页，
+// 才同步补到能覆盖该页的页数，取完立刻结束。没有后台 goroutine、没有
+// 定时轮询、没有超时循环；snapshot 的 loading 恒为 false，前端的补全
+// 定时器自然不会再启动。
 type abHongguoStore struct {
-	mu         sync.Mutex
-	books      map[string][]map[string]any // category → 书单
-	loading    map[string]bool
-	done       map[string]bool
-	errText    map[string]string
-	finished   map[string]time.Time
-	generation map[string]uint64
+	mu       sync.Mutex
+	books    map[string][]map[string]any // category → 已加载书单（按页去重追加）
+	pages    map[string]int              // category → 已取到第几页
+	hasMore  map[string]bool             // 上游是否还有更多
+	errText  map[string]string
+	inflight map[string]bool // 同一频道同时只补一次页，避免并发重复请求
 }
 
 var abHongguo = &abHongguoStore{
-	books:      map[string][]map[string]any{},
-	loading:    map[string]bool{},
-	done:       map[string]bool{},
-	errText:    map[string]string{},
-	finished:   map[string]time.Time{},
-	generation: map[string]uint64{},
+	books:    map[string][]map[string]any{},
+	pages:    map[string]int{},
+	hasMore:  map[string]bool{},
+	errText:  map[string]string{},
+	inflight: map[string]bool{},
 }
 
-const abHongguoTtl = 30 * time.Minute
-
-// ensure 在缓存过期或首次访问时触发后台抓取，已有书池继续可用。
-func (store *abHongguoStore) ensure(category string) {
-	store.mu.Lock()
-	if store.loading[category] {
-		store.mu.Unlock()
-		return
+// ensurePages 同步把某个频道补到 needPages 页，只在用户主动翻页时调用。
+//
+// 每次循环只取一页，页数有界（needPages 由请求的 page/size 算出，最多几页）；
+// 失败或上游没有更多就立刻停，不重试、不后台续抓、不 sleep。
+func (store *abHongguoStore) ensurePages(category string, needPages int) {
+	if needPages < 1 {
+		needPages = 1
 	}
-	if store.done[category] && time.Since(store.finished[category]) < abHongguoTtl {
-		store.mu.Unlock()
-		return
-	}
-	store.generation[category]++
-	generation := store.generation[category]
-	store.loading[category] = true
-	store.done[category] = false
-	store.errText[category] = ""
-	store.mu.Unlock()
-	go store.load(category, generation)
-}
-
-func (store *abHongguoStore) load(category string, generation uint64) {
-	// core 侧的 pool 是「边翻边发布」的异步实现：首次调用很快返回第一批，
-	// 之后要轮询到 loading=false 才算抓全。这里一直轮询到底，
-	// 期间把已有进度先写进书池，前端能看到书库逐步变大。
-	//
-	// 轮询用 offset 增量：只取新增那几本，避免每次把上千本书（含封面/简介）
-	// 在 core 与 server 之间反复序列化——书库大时那是明显的 CPU 与内存开销。
-	books := make([]map[string]any, 0)
-	deadline := time.Now().Add(6 * time.Minute)
-	var lastErr error
 	for {
-		data, err := coreCall(map[string]any{
-			"action": "audiobookHongguoPool", "category": category, "page": 80,
-			"offset": len(books),
-		})
 		store.mu.Lock()
-		if store.generation[category] != generation {
+		loaded := store.pages[category]
+		if loaded >= needPages {
 			store.mu.Unlock()
 			return
 		}
-		if err != nil {
-			lastErr = err
+		if loaded > 0 && !store.hasMore[category] {
 			store.mu.Unlock()
-			break
+			return
 		}
-		total, _ := data["total"].(float64)
-		batch := make([]map[string]any, 0)
-		for _, item := range audiobookAnyList(data["books"]) {
-			if row, ok := item.(map[string]any); ok {
-				batch = append(batch, row)
-			}
+		if store.inflight[category] {
+			// 已有请求正在补页：用当前进度先响应，不并发抢资源。
+			store.mu.Unlock()
+			return
 		}
-		// 增量返回时直接追加；若 core 回了全量（total 与已有不符），以它为准。
-		switch {
-		case len(batch) == 0:
-			// 没有新增，保持现有书池。
-		case int(total) == len(batch):
-			books = batch
-		default:
-			books = append(books, batch...)
-		}
-		if len(books) > 0 {
-			// 先把当前进度写进去，前端轮询能看到书库在长。
-			store.books[category] = append([]map[string]any(nil), books...)
-		}
-		loading := data["loading"] == true
+		store.inflight[category] = true
+		page := loaded + 1
 		store.mu.Unlock()
-		if !loading {
-			break
-		}
-		if time.Now().After(deadline) {
-			lastErr = errors.New("红果听书抓取超时")
-			break
-		}
-		time.Sleep(1200 * time.Millisecond)
-	}
 
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.generation[category] != generation {
-		return
+		data, err := coreCall(map[string]any{
+			"action": "audiobookHongguoCatalog", "category": category, "page": page,
+		})
+
+		store.mu.Lock()
+		store.inflight[category] = false
+		if err != nil {
+			store.errText[category] = err.Error()
+			store.mu.Unlock()
+			return
+		}
+		// 只接受「紧接着已加载页」的那一页，避免与并发请求交错写乱。
+		if store.pages[category] == page-1 {
+			known := make(map[string]bool)
+			for _, book := range store.books[category] {
+				known[fmt.Sprint(book["id"])] = true
+			}
+			for _, item := range audiobookAnyList(data["books"]) {
+				row, ok := item.(map[string]any)
+				if !ok {
+					continue
+				}
+				rawID, exists := row["id"]
+				if !exists || rawID == nil {
+					continue
+				}
+				id := fmt.Sprint(rawID)
+				if id == "" || known[id] {
+					continue
+				}
+				known[id] = true
+				store.books[category] = append(store.books[category], row)
+			}
+			store.pages[category] = page
+			store.hasMore[category] = data["hasMore"] == true
+			store.errText[category] = ""
+		}
+		store.mu.Unlock()
 	}
-	store.loading[category] = false
-	if lastErr != nil && len(books) == 0 {
-		store.errText[category] = lastErr.Error()
-		store.done[category] = len(store.books[category]) > 0
-		return
-	}
-	if len(books) > 0 {
-		store.books[category] = books
-	}
-	store.done[category] = true
-	store.finished[category] = time.Now()
 }
 
-// snapshot 返回当前书池与抓取状态。
+// snapshot 返回已加载书池与状态。loading 恒 false：本次请求已同步取完页，
+// 没有任何后台任务，前端的定时补全不会再被触发。
 func (store *abHongguoStore) snapshot(category string) ([]map[string]any, map[string]any) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	books := append([]map[string]any(nil), store.books[category]...)
 	info := map[string]any{
-		"loading": store.loading[category],
-		"done":    store.done[category],
+		"loading": false,
+		"done":    true,
 		"count":   len(books),
 		"error":   store.errText[category],
+		"hasMore": store.hasMore[category],
 	}
 	return books, info
 }
@@ -182,9 +165,9 @@ func abHongguoLibrary(board int, category, query string, page, size int) map[str
 		size = audiobookPageSize
 	}
 	channel := abHongguoCategory(board)
-	abHongguo.ensure(channel)
 
-	// 搜索走红果自己的搜索接口，不依赖缓存书池（能搜到池外的书）。
+	// 搜索走红果自己的搜索接口，不依赖书池：搜索时一本书池页都不取，
+	// 也就不产生任何后台加载。
 	if strings.TrimSpace(query) != "" {
 		data, err := coreCall(map[string]any{
 			"action": "audiobookHongguoSearch", "category": channel, "query": query, "page": page,
@@ -210,6 +193,14 @@ func abHongguoLibrary(board int, category, query string, page, size int) map[str
 		return answer
 	}
 
+	// 按需加载：只取到能覆盖当前请求页的页数，取完立刻结束。
+	// 没有后台 goroutine，也没有定时轮询；用户翻到下一页才会再补一页。
+	needPages := (page*size + abHongguoCatalogPageSize - 1) / abHongguoCatalogPageSize
+	if needPages < 1 {
+		needPages = 1
+	}
+	abHongguo.ensurePages(channel, needPages)
+
 	pool, info := abHongguo.snapshot(channel)
 	list := make([]map[string]any, 0, len(pool))
 	for _, book := range pool {
@@ -223,10 +214,19 @@ func abHongguoLibrary(board int, category, query string, page, size int) map[str
 	if pageCount < 1 {
 		pageCount = 1
 	}
+	// 上游还有更多时多留一页：用户点「下一页」才触发下一次按页加载。
+	if info["hasMore"] == true {
+		pageCount++
+	}
 	if page > pageCount {
 		page = pageCount
 	}
 	start := (page - 1) * size
+	// hasMore 时 pageCount 多留了一页，补页失败或并发让道时这一页可能
+	// 还没有数据；把 start 钳到 total，返回空页而不是让切片越界 panic。
+	if start > total {
+		start = total
+	}
 	end := start + size
 	if end > total {
 		end = total
