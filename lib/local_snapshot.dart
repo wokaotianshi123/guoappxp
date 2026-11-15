@@ -36,6 +36,9 @@ class LocalSnapshot {
     // 自定义源是设备级配置，所有本地用户共用；必须列入受管字段，否则保存自定义源
     // 时 _commit 会因为 owns() 不成立而抛 StateError('无效的本地配置字段')。
     'customSources',
+    // 站源模块提供的站源列表同理：装上模块属于这台设备，所有本地用户共用，
+    // 也必须列入受管字段。
+    'moduleSources',
   };
   static const _retiredKeys = {
     'sourceGateEnabled',

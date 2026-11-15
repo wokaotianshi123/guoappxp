@@ -49,13 +49,22 @@ mixin _ModuleActions<T extends StatefulWidget> on State<T> {
     }
   }
 
+  /// 核心没编进模块能力时，Go 侧只会回一句「不支持的应用操作」。这种
+  /// 「新前端 + 旧核心」的混合构建几乎都是没有重新完整构建，换成能照着做的提示。
+  String _describe(Object failure) {
+    final message = '$failure';
+    return message.contains('不支持的应用操作')
+        ? '当前安装包里的本地核心不支持站源模块，请重新完整构建后再试'
+        : message;
+  }
+
   Future<void> _run(Future<void> Function() work) async {
     if (_busy) return;
     setState(() => _busy = true);
     try {
       await work();
     } catch (failure) {
-      _show('$failure');
+      _show(_describe(failure));
     } finally {
       if (mounted) setState(() => _busy = false);
       await _refresh();
@@ -133,7 +142,7 @@ class _ModulesViewState extends State<ModulesView> with _ModuleActions {
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => _error = '$failure');
+      if (mounted) setState(() => _error = _describe(failure));
     }
   }
 
@@ -332,7 +341,7 @@ class _CatalogPageState extends State<_CatalogPage> with _ModuleActions {
       final index = await _repository.moduleIndex();
       if (mounted) setState(() => _index = index);
     } catch (failure) {
-      if (mounted) setState(() => _indexError = '$failure');
+      if (mounted) setState(() => _indexError = _describe(failure));
     }
   }
 
@@ -348,7 +357,7 @@ class _CatalogPageState extends State<_CatalogPage> with _ModuleActions {
         });
       }
     } catch (failure) {
-      if (mounted) setState(() => _error = '$failure');
+      if (mounted) setState(() => _error = _describe(failure));
     }
   }
 

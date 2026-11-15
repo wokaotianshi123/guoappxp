@@ -5,6 +5,7 @@ import 'package:duanju_app/local_snapshot.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/playback_preferences.dart';
+import 'package:duanju_app/source_modules.dart';
 import 'package:duanju_app/theme_color.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -68,6 +69,7 @@ void main() {
         'sourceSwitches',
         'forceLogin',
         'customSources',
+        'moduleSources',
       });
       expect(LocalSnapshot.libraryKeys, {
         'history',
@@ -106,6 +108,30 @@ void main() {
         'custom:abc:mysite',
       ]);
       expect(restarted.customSources.single.name, '我的站点');
+    });
+
+    test('module sources round-trip without locking the store', () async {
+      final store = await openStore();
+      await store.syncModuleSources(const [
+        ModuleSourceSite(id: 'mod:hongguo', name: '红果', search: true),
+        ModuleSourceSite(id: 'missav', name: 'MissAV'),
+      ]);
+
+      final values = _snapshotValues(store);
+      expect(values.keys.where((key) => !LocalSnapshot.owns(key)), isEmpty);
+      expect(values['moduleSources'], isA<String>());
+
+      final restarted = restartStore(store);
+      expect(restarted.moduleSources.map((site) => site.id), [
+        'missav',
+        'mod:hongguo',
+      ]);
+      // 模块源要登记进 SourceSite 才在源栏、搜索与源显示列表里可用，
+      // 并且一律带「（模块）」标注，与同名的本体源区分开。
+      expect(restarted.sources.map((site) => site.id), contains('mod:hongguo'));
+      expect(SourceSite.isAvailable('mod:hongguo'), isTrue);
+      expect(SourceSite.isAvailable('missav'), isTrue);
+      expect(SourceSite.byId('mod:hongguo').name, '红果（模块）');
     });
 
     test('the cross-source search switch survives a restart', () async {
