@@ -2,6 +2,7 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+<<<<<<< HEAD
 ## 未发布：Windows 红果听书无声、切书源卡顿、桌面端系列多季
 
 ### Windows 红果听书「有进度没声音」
@@ -24,6 +25,8 @@
 - `go build ./core ./server`、`go vet ./core ./server` 通过；新增 4 例全绿，`go test ./server` 全绿；`go test ./core` 全量仍为与之前完全一致的 4 个环境性失败（ffmpeg 缺 `libx264`、`/var/tmp` 缓存路径策略）。
 - 改动 Dart 文件经 Dart 3.12 语法解析通过；Flutter widget 测试需本地 `flutter test` / `dart analyze` 复跑。
 
+=======
+>>>>>>> a3a9cdb512125d80b0f591592eae54cab7243e59
 ## 未发布：系列多季补齐第一季、启动默认发现页不加载听书
 
 ### 系列多季缺第一季
