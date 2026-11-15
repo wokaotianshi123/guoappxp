@@ -4,6 +4,7 @@ import 'dart:io';
 import 'package:flutter/foundation.dart';
 import 'package:media_kit/media_kit.dart';
 
+import 'audiobook_decryptor.dart';
 import 'audiobook_download.dart';
 import 'audiobook_fanqie.dart';
 import 'audiobook_store.dart';
@@ -235,8 +236,13 @@ class AudiobookSession extends ChangeNotifier {
       // 请求头（Windows 的 libmpv 常忽略 httpHeaders，红果 CDN 返回非音频
       // 内容，表现正是「进度在走但没有声音」）。核心较新时已给出指向本机
       // 的 streamUrl，那段地址直接复用、不再二次代理。
-      var playUrl = target.url;
-      var playHeaders = target.headers;
+      // 保留原始地址与请求头：ffmpeg 解密时直接拉上游并自带 headers
+      // （与本地服务版 startAudio 一致），下面的本机代理只服务于
+      // libmpv 直解 / 回退路径。
+      final sourceUrl = target.url;
+      final sourceHeaders = target.headers;
+      var playUrl = sourceUrl;
+      var playHeaders = sourceHeaders;
       if (!target.local && !isLoopbackAudiobookUrl(playUrl)) {
         try {
           playUrl = await AudiobookStreamProxy.instance.register(
@@ -248,32 +254,52 @@ class AudiobookSession extends ChangeNotifier {
           // 极端环境起不了本机服务：退回直连，至少还能尝试播放。
         }
       }
+      // Windows 的 libmpv 解不了 CENC：容器能读出时长、position 照常推进，
+      // 但加密的音频 sample 解不出音轨，就是「进度在走却没声音」。项目里
+      // 本地服务版早有结论（transcode.go: startAudio「交给 ffmpeg 解密后
+      // 重编码」），App 端却一直漏了这一步。加密章节在这里先经 ffmpeg
+      // 解密成明文 .m4a，播放器拿到的是普通本地文件，不再依赖 libmpv 的
+      // 平台相关解密能力。番茄明文、Android 都不走这里；ffmpeg 不可用时
+      // 静默回退到原来的直解路径（下面的 demuxer-lavf-o 已同步修正）。
+      var plainAudio = false;
+      if (Platform.isWindows && target.key.isNotEmpty) {
+        try {
+          playUrl = await AudiobookDecryptor.instance.ensure(
+            input: sourceUrl,
+            key: target.key,
+            cacheKey: '${book.id}:${current.id}',
+            headers: sourceHeaders,
+          );
+          playHeaders = const <String, String>{};
+          plainAudio = true;
+        } catch (_) {
+          // ffmpeg 缺失 / 转码失败：退回 libmpv，至少保持原有行为。
+        }
+      }
       final platform = player.platform;
       if (platform is NativePlayer) {
         if (Platform.isAndroid) {
           await platform.setProperty('ao', 'audiotrack,opensles');
         }
-        // 红果的音频地址是不带扩展名的路径（`.../audio/playinfo` 之类），
-        // libmpv 默认按扩展名判断容器，认不出就只解出时长、不出声音
-        // （Windows 上表现就是进度条在走但没音频）。
-        // allowed_extensions=ALL 让 lavf 放行未知扩展名，这两项短剧播放
-        // 那边本来就有，听书这边之前漏了。
+        // demuxer-lavf-o 是 mpv 的 StringList 选项，按逗号拆成若干
+        // key=value。旧写法把 protocol_whitelist=[http,https,...] 也塞了
+        // 进来，值里的逗号会被当成选项分隔符，拆出 https / tcp 等一堆没有
+        // = 的碎片，整条选项很可能解析失败被整体丢弃 —— 排在最后的
+        // decryption_key 就从未真正设置成功（短剧不依赖它，所以没暴露）。
+        // 这里只保留干净的 key=value；ffmpeg 默认白名单足够，无需再设。
         await platform.setProperty(
           'demuxer-lavf-o',
           [
             'strict=experimental',
             'allowed_extensions=ALL',
             'seg_max_retry=3',
-            target.local
-                ? 'protocol_whitelist=[file,crypto,data]'
-                : 'protocol_whitelist=[http,https,tcp,tls,crypto,data,file]',
-            if (target.key.isNotEmpty) 'decryption_key=${target.key}',
+            if (!plainAudio && target.key.isNotEmpty)
+              'decryption_key=${target.key}',
           ].join(','),
         );
-        // 不显式锁定 demuxer-lavf-format：红果 / 番茄的章节可能是 mp4、
-        // m4a、mp3 或 HLS 分片，强行锁 mov 反而会让非 mov 容器解不出音轨。
-        // 本机代理给的地址带 .m4a 扩展名，libmpv 自己探测即可；CENC 的
-        // decryption_key 仍通过上面的 demuxer-lavf-o 传给 mov demuxer。
+        // 不显式锁定 demuxer-lavf-format：章节可能是 mp4 / m4a / mp3 /
+        // HLS，锁死 mov 反而解不出音轨。Windows 上加密章节已由 ffmpeg
+        // 解密成明文文件，plainAudio 时不再传 decryption_key。
         if (!target.local) await platform.setProperty('network-timeout', '20');
       }
       if (generation != _generation) {

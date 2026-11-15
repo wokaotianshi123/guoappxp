@@ -2,6 +2,27 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 未发布：Windows 红果听书无声的真正修复（ffmpeg 解密 CENC）
+
+> 前两轮一直在调「URL 扩展名 / 请求头 / 容器探测」，方向错了。这一轮做了端到端实证，定位到真正根因。
+
+### 根因：Windows 的 libmpv 解不了 CENC，App 端漏了 ffmpeg 解密这一步
+- 项目自己的文档和代码其实早就写明了答案：README「章节音频若是 CENC 加密则**由 ffmpeg 解密后播放**，与红果加密视频同一条链路」；`native/server/transcode.go` 的 `startAudio()` 注释「听书章节是 CENC 加密的 m4a，**不能解密也不能解 CENC 盒**，同样交给 ffmpeg 解密后重编码」。**Web 本地服务版有这条链路，App 端一直没有** —— 它把「加密 URL + `decryption_key`」直接丢给 libmpv，指望 libmpv 解密。
+- Windows 的 libmpv 构建解不了：容器能读出时长、`position` 照常推进，但加密的音频 sample 解不出音轨，于是「进度在走却没有声音」。Android 的 libmpv 构建能直解、番茄听书多为明文（`encrypt=false` 时密钥为空），所以只有 Windows + 红果复现；短剧在 Windows 正常也是因为加密视频走 ffmpeg 转码，不是靠 libmpv。
+- **实测证据**：用 ffmpeg 造了一个 CENC-AES-CTR 加密的 m4a。不解密直接解码报 `Error submitting packet to decoder: Invalid data found`（对应无声）；用本轮参数解密后输出标准 AAC、时长 3.018 秒、可完整解码、无残留 `senc`/`sinf` 盒。
+- 另外修掉一个隐藏坑：`demuxer-lavf-o` 是 mpv 的 StringList 选项，按逗号拆 `key=value`，而旧写法把 `protocol_whitelist=[http,https,...]` 塞了进去 —— 值里的逗号会被当成选项分隔符，拆出一堆没有 `=` 的碎片，整条选项很可能被丢弃，**排在最后的 `decryption_key` 从未真正设置成功**（短剧不依赖它所以没暴露）。
+
+### 改动
+- 新增 `lib/ui/audiobook/audiobook_decryptor.dart`：Windows 上遇到加密章节（`decryptionKey` 非空）时，先用 `ffmpeg_kit_flutter_new_min_gpl`（Windows 发布包必带 `libffmpegkit.dll`）按 `-decryption_key <key> -headers ... -i <上游> -c:a aac ...` 解密重编码成明文 `.m4a`，播放器播这个普通本地文件。结果按「书 + 章节 + 密钥」缓存，重复收听不再转码。插件未注册或执行失败时，自动回退到 PATH 上的 `ffmpeg` 可执行文件 (`Process.start`)；两者都不可用才退回 libmpv 原路径。
+- 与本地服务版 `startAudio` 同构：远端上游的 `Referer` / `User-Agent` 由 ffmpeg 自己带，不经本机代理多一跳。实测确认 `-headers` 是 **http 协议私有选项**，输入为本地文件（已下载的加密章节）时绝不能传，否则 ffmpeg 报 `Option headers not found` 直接拒绝打开 —— 代码按输入是否 http(s) 自动区分，两条路径都实测通过。
+- `lib/ui/audiobook/audiobook_session.dart`：接入解密器；`demuxer-lavf-o` 去掉含逗号的 `protocol_whitelist`，只保留干净的 `key=value`；已解密成明文时不再传 `decryption_key`。
+- 影响范围：只有 **Windows + 加密章节**走新路径。Android、番茄明文、本地明文文件、无密钥章节行为不变；ffmpeg 全部失败时保持原有直解行为（此时 `decryption_key` 至少能正确设置了）。
+- 体验说明：Windows 首次播放某加密章节需要一次「下载 + 解密重编码」的准备时间（纯 `-c copy` 之外的 AAC 重编码很快，主要是下载），之后命中缓存即时播放。
+
+### 回归测试
+- `test/audiobook_windows_audio_test.dart`：校验 `-decryption_key` 排在 `-i` 之前、白名单放行 http、`-headers` 编码及其对本地文件的排除、明文不传密钥、Windows 分支存在、`demuxer-lavf-o` 不再含逗号白名单、不锁死 mov。
+- ffmpeg 参数本身另用真实 ffmpeg 做了 CENC 加密→解密→可解码的端到端验证。
+
 ## 未发布：重试修复（桌面系列多季 UI / 纯 Dart 音频代理 / 切源单飞）
 
 > 上一轮三处修复在实际运行的包里都没有生效。本轮先查清「为什么没生效」，再按新方案重做；请务必先读下面的构建前提。
