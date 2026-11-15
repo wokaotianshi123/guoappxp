@@ -108,7 +108,9 @@ class _SettingsPageState extends State<SettingsPage> {
       SettingsGroup.download => '默认画质、目录与空间、同时下载数量',
       SettingsGroup.cache => '播放临时文件与空间占用',
       SettingsGroup.sources =>
-        allSourcesEnabled ? '站源开关、站源账号、自定义源、目录请求间隔' : '站源开关、自定义源、目录请求间隔',
+        allSourcesEnabled
+            ? '站源开关、站源账号、自定义源、模块、目录请求间隔'
+            : '站源开关、自定义源、模块、目录请求间隔',
       SettingsGroup.proxy => '连接方式、代理地址',
       SettingsGroup.users => '当前：${store.profile.name}',
       SettingsGroup.about =>

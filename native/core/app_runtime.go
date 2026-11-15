@@ -118,6 +118,11 @@ type nativeInput struct {
 	Base            string                  `json:"base"`
 	Rule            string                  `json:"rule"`
 	Kind            string                  `json:"kind"`
+	// 站源模块安装用：File 是本地 zip 路径，URL 是 zip 下载地址，
+	// Token 是 prepareModule 暂存安装包后回给前端的凭据。
+	File  string `json:"file"`
+	URL   string `json:"url"`
+	Token string `json:"token"`
 	Content         string                  `json:"content"`
 	Page            int                     `json:"page"`
 	Query           string                  `json:"query"`
@@ -311,6 +316,9 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 		}}
 	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}, searches: map[string]*nativeSearchSession{}}
 	engine.loadResourceSettings()
+	// 站源模块要在榜单缓存之前加载：模块清单里声明的榜单会被并进榜单表，
+	// 榜单缓存恢复时按 ID 查表，加载晚了那批榜单的缓存就全被丢掉。
+	d.loadModules()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
 	// 自定义源注册表必须在任何站源判定之前就绪：isDuanjuProviderSource /
@@ -433,7 +441,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.cachedRecommendations(input.Category)
 	case "rankingBoards":
 		boards := []rankingBoard{}
-		for _, board := range rankingBoards {
+		for _, board := range allRankingBoards() {
 			if nativeSourceAvailable(board.Source) {
 				boards = append(boards, board)
 			}
@@ -649,11 +657,36 @@ func nativeDispatch(input nativeInput) (any, error) {
 		if !ok {
 			return nil, errSourceNotCompiled
 		}
-		account, ok := provider.(SourceAccount)
+		account, ok := providerAs[SourceAccount](provider)
 		if !ok {
 			return nil, errors.New("当前版本的青空次元不支持账号登录")
 		}
 		return account.Account(ctx, input.Command, input.Account)
+	// sourceAccount：通用的站源账号能力（站源模块用自己的登录流程时走这里）。
+	// command 与 account 由站源自己解释，运行时只负责按 action 找到站源转过去。
+	case "sourceAccount":
+		provider, ok := engine.downloader.sourceProvider(input.Source)
+		if !ok {
+			return nil, errSourceNotCompiled
+		}
+		account, ok := providerAs[SourceAccount](provider)
+		if !ok {
+			return nil, errors.New("该站源不支持账号登录")
+		}
+		return account.Account(ctx, input.Command, input.Account)
+	// 站源模块：已装列表、商店索引、准备安装包、安装、卸载。
+	// 站源以模块形式提供，装上后即出现在站源列表里（见 module_loader.go）。
+	case "modules":
+		items, err := engine.modules()
+		return map[string]any{"items": items}, err
+	case "moduleIndex":
+		return engine.moduleStore(ctx)
+	case "prepareModule":
+		return engine.prepareModule(ctx, input.File, input.URL, input.Source)
+	case "installModule":
+		return engine.installModule(input.Token)
+	case "uninstallModule":
+		return engine.uninstallModule(input.Source)
 	case "addCustomSource":
 		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
 		if err != nil {
@@ -827,7 +860,7 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceJinguo && source != sourceHeitao && source != sourceBeabox && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && source != sourceFanqie {
+	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceJinguo && source != sourceHeitao && source != sourceBeabox && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && source != sourceFanqie && !moduleAllowsEmptyCatalog(source) {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {

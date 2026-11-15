@@ -9,6 +9,7 @@ import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
 import 'models.dart';
+import 'source_modules.dart';
 import 'danmaku_models.dart';
 import 'background_downloads.dart';
 import 'fanqie_backend.dart';
@@ -344,6 +345,24 @@ abstract class AppRepository {
   /// 不会写入自定义源；是否保存由用户在表单里点「保存」决定。
   Future<Map<String, dynamic>> analyzeCustomSourceSite(String base) async =>
       throw AppFailure('当前环境不支持自定义源');
+
+  // ---- 站源模块管理（所有人可用，不限制管理员）----
+  Future<List<SourceModule>> modules() async => const [];
+  Future<ModuleStore> moduleIndex() async => const ModuleStore([]);
+
+  /// 校验并暂存一个安装包，产出带一次性凭据的模块信息；
+  /// [file] 本地 zip 路径、[url] 下载地址、[indexed] 商店里的模块标识，三者取一。
+  Future<SourceModule> prepareModule({
+    String? file,
+    String? url,
+    String? indexed,
+  }) async => throw AppFailure('当前环境不支持站源模块');
+
+  /// 用 [prepareModule] 给出的凭据安装模块，返回它登记用的站源 ID。
+  Future<String> installModule(String token) async =>
+      throw AppFailure('当前环境不支持站源模块');
+  Future<void> uninstallModule(String id) async =>
+      throw AppFailure('当前环境不支持站源模块');
 }
 
 class NativeRepository extends AppRepository {
@@ -1382,6 +1401,58 @@ class NativeRepository extends AppRepository {
       'base': base,
     });
     return Map<String, dynamic>.from(result as Map);
+  }
+
+  // ---- 站源模块管理 ----
+  //
+  // 与自定义源一样不受管理员限制：模块属于这台设备的本地内容，
+  // 普通用户也能自己装、自己卸。
+
+  @override
+  Future<List<SourceModule>> modules() async {
+    final result = await _call({'action': 'modules'});
+    return [
+      for (final row in result['items'] as List? ?? const [])
+        SourceModule.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
+  }
+
+  @override
+  Future<ModuleStore> moduleIndex() async {
+    final result = await _call({'action': 'moduleIndex'});
+    return ModuleStore(
+      [
+        for (final row in result['items'] as List? ?? const [])
+          ModuleIndexEntry.fromJson(Map<String, dynamic>.from(row as Map)),
+      ],
+      warning: result['warning'] as String? ?? '',
+    );
+  }
+
+  @override
+  Future<SourceModule> prepareModule({
+    String? file,
+    String? url,
+    String? indexed,
+  }) async {
+    final result = await _call({
+      'action': 'prepareModule',
+      'file': file ?? '',
+      'url': url ?? '',
+      'source': indexed ?? '',
+    });
+    return SourceModule.fromJson(Map<String, dynamic>.from(result as Map));
+  }
+
+  @override
+  Future<String> installModule(String token) async {
+    final result = await _call({'action': 'installModule', 'token': token});
+    return (result as Map)['source'] as String? ?? '';
+  }
+
+  @override
+  Future<void> uninstallModule(String id) async {
+    await _call({'action': 'uninstallModule', 'source': id});
   }
 }
 

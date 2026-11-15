@@ -52,11 +52,11 @@ func providerCategories(ctx context.Context, provider Provider, force bool) []Ca
 // 其次普通搜索；两者都没实现的源返回 errSearchUnsupported，让调用方决定是提示
 // 用户（单源）还是静默跳过（跨源聚合）。
 func providerSearch(ctx context.Context, provider Provider, page int, query string) ([]Drama, bool, error) {
-	if searcher, ok := provider.(WarningSearcher); ok {
+	if searcher, ok := providerAs[WarningSearcher](provider); ok {
 		dramas, more, _, err := searcher.SearchWithWarning(ctx, page, query)
 		return dramas, more, err
 	}
-	if searcher, ok := provider.(Searcher); ok {
+	if searcher, ok := providerAs[Searcher](provider); ok {
 		return searcher.Search(ctx, page, query)
 	}
 	return nil, false, errSearchUnsupported
@@ -65,10 +65,10 @@ func providerSearch(ctx context.Context, provider Provider, page int, query stri
 // providerRankingPage 取榜单列表。只声明了「带名次的条目」的源（如黄果 AI）
 // 去掉名次信息后回退成剧集列表，保证两类源在榜单页表现一致。
 func providerRankingPage(ctx context.Context, provider Provider, board string, page int) ([]Drama, bool, error) {
-	if ranker, ok := provider.(SourceRankings); ok {
+	if ranker, ok := providerAs[SourceRankings](provider); ok {
 		return ranker.RankingPage(ctx, board, page)
 	}
-	if ranker, ok := provider.(SourceRankingEntries); ok {
+	if ranker, ok := providerAs[SourceRankingEntries](provider); ok {
 		entries, more, err := ranker.RankingEntries(ctx, board, page)
 		if err != nil {
 			return nil, false, err
@@ -85,10 +85,10 @@ func providerRankingPage(ctx context.Context, provider Provider, board string, p
 // providerRankingEntries 取带名次的榜单条目。只实现了「按页取剧集」的源（如黄豆）
 // 按运行时的旧口径补名次与热度文案，保证改造前后榜单一模一样。
 func providerRankingEntries(ctx context.Context, provider Provider, board string, page int) ([]RankingEntry, bool, error) {
-	if ranker, ok := provider.(SourceRankingEntries); ok {
+	if ranker, ok := providerAs[SourceRankingEntries](provider); ok {
 		return ranker.RankingEntries(ctx, board, page)
 	}
-	if ranker, ok := provider.(SourceRankings); ok {
+	if ranker, ok := providerAs[SourceRankings](provider); ok {
 		dramas, more, err := ranker.RankingPage(ctx, board, page)
 		if err != nil {
 			return nil, false, err

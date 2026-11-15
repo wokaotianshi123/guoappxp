@@ -6,6 +6,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'local_profiles.dart';
 import 'local_snapshot.dart';
 import 'models.dart';
+import 'source_modules.dart';
 import 'playback_preferences.dart';
 import 'download_preferences.dart';
 import 'catalog_sort.dart';
@@ -38,6 +39,7 @@ class LocalStore extends ChangeNotifier {
   int _failures = 0;
   Map<String, bool> _sourceSwitches = {};
   List<CustomSourceSite> _customSources = [];
+  List<ModuleSourceSite> _moduleSources = [];
   DateTime _retryAfter = DateTime(2000);
 
   void _initialize() {
@@ -62,6 +64,7 @@ class LocalStore extends ChangeNotifier {
       _locked = forceLogin && profile.protected;
       _loadSourceSwitches();
       _loadCustomSources();
+      _loadModuleSources();
       _loadLibrary();
       _loadSeriesCandidates();
       _queue(() => _moveSeriesCandidates().catchError((Object _) {}));
@@ -125,15 +128,20 @@ class LocalStore extends ChangeNotifier {
   bool get canDownload => !locked && (profile.admin || profile.download);
 
   /// 自定义源属于「谁用谁配」的本机偏好，不参与用户级源权限判定：
-  /// 所有用户都能添加、编辑、删除，并在自己的列表里看到它们。
+  /// 所有用户都能添加、编辑、删除，并在自己的列表里看到它们。站源模块同理——
+  /// 装上就属于这台设备，每个用户各自决定要不要在自己的源列表里显示。
   bool allowsSource(String source) =>
       !locked &&
       SourceSite.isAvailable(source) &&
-      (SourceSite.isCustomId(source) || profile.allows(source)) &&
+      (SourceSite.isCustomId(source) ||
+          SourceSite.isModuleId(source) ||
+          profile.allows(source)) &&
       sourceEnabled(source);
   List<SourceSite> get sources => [
     ...SourceSite.values.where((site) => allowsSource(site.id)),
     for (final site in _customSources)
+      if (allowsSource(site.id)) site.asSourceSite,
+    for (final site in _moduleSources)
       if (allowsSource(site.id)) site.asSourceSite,
   ];
   List<SourceSite> get permittedSources => [
@@ -141,10 +149,15 @@ class LocalStore extends ChangeNotifier {
       if (!locked && profile.allows(site.id)) site,
     for (final site in _customSources)
       if (!locked) site.asSourceSite,
+    for (final site in _moduleSources)
+      if (!locked) site.asSourceSite,
   ];
 
   /// 已登记的本地自定义源（原生核心为准，这里只缓存展示用）。
   List<CustomSourceSite> get customSources => List.unmodifiable(_customSources);
+
+  /// 已安装模块提供的站源（原生核心为准，这里只缓存展示用）。
+  List<ModuleSourceSite> get moduleSources => List.unmodifiable(_moduleSources);
 
   bool sourceEnabled(String source) =>
       _sourceSwitches[source] ?? !SourceSite.isRestricted(source);
@@ -186,6 +199,44 @@ class LocalStore extends ChangeNotifier {
       ..addEntries(_customSources.map((site) => MapEntry(site.id, site.name)));
   }
 
+  void _loadModuleSources() {
+    if (_configurationError != null) {
+      _moduleSources = [];
+      _syncModuleIds();
+      return;
+    }
+    try {
+      _moduleSources = [
+        for (final row in readJsonList(_string('moduleSources')))
+          ModuleSourceSite.fromJson(row),
+      ];
+    } catch (_) {
+      _moduleSources = [];
+    }
+    _syncModuleIds();
+  }
+
+  /// 把已装模块提供的站源同步进 [SourceSite]，让源栏、搜索、追剧、观看记录
+  /// 与源显示列表都能按真实名称与开关展示模块源。
+  void _syncModuleIds() {
+    SourceSite.moduleIds
+      ..clear()
+      ..addAll(_moduleSources.map((site) => site.id));
+    SourceSite.moduleNames
+      ..clear()
+      ..addEntries(
+        _moduleSources.map((site) => MapEntry(site.id, site.displayName)),
+      );
+    SourceSite.moduleSearchIds
+      ..clear()
+      ..addAll(_moduleSources.where((site) => site.search).map((e) => e.id));
+    SourceSite.moduleSuggestionIds
+      ..clear()
+      ..addAll(
+        _moduleSources.where((site) => site.suggestions).map((e) => e.id),
+      );
+  }
+
   /// 把原生核心返回的自定义源列表写入本地，并同步到 [SourceSite.customIds]，
   /// 让源栏、搜索、追剧等按 id 判断可用性的地方立刻生效。
   Future<void> syncCustomSources(List<CustomSourceSite> sources) async {
@@ -213,6 +264,34 @@ class LocalStore extends ChangeNotifier {
       }
       _customSources = sorted;
       _syncCustomIds();
+      _notify();
+      if (failure != null) throw failure;
+    });
+  }
+
+  /// 把已装模块提供的站源写入本地缓存，并同步到 [SourceSite]。
+  /// 与自定义源同款：核心为准，本地只缓存展示用的 ID / 名称 / 能力标记。
+  Future<void> syncModuleSources(List<ModuleSourceSite> sources) async {
+    final epoch = _epoch;
+    await _queue(() async {
+      if (locked || epoch != _epoch) return;
+      final sorted = List<ModuleSourceSite>.of(sources)
+        ..sort((a, b) => a.name.compareTo(b.name));
+      final serialized = jsonEncode(
+        sorted.map((site) => site.toJson()).toList(),
+      );
+      Error? failure;
+      if (serialized != _string('moduleSources')) {
+        try {
+          await _commit({'moduleSources': serialized});
+        } catch (error) {
+          // 与自定义源同理：写盘失败也要让内存里的模块源生效，
+          // 否则刚装好的模块在重启前一直不可见。
+          failure = error is Error ? error : StateError('$error');
+        }
+      }
+      _moduleSources = sorted;
+      _syncModuleIds();
       _notify();
       if (failure != null) throw failure;
     });

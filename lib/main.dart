@@ -12,6 +12,7 @@ import 'core_bridge.dart';
 import 'diary_service.dart';
 import 'local_store.dart';
 import 'portable_data.dart';
+import 'source_modules.dart';
 import 'ui/app.dart';
 import 'ui/theme/app_theme.dart';
 import 'window_on_top.dart';
@@ -127,6 +128,7 @@ class _AppBootstrapState extends State<AppBootstrap>
         repository.access = local;
       });
       unawaited(_loadCustomSources());
+      unawaited(_loadModuleSources());
     } catch (failure) {
       if (mounted) setState(() => error = failure);
     }
@@ -139,6 +141,18 @@ class _AppBootstrapState extends State<AppBootstrap>
     if (local == null) return;
     try {
       await local.syncCustomSources(await repository.customSources());
+    } catch (_) {}
+  }
+
+  /// 同上，把已装模块提供的站源同步到本地：模块源要和内置源一样在源栏、
+  /// 搜索与源显示列表里可用。
+  Future<void> _loadModuleSources() async {
+    final local = store;
+    if (local == null) return;
+    try {
+      await local.syncModuleSources(
+        moduleSourceSites(await repository.modules()),
+      );
     } catch (_) {}
   }
 

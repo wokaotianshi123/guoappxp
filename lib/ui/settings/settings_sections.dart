@@ -21,6 +21,7 @@ import 'appearance_settings.dart';
 import 'backup_actions.dart';
 import 'cache_view.dart';
 import 'diary_view.dart';
+import 'modules_view.dart';
 import 'settings_rows.dart';
 import 'sources_view.dart';
 import 'storage_view.dart';
@@ -340,6 +341,16 @@ class SettingsSection extends StatelessWidget {
               subtitle: '登录需要账号的站源',
               onTap: () => open('站源账号', (_) => const SourceAccountsView()),
             ),
+        ],
+      ),
+      SettingsCard(
+        children: [
+          SettingsTile(
+            icon: Icons.extension_outlined,
+            title: '模块',
+            subtitle: '安装、更新和卸载站源模块',
+            onTap: () => open('模块', (_) => ModulesView(store: store)),
+          ),
         ],
       ),
       SettingsCard(

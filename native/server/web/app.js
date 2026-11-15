@@ -2304,7 +2304,7 @@ function renderSourceVisibility() {
         '<div class="vis-row" style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
         '<div style="min-width:0">' +
         '<div style="font-weight:600">' + escapeHTML(item.name || '') +
-        (item.builtin ? '（内置）' : '（自定义）') + '</div>' +
+        (item.builtin ? '（内置）' : item.module ? '（模块）' : '（自定义）') + '</div>' +
         '<div style="font-size:12px;opacity:0.6">' + escapeHTML(item.id) + '</div>' +
         '</div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:none">' +
@@ -2349,6 +2349,274 @@ function bindSourceVisibilityView() {
   });
 }
 
+// —— 站源模块管理（设在自定义源页的「模块」标签里）——
+//
+// 模块是运行时加载的 JS 站源：装上之后它提供的站源会出现在站源下拉框与
+// 源显示列表里，与内置源、自定义源一样可以开关。与本体同名的模块由 Go 核心
+// 改名成 mod:<标识>，两者共存互不影响。
+
+function moduleList() {
+  return fetch('/api/modules')
+    .then(function (response) {
+      return response.json();
+    })
+    .then(function (data) {
+      return (data && data.items) || [];
+    });
+}
+
+function moduleStore() {
+  return fetch('/api/modules/index')
+    .then(function (response) {
+      return response.json();
+    })
+    .then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '读取模块商店失败');
+      }
+      return { items: data.items || [], warning: data.warning || '' };
+    });
+}
+
+function moduleInstall(payload) {
+  var options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
+  return fetch('/api/modules/install', options)
+    .then(function (response) {
+      return response.json();
+    })
+    .then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '安装模块失败');
+      }
+      return data;
+    });
+}
+
+function moduleInstallFile(file) {
+  return fetch('/api/modules/install', { method: 'POST', body: file })
+    .then(function (response) {
+      return response.json();
+    })
+    .then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '安装模块失败');
+      }
+      return data;
+    });
+}
+
+function moduleUninstall(id) {
+  return fetch('/api/modules/uninstall', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ id: id }),
+  }).then(function (response) {
+    return response.json().then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '卸载模块失败');
+      }
+      return data;
+    });
+  });
+}
+
+// 版本比较：模块版本固定是 x.y.z，装上的比商店里的旧就提示可更新。
+function moduleNewerVersion(latest, installed) {
+  var next = String(latest || '').split('.');
+  var current = String(installed || '').split('.');
+  if (next.length !== 3 || current.length !== 3) {
+    return false;
+  }
+  for (var index = 0; index < 3; index++) {
+    var a = parseInt(next[index], 10);
+    var b = parseInt(current[index], 10);
+    if (isNaN(a) || isNaN(b)) {
+      return false;
+    }
+    if (a !== b) {
+      return a > b;
+    }
+  }
+  return false;
+}
+
+function renderModules() {
+  return Promise.all([
+    moduleList(),
+    moduleStore().catch(function (error) {
+      return { items: [], warning: error.message || '读取模块商店失败' };
+    }),
+  ]).then(function (results) {
+    var installed = results[0];
+    var store = results[1];
+    var byId = {};
+    installed.forEach(function (item) {
+      byId[item.id] = item;
+    });
+    function moduleLabel(item) {
+      return escapeHTML(item.name || item.id || '') +
+        (item.version ? ' · ' + escapeHTML(item.version) : '') +
+        (item.adult ? '（限制级）' : '');
+    }
+    var installedRows = installed.map(function (item) {
+      return (
+        '<div style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
+        '<div style="min-width:0">' +
+        '<div style="font-weight:600">' + moduleLabel(item) + '</div>' +
+        '<div style="font-size:12px;opacity:0.7">' +
+        escapeHTML(item.description || '') +
+        '</div>' +
+        '<div style="font-size:12px;opacity:0.55">站源：' + escapeHTML(item.sourceId || item.id || '') +
+        (item.error ? ' · ' + escapeHTML(item.error) : '') + '</div>' +
+        '</div>' +
+        '<div style="display:flex;gap:6px;flex:none">' +
+        '<button type="button" class="btn danger" data-module-remove="' + escapeHTML(item.id) + '" data-name="' +
+        escapeHTML(item.name || item.id || '') + '">卸载</button>' +
+        '</div>' +
+        '</div>'
+      );
+    }).join('');
+    if (!installedRows) {
+      installedRows = '<div class="empty">还没有安装模块。站源以模块的形式提供，安装后才能在站源列表里使用。</div>';
+    }
+    var storeRows = store.items.map(function (entry) {
+      var have = byId[entry.id];
+      var update = have && moduleNewerVersion(entry.version, have.version);
+      var action = '';
+      if (!have) {
+        action = '<button type="button" class="btn" data-module-install="' + escapeHTML(entry.id) + '">安装</button>';
+      } else if (update) {
+        action = '<button type="button" class="btn" data-module-install="' + escapeHTML(entry.id) + '">更新</button>';
+      } else {
+        action = '<span style="font-size:12px;opacity:0.6">已安装</span>';
+      }
+      return (
+        '<div style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
+        '<div style="min-width:0">' +
+        '<div style="font-weight:600">' + moduleLabel(entry) + (entry.bundled ? '（内置）' : '') + '</div>' +
+        '<div style="font-size:12px;opacity:0.7">' + escapeHTML(entry.description || entry.id || '') + '</div>' +
+        '</div>' +
+        '<div style="flex:none">' + action + '</div>' +
+        '</div>'
+      );
+    }).join('');
+    if (!storeRows) {
+      storeRows = '<div class="empty">商店里还没有模块。</div>';
+    }
+    view.innerHTML =
+      '<div class="lib">' +
+      '<div class="lib-tabs">' +
+      '<span class="lib-tab" id="custom-tab-back">自定义源</span>' +
+      '<span class="lib-tab active">模块（' + installed.length + '）</span>' +
+      '<span class="spacer"></span>' +
+      '<input type="file" id="module-install-file" accept=".zip,application/zip" style="display:none" />' +
+      '<button type="button" class="btn" id="module-install-file-btn">从文件安装</button>' +
+      '<button type="button" class="btn" id="module-install-url-btn">从地址安装</button>' +
+      '</div>' +
+      '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
+      '模块是可安装的站源。装上后它的站源出现在站源下拉框与「源显示」里，与本体同名的模块会另行标记并共存；卸载后其追剧、观看记录与已下载视频保留。' +
+      '</div>' +
+      (store.warning ? '<div class="empty">' + escapeHTML(store.warning) + '</div>' : '') +
+      '<div style="font-weight:600;padding:8px 2px 2px">已安装</div>' +
+      installedRows +
+      '<div style="font-weight:600;padding:12px 2px 2px">模块商店</div>' +
+      storeRows +
+      '</div>';
+    bindModuleView();
+  });
+}
+
+function bindModuleView() {
+  var back = document.getElementById('custom-tab-back');
+  if (back) {
+    back.addEventListener('click', function () {
+      renderCustomSources();
+    });
+  }
+  var fileInput = document.getElementById('module-install-file');
+  var fileButton = document.getElementById('module-install-file-btn');
+  if (fileButton && fileInput) {
+    fileButton.addEventListener('click', function () {
+      fileInput.click();
+    });
+    fileInput.addEventListener('change', function () {
+      var file = fileInput.files && fileInput.files[0];
+      if (!file) {
+        return;
+      }
+      fileButton.disabled = true;
+      moduleInstallFile(file)
+        .then(function () {
+          return loadSources();
+        })
+        .then(function () {
+          renderModules();
+        })
+        .catch(function (error) {
+          fileButton.disabled = false;
+          window.alert(error.message || '安装模块失败');
+        });
+    });
+  }
+  var urlButton = document.getElementById('module-install-url-btn');
+  if (urlButton) {
+    urlButton.addEventListener('click', function () {
+      var address = window.prompt('填写模块安装包（zip）的下载地址：', 'https://');
+      if (!address) {
+        return;
+      }
+      urlButton.disabled = true;
+      moduleInstall({ url: address })
+        .then(function () {
+          return loadSources();
+        })
+        .then(function () {
+          renderModules();
+        })
+        .catch(function (error) {
+          urlButton.disabled = false;
+          window.alert(error.message || '安装模块失败');
+        });
+    });
+  }
+  Array.prototype.forEach.call(view.querySelectorAll('[data-module-install]'), function (button) {
+    button.addEventListener('click', function () {
+      button.disabled = true;
+      moduleInstall({ id: button.getAttribute('data-module-install') })
+        .then(function () {
+          return loadSources();
+        })
+        .then(function () {
+          renderModules();
+        })
+        .catch(function (error) {
+          button.disabled = false;
+          window.alert(error.message || '安装模块失败');
+        });
+    });
+  });
+  Array.prototype.forEach.call(view.querySelectorAll('[data-module-remove]'), function (button) {
+    button.addEventListener('click', function () {
+      var name = button.getAttribute('data-name') || button.getAttribute('data-module-remove');
+      if (!window.confirm('卸载「' + name + '」？该站源的追剧、观看记录和已下载视频会保留，但重新安装前不再显示。')) {
+        return;
+      }
+      button.disabled = true;
+      moduleUninstall(button.getAttribute('data-module-remove'))
+        .then(function () {
+          return loadSources();
+        })
+        .then(function () {
+          renderModules();
+        })
+        .catch(function (error) {
+          button.disabled = false;
+          window.alert(error.message || '卸载模块失败');
+        });
+    });
+  });
+}
+
 function renderCustomSources() {
   return customSourceList().then(function (items) {
     var rows = items.map(function (item) {
@@ -2374,6 +2642,7 @@ function renderCustomSources() {
       '<div class="lib">' +
       '<div class="lib-tabs">' +
       '<span class="lib-tab active">自定义源（' + items.length + '）</span>' +
+      '<span class="lib-tab" id="modules-tab">模块</span>' +
       '<span class="spacer"></span>' +
       '<input type="file" id="custom-import-file" accept=".json,.txt,application/json,text/plain" style="display:none" />' +
       '<button type="button" class="btn" id="custom-import">导入文件</button>' +
@@ -2391,6 +2660,12 @@ function renderCustomSources() {
 }
 
 function bindCustomSourcesView(items) {
+  var modulesTab = document.getElementById('modules-tab');
+  if (modulesTab) {
+    modulesTab.addEventListener('click', function () {
+      renderModules();
+    });
+  }
   var addButton = document.getElementById('custom-add');
   if (addButton) {
     addButton.addEventListener('click', function () {

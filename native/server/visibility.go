@@ -154,6 +154,16 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 				}
 			}
 		}
+		// 站源模块提供的站源同样要能在这里开关：装上的模块源与内置源、自定义源
+		// 一样参与「首页显示」的取舍。
+		for source, name := range moduleSourceNames() {
+			if sourceAvailable(source) {
+				items = append(items, map[string]any{
+					"id": source, "name": name, "builtin": false, "module": true,
+					"visible": !hiddenSources[source],
+				})
+			}
+		}
 		// 与 /api/sources 同款排序：先中文（拼音序）后字母序。
 		sort.SliceStable(items, func(i, j int) bool {
 			return core.CompareSourceNames(items[i]["name"].(string), items[j]["name"].(string)) < 0

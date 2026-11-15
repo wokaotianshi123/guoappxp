@@ -29,12 +29,14 @@ class SourceSite {
       id == 'a123' ||
       id == 'xchina' ||
       id == 'theporny' ||
+      moduleSearchIds.contains(id) ||
       duanjuPaged;
 
   /// 短剧家族里支持翻页的源（与 Go 侧 duanjuSourceSpec.Paged 对齐）。
   bool get duanjuPaged => _duanjuPagedIds.contains(id);
 
-  bool get searchSuggestions => id == 'hongguo';
+  bool get searchSuggestions =>
+      id == 'hongguo' || moduleSuggestionIds.contains(id);
   String get groupId => switch (id) {
     'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
     _ => id,
@@ -131,21 +133,42 @@ class SourceSite {
 
   /// 自定义源 ID → 显示名，让观看记录、追剧、下载等处的来源标签能显示真实名称。
   static final Map<String, String> customNames = {};
+
+  /// 已安装站源模块提供的源 ID（与本体同名时是核心改过的 `mod:<标识>`）。
+  /// 模块源的启用状态、显示名称、来源标签都按这个表走，与内置源同一套逻辑。
+  static final Set<String> moduleIds = {};
+
+  /// 模块源 ID → 站源列表里的显示名（已带「（模块）」标注）。
+  static final Map<String, String> moduleNames = {};
+
+  /// 模块清单里声明了搜索 / 搜索联想的源，决定搜索页是否支持在线搜索与联想。
+  static final Set<String> moduleSearchIds = {};
+  static final Set<String> moduleSuggestionIds = {};
+
   static bool isCustomId(String id) => id.startsWith('custom:');
+  static bool isModuleId(String id) => moduleIds.contains(id);
   static bool isAvailable(String id) =>
-      values.any((site) => site.id == id) || customIds.contains(id);
+      values.any((site) => site.id == id) ||
+      customIds.contains(id) ||
+      moduleIds.contains(id);
   static bool isKnown(String id) =>
-      allValues.any((site) => site.id == id) || customIds.contains(id);
+      allValues.any((site) => site.id == id) ||
+      customIds.contains(id) ||
+      moduleIds.contains(id);
   static bool isRestricted(String id) =>
       restrictedValues.any((site) => site.id == id);
   static String customName(String id) {
     if (id.startsWith('custom:')) return customNames[id] ?? '自定义源';
     return id;
   }
+  static String moduleName(String id) => moduleNames[id] ?? '模块站源';
 
   static SourceSite byId(String id) {
     if (customIds.contains(id)) {
       return SourceSite(id, customName(id), '自定义站源');
+    }
+    if (moduleIds.contains(id)) {
+      return SourceSite(id, moduleName(id), '站源模块');
     }
     return allValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
   }

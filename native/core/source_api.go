@@ -136,6 +136,23 @@ func unregisterSource(id string) {
 	}
 }
 
+// Unregister 摘掉一个运行期注册的站源。只有站源模块会用到：卸载与更新模块时
+// 要先把上一次的注册清掉，编译期编进来的站源不受影响（它们从不调用它）。
+func Unregister(source string) {
+	unregisterSource(canonicalProviderSource(source))
+}
+
+// forgetSourceProvider 丢掉某个站源的 Provider 实例缓存。
+//
+// sourceProvider 会按站源 ID 缓存实例；模块更新后若不清缓存，旧的 JS 虚拟机
+// 还会继续服务，表现为「模块升了版本但行为没变」。
+func (d *Downloader) forgetSourceProvider(source string) {
+	source = canonicalProviderSource(source)
+	d.sourceProviderMu.Lock()
+	defer d.sourceProviderMu.Unlock()
+	delete(d.sourceProviders, source)
+}
+
 // RegisteredSources 返回当前二进制里编入的站源描述符，按注册顺序。
 func RegisteredSources() []SourceDescriptor {
 	sourceRegistry.RLock()

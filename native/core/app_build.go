@@ -79,6 +79,12 @@ func isDemoProviderSource(descriptor SourceDescriptor) bool {
 
 func nativeSourceAvailable(source string) bool {
 	source = canonicalProviderSource(source)
+	// 站源模块（模块页装上的站源）不受编译期版本裁剪门控：它本来就不在源清单里，
+	// 用户装上就应该能用，红果鉴与真果鉴一致。模块与本体的同名源各占一个 ID
+	// （模块改名成 mod:<标识>），因此这里的提前放行不会让本体源变得可见。
+	if isModuleProviderSource(source) {
+		return true
+	}
 	// 已下线的站源一律不可用，优先于内置源与全站源门控。
 	if removedProviderSources[source] {
 		return false

@@ -612,12 +612,18 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 	}
 	// 并入以新契约（core.Register）编入、但未列进静态表的站源：
 	// 以后新增外置源不必逐个改 sourceNames，注册了就能出现在下拉框。
+	// 站源模块也走这条路注册，但它们要带「（模块）」标注，所以在这里跳过，
+	// 由下面统一的模块分支加入（否则同一个源会出现两条）。
+	moduleSources := moduleSourceNames()
 	known := map[string]bool{}
 	for _, source := range sourceNames {
 		known[source.ID] = true
 	}
 	for _, descriptor := range core.RegisteredSources() {
 		if descriptor.ID == "" || known[descriptor.ID] {
+			continue
+		}
+		if _, isModule := moduleSources[descriptor.ID]; isModule {
 			continue
 		}
 		known[descriptor.ID] = true
@@ -647,6 +653,15 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 					"id": custom["id"], "name": custom["name"], "visible": !isSourceHidden(custom["id"]),
 				})
 			}
+		}
+	}
+	// 并入站源模块提供的站源，使装上的模块也能在下拉框里切换。
+	// 与本体同名的模块在核心侧已改名成 mod:<标识>，两者各占一个条目。
+	for source, name := range moduleSources {
+		if sourceAvailable(source) {
+			items = append(items, map[string]any{
+				"id": source, "name": name, "visible": !isSourceHidden(source),
+			})
 		}
 	}
 	// 统一按「先中文（拼音序）后字母序」排列，供前端下拉框与源显示列表展示。
@@ -1116,6 +1131,8 @@ func main() {
 	mux.HandleFunc("/api/source-visibility", handleSourceVisibility)
 	mux.HandleFunc("/api/custom-sources", handleCustomSources)
 	mux.HandleFunc("/api/custom-sources/", handleCustomSources)
+	mux.HandleFunc("/api/modules", handleModules)
+	mux.HandleFunc("/api/modules/", handleModules)
 	mux.HandleFunc("/api/library", handleLibrary)
 	mux.HandleFunc("/api/info", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, map[string]any{

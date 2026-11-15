@@ -1,0 +1,188 @@
+package core
+
+// 模块站源的可选能力：推荐流、搜索联想、弹幕、设备注册、榜单、分季、封面、
+// 元数据补全、目录游标、播放鉴权。移植自 guoappxpx，接口名对齐 guoappxp 的
+// 既有定义（榜单用 SourceRankingEntries，账号用 SourceAccount）。
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"net/url"
+	"strings"
+)
+
+type jsRecommendationPage struct {
+	Items   []Drama         `json:"items"`
+	Cursor  json.RawMessage `json:"cursor"`
+	HasMore bool            `json:"hasMore"`
+}
+
+type jsDanmakuIDs struct {
+	Series string `json:"series"`
+	Video  string `json:"video"`
+}
+
+type jsMediaAuthorization struct {
+	Header string `json:"header"`
+	Value  string `json:"value"`
+}
+
+type jsSeason struct {
+	Number int   `json:"number"`
+	Drama  Drama `json:"drama"`
+}
+
+type jsRankingItem struct {
+	Rank   int    `json:"rank"`
+	Drama  Drama  `json:"drama"`
+	Metric string `json:"metric"`
+}
+
+type jsRankingPage struct {
+	Items       []jsRankingItem `json:"items"`
+	HasMore     bool            `json:"hasMore"`
+	TotalPages  int             `json:"totalPages"`
+	UpdatedText string          `json:"updatedText"`
+}
+
+func moduleRaw(raw json.RawMessage) json.RawMessage {
+	if len(raw) == 0 {
+		return nil
+	}
+	return raw
+}
+
+func (p *jsProvider) quickCall(function string, result any, arguments ...any) error {
+	ctx, cancel := context.WithTimeout(context.Background(), moduleQuickTimeout)
+	defer cancel()
+	return p.call(ctx, function, result, arguments...)
+}
+
+func (p *jsProvider) Suggestions(ctx context.Context, query string) ([]string, error) {
+	var names []string
+	return names, p.call(ctx, "suggestions", &names, query)
+}
+
+func (p *jsProvider) ValidRecommendation(genre string, cursor json.RawMessage) error {
+	var ignored any
+	return p.quickCall("validRecommendation", &ignored, genre, moduleRaw(cursor))
+}
+
+func (p *jsProvider) Recommendations(ctx context.Context, genre string, cursor json.RawMessage, seen []string) (RecommendationPage, error) {
+	var page jsRecommendationPage
+	if err := p.call(ctx, "recommendations", &page, genre, moduleRaw(cursor), seen); err != nil {
+		return RecommendationPage{}, err
+	}
+	return RecommendationPage{Dramas: page.Items, Cursor: page.Cursor, HasMore: page.HasMore}, nil
+}
+
+func (p *jsProvider) DanmakuIDs(task Task) (string, string, bool) {
+	var ids *jsDanmakuIDs
+	if p.quickCall("danmakuIds", &ids, task) != nil || ids == nil || ids.Series == "" || ids.Video == "" {
+		return "", "", false
+	}
+	return ids.Series, ids.Video, true
+}
+
+func (p *jsProvider) Danmaku(ctx context.Context, series, video string, startMS, durationMS int64) (DanmakuPage, error) {
+	var page DanmakuPage
+	return page, p.call(ctx, "danmaku", &page, series, video, startMS, durationMS)
+}
+
+func (p *jsProvider) Devices(ctx context.Context, register bool) (bool, error) {
+	var ready bool
+	return ready, p.call(ctx, "devices", &ready, register)
+}
+
+// RankingEntries 实现 SourceRankingEntries：模块的 rankingPage(boardId, page)
+// 直接给出名次与热度文案，运行时按原样透传。
+//
+// 只实现这一种榜单能力（不实现 SourceRankings）是有意的：guoappxp 的
+// providerRankingPage 会优先取 SourceRankings，而那条路径拿不到名次，
+// 榜单页就会丢掉排位标记。
+func (p *jsProvider) RankingEntries(ctx context.Context, board string, page int) ([]RankingEntry, bool, error) {
+	var result jsRankingPage
+	if err := p.call(ctx, "rankingPage", &result, board, page); err != nil {
+		return nil, false, err
+	}
+	entries := make([]RankingEntry, 0, len(result.Items))
+	for _, item := range result.Items {
+		entries = append(entries, RankingEntry{Rank: item.Rank, Drama: item.Drama, Metric: item.Metric})
+	}
+	return entries, result.HasMore, nil
+}
+
+func (p *jsProvider) Seasons(ctx context.Context, sourceID string) ([]Season, error) {
+	var found []jsSeason
+	if err := p.call(ctx, "seasons", &found, sourceID); err != nil || len(found) == 0 {
+		return nil, err
+	}
+	seasons := make([]Season, 0, len(found))
+	for _, season := range found {
+		seasons = append(seasons, Season{Number: season.Number, Drama: season.Drama})
+	}
+	return seasons, nil
+}
+
+func (p *jsProvider) CoverAddress(ctx context.Context, drama LibraryDrama, sourceID string) (string, error) {
+	var address string
+	return address, p.call(ctx, "coverAddress", &address, drama, sourceID)
+}
+
+func (p *jsProvider) NeedsExtraMetadata(drama LibraryDrama) bool {
+	var needed bool
+	return p.quickCall("needsExtraMetadata", &needed, drama) == nil && needed
+}
+
+func (p *jsProvider) ExtraMetadata(ctx context.Context, drama LibraryDrama, sourceID string) (LibraryDrama, error) {
+	var patch *Drama
+	if err := p.call(ctx, "extraMetadata", &patch, drama, sourceID); err != nil {
+		return drama, err
+	}
+	if patch != nil && patch.ID == drama.ID {
+		drama = MergeNativeDrama(drama, NativeNormalize(*patch))
+	}
+	return drama, ctx.Err()
+}
+
+func (p *jsProvider) CatalogState() json.RawMessage {
+	var state json.RawMessage
+	if p.quickCall("catalogState", &state) != nil || string(state) == "null" {
+		return nil
+	}
+	return state
+}
+
+func (p *jsProvider) RestoreCatalogState(raw json.RawMessage) {
+	var ignored any
+	_ = p.quickCall("restoreCatalogState", &ignored, moduleRaw(raw))
+}
+
+func (p *jsProvider) AuthorizesMedia(address *url.URL) bool {
+	if address == nil || !p.module.allowsHost(address.Hostname()) {
+		return false
+	}
+	for _, path := range p.module.manifest.MediaAuthPaths {
+		if strings.HasPrefix(address.Path, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *jsProvider) MediaAuthorization(ctx context.Context, address *url.URL, referer string) (string, string, error) {
+	var result jsMediaAuthorization
+	if err := p.call(ctx, "mediaAuthorization", &result, address.String(), referer); err != nil {
+		return "", "", err
+	}
+	if strings.TrimSpace(result.Header) == "" || strings.ContainsAny(result.Header+result.Value, "\r\n") {
+		return "", "", errors.New("模块返回的播放凭证无效")
+	}
+	return result.Header, result.Value, nil
+}
+
+func (p *jsProvider) RejectMediaAuthorization(address *url.URL, value string) {
+	var ignored any
+	_ = p.quickCall("rejectMediaAuthorization", &ignored, address.String(), value)
+}

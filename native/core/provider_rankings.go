@@ -65,13 +65,45 @@ type rankingCache struct {
 	pending map[string]*rankingCall
 }
 
+// findRankingBoard 在本体榜单表与站源模块声明的榜单里查一个榜单。
 func findRankingBoard(id string) (rankingBoard, bool) {
-	for _, board := range rankingBoards {
+	for _, board := range allRankingBoards() {
 		if board.ID == id {
 			return board, true
 		}
 	}
 	return rankingBoard{}, false
+}
+
+// allRankingBoards 是「本体榜单 + 模块榜单」的合并视图。
+//
+// 模块在清单的 rankings 里声明榜单，运行时把它并进来，模块源的榜单页才有内容。
+// 标识与本体重复时以本体为准（模块源与其同名时本来就已经改名，不会撞）。
+func allRankingBoards() []rankingBoard {
+	boards := make([]rankingBoard, 0, len(rankingBoards)+4)
+	boards = append(boards, rankingBoards...)
+	taken := make(map[string]bool, len(rankingBoards))
+	for _, board := range rankingBoards {
+		taken[board.ID] = true
+	}
+	for _, descriptor := range RegisteredSources() {
+		if !isModuleProviderSource(descriptor.ID) {
+			continue
+		}
+		for _, board := range descriptor.Rankings {
+			if board.ID == "" || board.Source == "" || taken[board.ID] {
+				continue
+			}
+			taken[board.ID] = true
+			boards = append(boards, rankingBoard{
+				ID: board.ID, Source: board.Source, Name: board.Name, Description: board.Description,
+				// 模块的 rankingPage(boardId, page) 直接吃榜单标识，所以把标识放进
+				// upstreamKey（取榜时优先用它）；path 保留编译期站源的站点路径语义。
+				upstreamKey: firstNonEmpty(board.UpstreamKey, board.ID),
+			})
+		}
+	}
+	return boards
 }
 
 func cloneRankingPage(page rankingPage) rankingPage {
@@ -147,8 +179,8 @@ func (d *Downloader) fetchRankingPage(ctx context.Context, board rankingBoard, p
 	// 站源自带名次与指标文案时优先用它：站点榜单的名次未必等于返回顺序；
 	// 只实现「按页取剧集」的源由 providerRankingEntries 统一补名次。
 	if provider, ok := d.sourceProvider(board.Source); ok {
-		_, ranker := provider.(SourceRankings)
-		_, entries := provider.(SourceRankingEntries)
+		_, ranker := providerAs[SourceRankings](provider)
+		_, entries := providerAs[SourceRankingEntries](provider)
 		if ranker || entries {
 			key := firstNonEmpty(board.upstreamKey, board.path)
 			items, more, err := providerRankingEntries(ctx, provider, key, page)

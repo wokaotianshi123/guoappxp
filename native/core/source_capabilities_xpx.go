@@ -152,7 +152,7 @@ func (d *Downloader) providerCoverAddress(ctx context.Context, drama nativeDrama
 	if provider == nil {
 		return "", false, nil
 	}
-	resolver, ok := provider.(CoverResolver)
+	resolver, ok := providerAs[CoverResolver](provider)
 	if !ok {
 		return "", false, nil
 	}
@@ -179,7 +179,7 @@ func (d *Downloader) providerMediaAuthorizer(address *url.URL) MediaAuthorizer {
 		if provider == nil {
 			continue
 		}
-		if authorizer, ok := provider.(MediaAuthorizer); ok && authorizer.AuthorizesMedia(address) {
+		if authorizer, ok := providerAs[MediaAuthorizer](provider); ok && authorizer.AuthorizesMedia(address) {
 			return authorizer
 		}
 	}
@@ -192,7 +192,7 @@ func (d *Downloader) providerNeedsExtraMetadata(drama nativeDrama) bool {
 	if provider == nil {
 		return false
 	}
-	enricher, ok := provider.(MetadataEnricher)
+	enricher, ok := providerAs[MetadataEnricher](provider)
 	return ok && enricher.NeedsExtraMetadata(drama)
 }
 
@@ -202,7 +202,7 @@ func (d *Downloader) providerExtraMetadata(ctx context.Context, drama nativeDram
 	if provider == nil {
 		return drama, false, nil
 	}
-	enricher, ok := provider.(MetadataEnricher)
+	enricher, ok := providerAs[MetadataEnricher](provider)
 	if !ok || !enricher.NeedsExtraMetadata(drama) {
 		return drama, false, nil
 	}
@@ -216,7 +216,7 @@ func (d *Downloader) providerSeasons(ctx context.Context, drama nativeDrama, sou
 	if provider == nil {
 		return nil, false, nil
 	}
-	seasons, ok := provider.(SeasonProvider)
+	seasons, ok := providerAs[SeasonProvider](provider)
 	if !ok {
 		return nil, false, nil
 	}
@@ -237,7 +237,7 @@ func (d *Downloader) providerDevices(ctx context.Context, source string, registe
 	if provider == nil {
 		return false, false, nil
 	}
-	devices, ok := provider.(DeviceProvider)
+	devices, ok := providerAs[DeviceProvider](provider)
 	if !ok {
 		return false, false, nil
 	}
@@ -254,7 +254,7 @@ func (d *Downloader) providerDanmaku(ctx context.Context, task Task, startMS, du
 	if provider == nil {
 		return DanmakuPage{}, false, nil
 	}
-	danmaku, ok := provider.(DanmakuProvider)
+	danmaku, ok := providerAs[DanmakuProvider](provider)
 	if !ok {
 		return DanmakuPage{}, false, nil
 	}
@@ -275,7 +275,7 @@ func (d *Downloader) providerSuggestions(ctx context.Context, source, query stri
 	if provider == nil {
 		return nil, false, nil
 	}
-	suggester, ok := provider.(Suggester)
+	suggester, ok := providerAs[Suggester](provider)
 	if !ok {
 		return nil, false, nil
 	}
@@ -289,7 +289,7 @@ func (d *Downloader) providerCatalogState(source string) (json.RawMessage, bool)
 	if provider == nil {
 		return nil, false
 	}
-	stateful, ok := provider.(CatalogStateful)
+	stateful, ok := providerAs[CatalogStateful](provider)
 	if !ok {
 		return nil, false
 	}
@@ -302,7 +302,7 @@ func (d *Downloader) restoreProviderCatalogState(source string, raw json.RawMess
 	if provider == nil {
 		return false
 	}
-	stateful, ok := provider.(CatalogStateful)
+	stateful, ok := providerAs[CatalogStateful](provider)
 	if !ok {
 		return false
 	}
