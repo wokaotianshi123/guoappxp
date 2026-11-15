@@ -2,6 +2,46 @@
 
 每个版本一节，标题为 `pubspec.yaml` 中的完整版本号。发布工作流会把对应一节写入 GitHub Release 说明。
 
+## 未发布：Windows 红果听书无声、切书源卡顿、桌面端系列多季
+
+### Windows 红果听书「有进度没声音」
+- 问题：红果听书章节是 CENC 加密音频，App 端把「不带扩展名的裸 CDN 地址 + `decryption_key`」直接交给 libmpv。Windows 的 libmpv 在无扩展名 URL 上探测不到 mov 容器，mov demuxer 的私有选项 `decryption_key` 落空，加密的音频 sample 解成静音——时长和进度都正常，就是不出声。番茄听书多为明文、Android 的 libmpv 构建能直解，所以只有 Windows + 红果复现；短剧在 Windows 正常则是因为它播的是本机流服务器给出的带 `.mp4` 扩展名地址。
+- 修复：`native/core/app_stream.go` 给本机流服务器加听书专用 `/audiobook/<token>.m4a` 明文代理（透传 Range、上游 Referer / User-Agent 由 Go 侧注入、独立条目表不受短剧会话上限与 10 分钟回收影响）；`app_runtime.go` 的 `audiobookMedia` / `audiobookHongguoMedia` 通过 `withAudiobookStream()` 附加 `streamUrl`；`lib/ui/audiobook/audiobook_download.dart` 的 `audiobookOpenTarget` 优先播 `streamUrl` 并清掉播放器层的上游请求头。听书从此与短剧同链路，各平台一致。`streamUrl` 是附加字段，本地服务版网页听书仍按原样读 `url` / `decryptionKey` / `headers`，不受影响。
+- `lib/ui/audiobook/audiobook_session.dart` 对 Windows 加密音频再显式锁定 `demuxer-lavf-format=mov`（属性不支持时静默忽略），作为回退直连时的双保险。
+- `native/core/provider_audiobook_hongguo.go` 修正密钥解析：加密标记兼容 JSON 布尔 / 字符串 / 数字，密钥兼容 `encryption_key` 与 `spade_a`，校验长度必须是 16 字节；明确标记加密却解不开时直接报错，不再把错误 key 交给播放器（那同样表现为静音）。
+- 本机流代理刻意不走 `nativeRequest`：那条媒体请求管线会用 `mediaRequestHeaders` 把 User-Agent 覆盖成通用浏览器 UA，而红果 CDN 校验的是 `com.dragon.read`。
+
+### Android 切换红果听书书源卡顿
+- 问题：切到红果时首屏并发取「听书 / 小说」两个频道，两次书城请求都要设备签名并挤同一个 host 限流队列；番茄命中本地缓存是 0 请求，所以只有红果这一侧慢、甚至假死。
+- 修复：`lib/ui/audiobook/audiobook_screen.dart` 首屏只取当前频道 1 页，另一频道等用户切到该 tab 时由 `_ensureHongguoChannel()` 按需补一次；同一频道在途时直接跳过，避免连点打出一串请求。`_AudiobookPoolCache` 连同红果分页状态一起缓存，`_switchOrigin` 切回时原样恢复，不再重复发首屏请求。仍不启动后台全量池、不轮询。
+
+### Windows 没有「系列多季」
+- 问题：详情页只在 `seasons.length > 1` 时显示卡片条，UI 无平台差异；桌面端站源来自外置源包，其 `SeasonProvider` 常返回空或只给当前一季，Android 则走内置的「基础名 + 季号」补搜，而 `_loadSeasons` 又是静默失败，于是 Windows 上整个卡片条消失。
+- 修复：`native/core/app_seasons.go` 对红果源一律再跑内置 `hongguoSeriesSeasons()`，用 `mergeNativeSeasons()` 与外置源结果按季号 / 剧 ID 取并集并升序排列；外置源报错且内置也失败时才返回错误。桌面端与移动端行为一致，也不会缺第一季。
+
+### 测试与验证
+- 新增 `native/core/app_stream_audiobook_test.go`（2 例：本地流扩展名 / 请求头注入 / Range 透传 / 未知条目 410；`withAudiobookStream` 保留原播放计划字段）、`native/core/app_seasons_merge_test.go`（2 例：外置源空时补齐两季、按季号去重且保留外置条目）；`test/audiobook_store_test.dart` 补 1 例（`streamUrl` 优先 + 不再转发上游头）。
+- `go build ./core ./server`、`go vet ./core ./server` 通过；新增 4 例全绿，`go test ./server` 全绿；`go test ./core` 全量仍为与之前完全一致的 4 个环境性失败（ffmpeg 缺 `libx264`、`/var/tmp` 缓存路径策略）。
+- 改动 Dart 文件经 Dart 3.12 语法解析通过；Flutter widget 测试需本地 `flutter test` / `dart analyze` 复跑。
+
+## 未发布：系列多季补齐第一季、启动默认发现页不加载听书
+
+### 系列多季缺第一季
+- 问题：打开第二季及以后时，「系列多季」卡片条里缺少第一季。红果的第一季通常不写季号、标题就是基础名（如「长夜将明」），而 `hongguoSeasonGroup` 与缺失季补搜循环把 `hongguoSearchSeason` 返回 `season==0` 的候选一律丢弃。
+- 修复：`native/core/provider_hongguo_seasons.go` 新增 `hongguoSeasonMember()`，把「无季号后缀、标题归一化后正好等于系列基础名」的候选识别为第 1 季；带季号的候选仍校验单位与基础名，「某某之续集」「第X部」不会混入。分组和补搜两处统一走这个判定。
+- 另外，当前剧标题明确带季号时，即使首轮搜索候选不足两季也不再立即放弃，而是继续补搜第一季（原先 `len(member) < 2` 直接返回空，补搜根本没机会跑）。
+- 新增回归测试：`native/core/provider_hongguo_seasons_test.go` 4 例（含「部」单位、打开第一季行为不变、只有精确基础名才认第一季）；`test/hongguo_series_test.dart` 补 1 例保持 Dart 侧一致。
+
+### 启动默认「发现」时不加载听书模块
+- 问题：`AppShell` 用 `IndexedStack` 一次性构建全部 5 个标签的 `Navigator` 与根页面，启动停在「发现」时 `AudiobookScreen` 也会 `initState → _loadPools()`，红果听书首屏请求和发现页抢限流 / IPC / CPU。
+- 修复：`lib/ui/shell/app_shell.dart` 引入 `initialMountedTabs()` 与 `_mountedTabs`：启动时听书位置用空占位对齐 index，不构建页面、不触发任何数据加载；用户第一次切到「听书」时由 `_select` 在同一次 build 里换成真实 `Navigator` 并加载，之后一直保留状态，切回不重建、不重复加载。其余标签行为不变，顶栏焦点由宿主持有不受影响。
+- 新增 `test/app_shell_lazy_tabs_test.dart`（2 例）锁住「启动不挂载听书」与「切回幂等」策略。
+
+### 验证
+- `go build ./core ./server`、`go vet ./core ./server` 通过；`go test ./core -run HongguoSeason` 8 例全绿、`go test ./server` 全绿。
+- `go test ./core` 全量仍有 4 例因沙箱环境失败（ffmpeg 缺 `libx264` 编码器、`/var/tmp` 缓存目录策略），与本次改动无关，且与上一批结果完全一致。
+- 改动 Dart 文件经 Dart 3.12 `dart format` 语法解析通过；Flutter widget 测试因环境 Flutter SDK 自带 Dart 2.17 低于项目 `>=3.12.0` 未运行，需本地 `flutter test` 复跑。
+
 ## 未发布：红果听书改为按需加载
 
 修复打开软件时红果听书抢占资源、把界面拖卡的问题，App 端与本地 Web 服务版一起改。

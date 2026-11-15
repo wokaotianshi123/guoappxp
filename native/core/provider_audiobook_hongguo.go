@@ -764,14 +764,27 @@ func (d *Downloader) audiobookHongguoMedia(ctx context.Context, bookID, chapterI
 				duration = int(seconds)
 			}
 		}
-		keyText := mapString(item, "encryption_key")
+		// 加密标记可能是 JSON 布尔、字符串 "true" 或数字 1；密钥既可能直接
+		// 放在 encryption_key，也可能像番茄那样藏在 spade_a。任何一项缺失都
+		// 不能给出半吊子 key——错误的 key 会让播放器把音频解成加密噪声，
+		// 表现就是「进度在走但没声音」。
+		keyText := firstNonEmpty(mapString(item, "encryption_key"), mapString(item, "spade_a"))
+		encrypted := item["is_encrypt"] == true ||
+			item["encrypt"] == true ||
+			mapString(item, "is_encrypt") == "true" ||
+			mapString(item, "is_encrypt") == "1"
 		key := ""
-		if keyText != "" || mapString(item, "is_encrypt") == "true" {
+		if keyText != "" || encrypted {
 			raw, keyErr := hongguoContentKey(keyText)
-			if keyErr != nil {
-				return nil, keyErr
+			if keyErr != nil || len(raw) != 16 {
+				if encrypted {
+					return nil, errors.New("红果听书音频密钥无效")
+				}
+				// 没标记加密却附上了解不开的字段：按明文处理，别把错误
+				// 的 key 交给播放器。
+			} else {
+				key = hex.EncodeToString(raw)
 			}
-			key = hex.EncodeToString(raw)
 		}
 		return map[string]any{
 			"url":           address,

@@ -8,6 +8,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
@@ -54,6 +55,17 @@ type nativeStreamServer struct {
 	castServer   *http.Server
 	castListener net.Listener
 	castBase     string
+
+	// 在线听书音频的本地明文代理条目。与短剧播放会话分开管理：听书切章
+	// 频繁、单章常听十几分钟，不能受会话数上限与 10 分钟闲置回收影响。
+	audiobooks map[string]*audiobookStreamEntry
+}
+
+// audiobookStreamEntry 是一章在线音频的上游地址与请求头。
+type audiobookStreamEntry struct {
+	address string
+	headers map[string]string
+	used    time.Time
 }
 
 func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Response, error) {
@@ -83,8 +95,22 @@ func newNativeStreamServer(d *Downloader) (*nativeStreamServer, error) {
 	if err != nil {
 		return nil, errors.New("无法初始化本机播放器")
 	}
-	stream := &nativeStreamServer{downloader: d, address: "http://" + listener.Addr().String(), sessions: map[string]*nativeStreamSession{}}
-	server := &http.Server{Handler: http.HandlerFunc(stream.nativeServe), ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
+	stream := &nativeStreamServer{
+		downloader: d,
+		address:    "http://" + listener.Addr().String(),
+		sessions:   map[string]*nativeStreamSession{},
+		audiobooks: map[string]*audiobookStreamEntry{},
+	}
+	// 听书音频走独立前缀：它只需要带正确扩展名的本地 URL 与 Go 侧统一
+	// 注入的 Referer / User-Agent，不需要播放列表重写，也不占短剧会话表。
+	handler := http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
+		if strings.HasPrefix(request.URL.Path, "/audiobook/") {
+			stream.nativeServeAudiobook(writer, request)
+			return
+		}
+		stream.nativeServe(writer, request)
+	})
+	server := &http.Server{Handler: handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
 	stream.server = server
 	go func() { _ = server.Serve(listener) }()
 	return stream, nil
@@ -413,5 +439,110 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	writer.WriteHeader(response.StatusCode)
 	if request.Method == http.MethodGet {
 		_, _ = io.Copy(writer, reader)
+	}
+}
+
+// nativeOpenAudiobook 把一章在线音频登记成本地明文流，返回带 .m4a 扩展名的地址。
+//
+// 红果 / 番茄的音频地址常是不带扩展名的 CDN 路径，libmpv 在 Windows 上按
+// 扩展名探测不到 mov 容器，CENC 的 decryption_key 就不会落到 mov demuxer，
+// 结果是「时长和进度都有、音频 sample 仍是加密的」——完全静音。短剧之所以
+// 正常，正是因为它播的是本机流服务器给出的带 .mp4 扩展名地址。这里让听书
+// 走同一条链路，并把上游要求的 Referer / User-Agent 交给 Go 侧统一注入，
+// 不再依赖播放器转发 httpHeaders（各平台实现不一致）。
+func (stream *nativeStreamServer) nativeOpenAudiobook(plan map[string]any) string {
+	address := strings.TrimSpace(mapString(plan, "url"))
+	if address == "" {
+		return ""
+	}
+	headers := map[string]string{}
+	switch rows := plan["headers"].(type) {
+	case map[string]string:
+		for name, value := range rows {
+			if strings.TrimSpace(value) != "" {
+				headers[name] = value
+			}
+		}
+	case map[string]any:
+		for name, value := range rows {
+			if text := strings.TrimSpace(fmt.Sprint(value)); text != "" {
+				headers[name] = text
+			}
+		}
+	}
+	digest := sha256.Sum256([]byte(address + "\x00" + mapString(plan, "decryptionKey")))
+	token := hex.EncodeToString(digest[:12])
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	for id, entry := range stream.audiobooks {
+		if time.Since(entry.used) > 2*time.Hour {
+			delete(stream.audiobooks, id)
+		}
+	}
+	stream.audiobooks[token] = &audiobookStreamEntry{
+		address: address, headers: headers, used: time.Now(),
+	}
+	return stream.address + "/audiobook/" + token + ".m4a"
+}
+
+// nativeServeAudiobook 只做明文转发：透传 Range 让播放器能拖动进度，并带
+// 上上游校验需要的请求头。CENC 解密仍由播放器的 decryption_key 完成。
+func (stream *nativeStreamServer) nativeServeAudiobook(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodGet && request.Method != http.MethodHead {
+		writer.WriteHeader(http.StatusMethodNotAllowed)
+		return
+	}
+	name := strings.TrimPrefix(request.URL.Path, "/audiobook/")
+	token := strings.TrimSuffix(name, path.Ext(name))
+	stream.mu.Lock()
+	entry := stream.audiobooks[token]
+	if entry != nil {
+		entry.used = time.Now()
+	}
+	stream.mu.Unlock()
+	if entry == nil {
+		http.Error(writer, "播放已结束", http.StatusGone)
+		return
+	}
+	upstream, err := http.NewRequestWithContext(request.Context(), request.Method, entry.address, nil)
+	if err != nil {
+		http.Error(writer, "音频地址无效", http.StatusBadGateway)
+		return
+	}
+	upstream.Header.Set("User-Agent", userAgent)
+	for name, value := range entry.headers {
+		upstream.Header.Set(name, value)
+	}
+	for _, name := range []string{"Range", "If-Range"} {
+		if value := request.Header.Get(name); value != "" {
+			upstream.Header.Set(name, value)
+		}
+	}
+	// 这里刻意不走 stream.nativeRequest：那条媒体请求管线会用
+	// mediaRequestHeaders 把 User-Agent 强制改成通用浏览器 UA，红果 / 番茄
+	// 听书 CDN 校验的却是 com.dragon.read，覆盖后拿到的就不是可播放音频。
+	// 听书只需要原样转发，保留登记时自带的请求头即可。
+	var response *http.Response
+	if stream.downloader.client != nil {
+		client := *stream.downloader.client
+		client.Timeout = 0 // 一章可能十几分钟，不能套媒体请求的短超时
+		response, err = client.Do(upstream)
+	} else {
+		response, err = http.DefaultClient.Do(upstream)
+	}
+	if err != nil {
+		http.Error(writer, "读取音频失败，请重试", http.StatusBadGateway)
+		return
+	}
+	defer response.Body.Close()
+	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
+		if value := response.Header.Get(name); value != "" {
+			writer.Header().Set(name, value)
+		}
+	}
+	writer.Header().Set("Cache-Control", "no-store")
+	writer.WriteHeader(response.StatusCode)
+	if request.Method == http.MethodGet {
+		_, _ = io.Copy(writer, response.Body)
 	}
 }

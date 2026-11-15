@@ -468,12 +468,12 @@ func nativeDispatch(input nativeInput) (any, error) {
 		if err != nil {
 			return nil, err
 		}
-		return map[string]any{
+		return engine.withAudiobookStream(map[string]any{
 			"url":           media.URL,
 			"decryptionKey": hex.EncodeToString(media.CENCKey),
 			"duration":      int(media.Duration.Seconds()),
 			"headers":       map[string]string{"Referer": media.Referer, "User-Agent": "com.dragon.read"},
-		}, nil
+		}), nil
 	// 红果听书（听书 / 小说）书源：与番茄听书并列的第二个书源，
 	// 数据来自红果 App 的官方书城接口，Flutter 与本地服务版共用。
 	case "audiobookHongguoCats":
@@ -513,7 +513,11 @@ func nativeDispatch(input nativeInput) (any, error) {
 		}
 		return map[string]any{"book": book, "chapters": chapters}, nil
 	case "audiobookHongguoMedia":
-		return engine.downloader.audiobookHongguoMedia(ctx, input.Query, input.Category)
+		plan, err := engine.downloader.audiobookHongguoMedia(ctx, input.Query, input.Category)
+		if err != nil {
+			return nil, err
+		}
+		return engine.withAudiobookStream(plan), nil
 	case "downloadDirectory":
 		engine.downloads.mu.Lock()
 		root := engine.downloads.root
@@ -933,4 +937,33 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 		choice.danmakuSeries, choice.danmakuVideo = series, video
 	}
 	return engine.nativeOpenPlayback(ctx, choice)
+}
+
+// withAudiobookStream 给听书音频附上一个本机明文流地址（streamUrl）。
+//
+// 播放器拿到的是带 .m4a 扩展名的 127.0.0.1 地址，与短剧播放完全同构：
+// 容器探测稳定、CENC 的 decryption_key 能落到 mov demuxer，上游的
+// Referer / User-Agent 也由 Go 侧统一注入。桌面端（Windows）不再依赖
+// libmpv 对裸 CDN 地址与 httpHeaders 的平台相关处理。streamUrl 是附加
+// 字段：本地服务版网页听书仍按原样读取 url / decryptionKey / headers，
+// 不受影响；拿不到流服务器时也只是退回原来的直连路径。
+func (engine *nativeEngine) withAudiobookStream(plan map[string]any) map[string]any {
+	if plan == nil {
+		return plan
+	}
+	engine.mu.Lock()
+	if engine.stream == nil {
+		stream, err := newNativeStreamServer(engine.downloader)
+		if err == nil {
+			engine.stream = stream
+		}
+	}
+	stream := engine.stream
+	engine.mu.Unlock()
+	if stream != nil {
+		if address := stream.nativeOpenAudiobook(plan); address != "" {
+			plan["streamUrl"] = address
+		}
+	}
+	return plan
 }

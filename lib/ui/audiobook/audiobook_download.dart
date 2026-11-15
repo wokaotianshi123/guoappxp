@@ -50,14 +50,21 @@ AudiobookOpenTarget audiobookOpenTarget({
     );
   }
   final plan = remote ?? const <String, dynamic>{};
+  // 核心会给在线音频附一个本机明文流地址（带 .m4a 扩展名，上游
+  // Referer / User-Agent 由 Go 侧统一注入）。优先播它：桌面端 libmpv
+  // 对「无扩展名裸 URL + CENC decryption_key」的容器探测不稳定，会
+  // 出现进度在走但没声音；本地流与短剧播放同链路，各平台一致。
+  // 下载路径仍用原始 url，不受这里影响。
+  final streamUrl = '${plan['streamUrl'] ?? ''}'.trim();
   final rawHeaders = plan['headers'];
   final headers = rawHeaders is Map
       ? rawHeaders.map((key, value) => MapEntry('$key', '$value'))
       : const <String, String>{};
   return AudiobookOpenTarget(
-    url: '${plan['url'] ?? ''}',
+    url: streamUrl.isNotEmpty ? streamUrl : '${plan['url'] ?? ''}',
     key: '${plan['decryptionKey'] ?? ''}',
-    headers: headers,
+    // 走本地流时请求头已由核心加上，不必再让播放器转发一份。
+    headers: streamUrl.isNotEmpty ? const <String, String>{} : headers,
     local: false,
   );
 }

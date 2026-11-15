@@ -251,6 +251,17 @@ class AudiobookSession extends ChangeNotifier {
             if (target.key.isNotEmpty) 'decryption_key=${target.key}',
           ].join(','),
         );
+        // Windows 的 libmpv 在 URL 无扩展名时探测不到 mov 容器，mov
+        // demuxer 的私有选项 decryption_key 就不会被应用，CENC 音频被
+        // 解成静音（时长与进度都正常）。走本机流地址后扩展名已确定，
+        // 这里对加密音频再显式锁定格式，避免回退直连时复现无声。
+        if (Platform.isWindows && target.key.isNotEmpty) {
+          try {
+            await platform.setProperty('demuxer-lavf-format', 'mov');
+          } catch (_) {
+            // 当前 libmpv 不支持该属性时忽略：本机流地址已能保证探测。
+          }
+        }
         if (!target.local) await platform.setProperty('network-timeout', '20');
       }
       if (generation != _generation) {

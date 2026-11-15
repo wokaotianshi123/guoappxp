@@ -92,6 +92,9 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   final Map<String, bool> _hongguoHasMore = {};
   bool _hongguoPageLoading = false;
 
+  /// 某个红果频道正在补首屏：切书源 / 切频道时避免连点打出一串请求。
+  bool _hongguoChannelLoading = false;
+
   /// 红果听书当前频道：tab 0 是听书，tab 1 是小说。
   String get _hongguoChannel =>
       _board.type == fanqieAudiobookBoards.first.type ? 'listen' : 'novel';
@@ -149,27 +152,26 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     }
     try {
       if (origin == 0) {
-        // 红果听书：按需加载。两个频道各取第 1 页（并发）就立刻可用，
-        // 不调用 hongguoPool，因此 core 不会启动后台全量翻页，这里也不再
-        // 起定时轮询。打开软件 / 切到红果只产生这两次前台请求，用完即停。
-        final first = await Future.wait([
-          _api.hongguoCatalogPage('listen'),
-          _api.hongguoCatalogPage('novel'),
-        ]);
+        // 红果听书：按需加载。只取「当前频道」的第 1 页就立刻可用，另一个
+        // 频道等用户切到那个 tab 时再补。以前一次并发两个频道的书城请求，
+        // 两次都要走设备签名并挤同一个 host 限流队列，Android 上切换书源
+        // 时表现为明显卡顿甚至假死；番茄命中本地缓存则是 0 请求，所以只有
+        // 红果这一侧慢。现在切书源最多一个前台请求，用完即停。
+        final channel = _hongguoChannel;
+        final first = await _api.hongguoCatalogPage(channel);
         if (!mounted || token != _poolGeneration) return;
         setState(() {
           _officialCategories = const [];
-          _malePool = first[0].books;
-          _femalePool = first[1].books;
+          if (channel == 'listen') {
+            _malePool = first.books;
+          } else {
+            _femalePool = first.books;
+          }
           _poolLoading = false;
           _poolDone = true;
           _hongguoPageLoading = false;
-          _hongguoLoadedPages
-            ..['listen'] = 1
-            ..['novel'] = 1;
-          _hongguoHasMore
-            ..['listen'] = first[0].hasMore
-            ..['novel'] = first[1].hasMore;
+          _hongguoLoadedPages[channel] = 1;
+          _hongguoHasMore[channel] = first.hasMore;
           _rebuildSearch();
           _error = _pool.isEmpty ? '红果听书暂时没有书' : null;
         });
@@ -248,24 +250,74 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _board = fanqieAudiobookBoards.first;
       _error = null;
       _hongguoPageLoading = false;
+      _hongguoChannelLoading = false;
       if (cached != null && cached.hasBooks) {
         _malePool = cached.male;
         _femalePool = cached.female;
         _officialCategories = cached.categories;
         _poolLoading = false;
         _poolDone = cached.done;
+        // 恢复红果按需分页状态，否则切回去后翻页会以为一页都没取过，
+        // 又重新发一遍书城请求（旧版切书源卡顿的来源之一）。
+        if (type == 0) {
+          _hongguoLoadedPages
+            ..clear()
+            ..addAll(cached.loadedPages);
+          _hongguoHasMore
+            ..clear()
+            ..addAll(cached.hasMore);
+        }
       } else {
         _malePool = const [];
         _femalePool = const [];
         _poolLoading = true;
         _poolDone = false;
+        if (type == 0) {
+          _hongguoLoadedPages.clear();
+          _hongguoHasMore.clear();
+        }
       }
     });
     _search.text = '';
-    // 有缓存：直接复用，不触发任何后台全量刷新（那会在打开软件时持续
-    // 占用限流与 IPC）。需要新内容时由用户点刷新按钮或翻页按需取下一页。
+    // 有缓存：直接复用，不发任何请求。未命中时也只跑一个前台单页请求，
+    // 不并发、不后台翻页、不轮询；切书源这一帧不会阻塞用户操作。
     if (cached == null || !cached.hasBooks) {
       unawaited(_loadPools());
+    }
+  }
+
+  /// 红果听书某个频道还没取过首屏时补一次（只发一个请求）。
+  ///
+  /// 切书源、切频道都走这里：已经加载过的频道直接用本地书池，不重复请求；
+  /// 同一频道在途时直接跳过，避免连点打出一串设备签名请求把界面拖住。
+  Future<void> _ensureHongguoChannel(String channel) async {
+    if (_origin != 0 || _hongguoLoadedPages.containsKey(channel)) return;
+    if (_hongguoChannelLoading) return;
+    final token = _poolGeneration;
+    _hongguoChannelLoading = true;
+    try {
+      final first = await _api.hongguoCatalogPage(channel);
+      if (!mounted ||
+          token != _poolGeneration ||
+          _origin != 0 ||
+          _hongguoLoadedPages.containsKey(channel)) {
+        return;
+      }
+      setState(() {
+        if (channel == 'listen') {
+          _malePool = first.books;
+        } else {
+          _femalePool = first.books;
+        }
+        _hongguoLoadedPages[channel] = 1;
+        _hongguoHasMore[channel] = first.hasMore;
+        _rebuildSearch();
+      });
+      _rememberPool(0);
+    } catch (_) {
+      // 单频道失败不影响另一个频道与已显示内容，不重试、不后台续抓。
+    } finally {
+      _hongguoChannelLoading = false;
     }
   }
 
@@ -331,6 +383,8 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       female: _femalePool,
       categories: _officialCategories,
       done: _poolDone,
+      loadedPages: Map<String, int>.of(_hongguoLoadedPages),
+      hasMore: Map<String, bool>.of(_hongguoHasMore),
     );
   }
 
@@ -517,6 +571,9 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _searchLoading = false;
       _error = null;
     });
+    // 红果听书按频道懒加载：切到尚未取过首屏的频道时才发一次请求，
+    // 不与切书源、短剧首页抢同一个 host 的限流队列。
+    if (_origin == 0) unawaited(_ensureHongguoChannel(_hongguoChannel));
   }
 
   void _selectCategory(String category) {
@@ -2294,12 +2351,18 @@ class _AudiobookPoolCache {
     required this.female,
     required this.categories,
     required this.done,
+    this.loadedPages = const {},
+    this.hasMore = const {},
   });
 
   final List<FanqieBook> male;
   final List<FanqieBook> female;
   final List<String> categories;
   final bool done;
+
+  /// 红果按需分页状态随书池一起缓存，切回书源时原样恢复。
+  final Map<String, int> loadedPages;
+  final Map<String, bool> hasMore;
 
   bool get hasBooks => male.isNotEmpty || female.isNotEmpty;
 }

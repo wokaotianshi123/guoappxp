@@ -223,4 +223,32 @@ void main() {
     expect(audio.existsSync(), isTrue);
     expect(store.hasLocal('hg:7585573146086870040', 'hg:7585573184385073688'), isTrue);
   });
+
+  test('核心给出本机明文流时优先播放，且不再转发上游请求头', () async {
+    final directory = await Directory.systemTemp.createTemp('audiobook-stream');
+    addTearDown(() => directory.delete(recursive: true));
+    final store = await AudiobookStore.openDirectory(directory);
+    final target = audiobookOpenTarget(
+      store: store,
+      bookId: 'hg:7585573146086870040',
+      chapterId: 'hg:7585573184385073688',
+      remote: {
+        'url': 'https://cdn.example/audio/playinfo',
+        'streamUrl': 'http://127.0.0.1:18921/audiobook/abcdef.m4a',
+        'decryptionKey': '00112233445566778899aabbccddeeff',
+        'headers': {
+          'Referer': 'https://novel.snssdk.com/',
+          'User-Agent': 'com.dragon.read',
+        },
+      },
+    );
+    expect(target.local, isFalse);
+    expect(target.url, 'http://127.0.0.1:18921/audiobook/abcdef.m4a');
+    expect(target.url.endsWith('.m4a'), isTrue,
+        reason: '本地流必须带容器扩展名，否则 Windows libmpv 探测不到 mov');
+    expect(target.key, '00112233445566778899aabbccddeeff');
+    expect(target.headers, isEmpty,
+        reason: '上游请求头已由核心注入，播放器不必再转发一份');
+  });
+
 }
