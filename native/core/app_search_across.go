@@ -266,10 +266,20 @@ func (engine *nativeEngine) nativeSearchStart(input nativeInput) (nativeSearchAc
 		cancel:   cancel,
 		started:  time.Now(),
 	}
-	engine.searchMu.Lock()
-	engine.pruneSearchesLocked()
-	engine.searches[session.id] = session
-	engine.searchMu.Unlock()
+	// searches 和 recommendations / playbacks / sourceCatalogs 一样按需初始化。
+	// 少了这一段，第一次搜索就会在 nil map 上赋值 panic（表现为「本地核心处理
+	// 失败」）；而赋值发生在 searchMu 持有期间，一旦 panic 就没人解锁，那把锁
+	// 会永久留在原处，之后每一次搜索都卡死（表现为「一直不出结果」）。锁用
+	// 闭包收口，保证两个问题不会再次同时发生。
+	func() {
+		engine.searchMu.Lock()
+		defer engine.searchMu.Unlock()
+		if engine.searches == nil {
+			engine.searches = map[string]*nativeSearchSession{}
+		}
+		engine.pruneSearchesLocked()
+		engine.searches[session.id] = session
+	}()
 
 	concurrency := 6
 	if len(sources) < concurrency {
