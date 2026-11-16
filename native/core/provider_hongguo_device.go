@@ -1,5 +1,8 @@
 package core
 
+// 红果设备注册。移植自 guoappxp 的 provider_hongguo_device.go，
+// 只保留听书链路需要的「注册 / 失败暂停 / 换设备」逻辑。
+
 import (
 	"bytes"
 	"context"
@@ -21,19 +24,6 @@ const (
 type hongguoHelperDeviceKey struct{}
 
 type hongguoRegisterRejection struct{ error }
-
-func (client *hongguoAppClient) deviceLocked(helper bool) (string, string, bool) {
-	if helper {
-		return client.state.HelperDeviceID, client.state.HelperInstallID, client.state.HelperRegistered
-	}
-	return client.state.DeviceID, client.state.InstallID, client.state.Registered
-}
-
-func (client *hongguoAppClient) device(helper bool) (string, string, bool) {
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	return client.deviceLocked(helper)
-}
 
 func (downloader *Downloader) ensureHongguoDevice(ctx context.Context, helper bool, rejected string) error {
 	client := downloader.hongguoClient()
@@ -62,9 +52,9 @@ func (downloader *Downloader) ensureHongguoDevice(ctx context.Context, helper bo
 	}
 	client.mu.Lock()
 	if helper {
-		client.state.HelperDeviceID, client.state.HelperInstallID, client.state.HelperRegistered = deviceID, installID, true
+		client.helperDeviceID, client.helperInstallID, client.helperRegistered = deviceID, installID, true
 	} else {
-		client.state.DeviceID, client.state.InstallID, client.state.Registered = deviceID, installID, true
+		client.deviceID, client.installID, client.registered = deviceID, installID, true
 	}
 	client.mu.Unlock()
 	return nil

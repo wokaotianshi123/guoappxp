@@ -9,9 +9,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument, go_build_tag_args
-from ffmpeg_frameworks import ensure_pods
-from source_module import add_source_argument, configure
+from app_build import app, prepare_bundled_modules
 
 root = Path(__file__).resolve().parents[1]
 
@@ -43,23 +41,20 @@ def validate_package(package, prefix):
             raise SystemExit('iOS 压缩包损坏：' + corrupt)
 
 
-def write_variant_config(variant):
-    # 真果鉴要和红果鉴同时装在同一台 iPhone / iPad 上，Bundle ID 必须按变体分开；
-    # 桌面名也跟着变，避免真果鉴仍显示「红果鉴」。
-    display = '真果鉴' if variant.all_sources else '红果鉴'
+def write_app_config():
+    display = app.display_name
     config = root / 'ios' / 'Flutter' / 'AppVariant.xcconfig'
-    config.write_text(f'PRODUCT_BUNDLE_IDENTIFIER = {variant.bundle_identifier}\n'
+    config.write_text(f'PRODUCT_BUNDLE_IDENTIFIER = {app.bundle_identifier}\n'
                       f'APP_DISPLAY_NAME = {display}\n', encoding='utf-8')
 
 
-def build_core(simulator=False, variant=BuildVariant(), sources=()):
+def build_core(simulator=False, bundles=()):
     if platform.system() != 'Darwin':
         raise SystemExit('iOS 构建需要 macOS 和完整 Xcode。')
+    prepare_bundled_modules(bundles)
     go = shutil.which('go')
     if not go:
         raise SystemExit('请安装 Go 1.24.1 或更新版本。')
-    # 生成 native/go.work 与 bridge/sources_gen.go；不传 --sources 时清掉上次残留。
-    source_tags = configure(root / 'native', sources)
     environment = os.environ.copy()
     environment.setdefault('GOPROXY', 'https://goproxy.cn,direct')
     environment.setdefault('GOSUMDB', 'off')
@@ -84,8 +79,7 @@ def build_core(simulator=False, variant=BuildVariant(), sources=()):
             'GOOS': 'ios', 'GOARCH': architecture, 'CC': compiler,
             'CGO_CFLAGS': flags, 'CGO_LDFLAGS': flags,
         }
-        run([go, 'build', '-trimpath', '-buildmode=c-archive', *go_build_tag_args(), *source_tags,
-             '-ldflags=' + variant.linker_flags,
+        run([go, 'build', '-trimpath', '-buildmode=c-archive', *app.go_arguments,
              '-o', str(output), './bridge'], cwd=root / 'native', env=build_env)
         shutil.copy2(output.with_suffix('.h'), headers / 'DuanjuCore.h')
         libraries.append((sdk, output, headers))
@@ -105,25 +99,20 @@ def build_core(simulator=False, variant=BuildVariant(), sources=()):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='构建红果鉴 / 真果鉴 iOS 核心和应用')
+    parser = argparse.ArgumentParser(description='构建 iOS 核心和应用')
     parser.add_argument('--core-only', action='store_true')
     parser.add_argument('--simulator', action='store_true', help='额外生成模拟器核心；不启动模拟器')
     parser.add_argument('--export-options', type=Path, help='使用自己的 Xcode 签名配置导出 IPA')
-    add_variant_argument(parser)
-    add_source_argument(parser)
+    parser.add_argument('--bundle', action='append', default=[], help='内置模块目录，可多次指定；也可用逗号分隔写在环境变量 BUNDLED_MODULES 里')
     options = parser.parse_args()
-    variant = BuildVariant(options.all_sources)
-    write_variant_config(variant)
-    build_core(options.simulator, variant, options.sources)
+    write_app_config()
+    build_core(options.simulator, options.bundle)
     if options.core_only:
         return
     flutter = shutil.which('flutter')
     if not flutter or not shutil.which('pod'):
         raise SystemExit('请安装 Flutter 和 CocoaPods。')
     run([flutter, 'pub', 'get', '--enforce-lockfile'])
-    # ffmpeg_kit_flutter_new 的 iOS 框架是 pod install 时按需下载的，Pods 被缓存
-    # 还原时那一步会被整段跳过，最后在编译期报 ffmpegkit/FFmpegKitConfig.h 找不到。
-    ensure_pods('ios')
     run(['pod', 'install'], cwd=root / 'ios')
     output = root / 'dist' / 'ios'
     output.mkdir(parents=True, exist_ok=True)
@@ -133,13 +122,13 @@ def main():
         config = options.export_options.expanduser().resolve()
         if not config.is_file():
             raise SystemExit('ExportOptions.plist 不存在。')
-        run([flutter, 'build', 'ipa', '--release', '--no-pub', '--export-options-plist', str(config), *variant.flutter_arguments])
+        run([flutter, 'build', 'ipa', '--release', '--no-pub', '--export-options-plist', str(config), *app.flutter_arguments])
         for package in (root / 'build' / 'ios' / 'ipa').glob('*.ipa'):
-            destination = output / f'{variant.slug}-{version}-ios.ipa'
+            destination = output / f'{app.slug}-{version}-ios.ipa'
             shutil.copy2(package, destination)
             artifacts.append(destination)
     else:
-        run([flutter, 'build', 'ios', '--release', '--no-codesign', '--no-pub', *variant.flutter_arguments])
+        run([flutter, 'build', 'ios', '--release', '--no-codesign', '--no-pub', *app.flutter_arguments])
         application = root / 'build' / 'ios' / 'iphoneos' / 'Runner.app'
         validate_unsigned_application(application)
         symbols = subprocess.check_output(['xcrun', 'nm', '-gU', str(application / 'Runner')], text=True)
@@ -151,7 +140,7 @@ def main():
             shutil.rmtree(payload)
         payload.mkdir(parents=True)
         shutil.copytree(application, payload / application.name, symlinks=True)
-        ipa = output / f'{variant.slug}-{version}-ios-unsigned.ipa'
+        ipa = output / f'{app.slug}-{version}-ios-unsigned.ipa'
         if ipa.exists():
             ipa.unlink()
         run(['ditto', '-c', '-k', '--sequesterRsrc', '--keepParent', str(payload), str(ipa)])

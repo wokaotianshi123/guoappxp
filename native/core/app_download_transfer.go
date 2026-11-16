@@ -37,11 +37,11 @@ type nativeDownloadFileState struct {
 	Complete  bool   `json:"complete"`
 }
 
-func (manager *nativeDownloads) transferMedia(ctx context.Context, job nativeDownloadJob, media providerMedia) (nativeDownloadResult, error) {
+func (manager *nativeDownloads) transferMedia(ctx context.Context, job nativeDownloadJob, media ProviderMedia) (nativeDownloadResult, error) {
 	ctx = providerMediaContext(ctx, media.Credentials)
 	bundle := nativeDownloadBundle{quality: media.Quality, playlists: map[string][]byte{}}
 	parsed, err := url.Parse(media.URL)
-	if err != nil || !isProviderHTTPMediaURL(media.URL) {
+	if err != nil || !IsProviderHTTPMediaURL(media.URL) {
 		return nativeDownloadResult{}, errors.New("下载地址无效")
 	}
 	hls := media.Playlist != "" || strings.HasSuffix(strings.ToLower(parsed.Path), ".m3u8")
@@ -174,7 +174,7 @@ func (manager *nativeDownloads) downloadFile(ctx context.Context, address, refer
 }
 
 func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address, referer, target string, key bool, offset int64, old nativeDownloadFileState, progress func(int64, int64)) (int64, bool, error) {
-	if !isProviderHTTPMediaURL(address) {
+	if !IsProviderHTTPMediaURL(address) {
 		return 0, false, errors.New("媒体下载地址无效")
 	}
 	requestCtx, cancel := context.WithCancel(ctx)
@@ -185,7 +185,7 @@ func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address
 	if err != nil {
 		return 0, false, err
 	}
-	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("User-Agent", UserAgent)
 	request.Header.Set("Referer", referer)
 	request.Header.Set("Accept-Encoding", "identity")
 	if offset > 0 {
@@ -196,7 +196,17 @@ func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address
 	client.Timeout = 0
 	response, err := manager.engine.downloader.doMediaRequestWithClient(request, &client)
 	if err != nil {
-		return 0, false, errors.New("下载连接中断，请检查网络后继续")
+		if ctx.Err() != nil {
+			return 0, false, ctx.Err()
+		}
+		if requestCtx.Err() != nil {
+			return 0, false, errors.New("下载连接 30 秒没有响应，请检查网络后继续")
+		}
+		var transport *url.Error
+		if errors.As(err, &transport) {
+			return 0, false, fmt.Errorf("下载连接失败：%w", transport.Err)
+		}
+		return 0, false, err
 	}
 	defer response.Body.Close()
 	if offset > 0 && (response.StatusCode == http.StatusRequestedRangeNotSatisfiable || response.StatusCode == http.StatusPreconditionFailed) {
@@ -213,7 +223,7 @@ func (manager *nativeDownloads) downloadFileAttempt(ctx context.Context, address
 	}
 	contentType := strings.ToLower(response.Header.Get("Content-Type"))
 	if !key && (strings.Contains(contentType, "text/html") || strings.Contains(contentType, "application/json")) {
-		return 0, false, errors.New("站源返回了错误页面，请刷新下载地址后重试")
+		return 0, false, fmt.Errorf("下载地址返回的类型是 %s，不是视频，请刷新下载地址后重试", Truncate(contentType, 64))
 	}
 	total := response.ContentLength
 	validator := nativeDownloadValidator(response.Header)

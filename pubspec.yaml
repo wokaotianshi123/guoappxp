@@ -1,7 +1,7 @@
 name: duanju_app
 description: 独立运行的多端短剧应用
 publish_to: none
-version: 1.6.0+123
+version: 2.1.0+114
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
@@ -18,12 +18,12 @@ dependencies:
   media_kit_libs_video: ^1.0.7
   path: ^1.9.1
   path_provider: ^2.1.5
-  # Windows 便携版要把设置 / 缓存重定向到程序旁的 userdata 文件夹。
   path_provider_platform_interface: ^2.1.3
   path_provider_windows: ^2.3.0
-  shared_preferences_platform_interface: ^2.4.2
-  shared_preferences_windows: ^2.4.1
   shared_preferences: ^2.5.5
+  shared_preferences_platform_interface: ^2.4.2
+  shared_preferences_windows:
+    path: packages/shared_preferences_windows
   flutter_foreground_task: 11.0.3
   ffmpeg_kit_flutter_new_min_gpl: 2.6.7
   file_picker: 13.1.0
@@ -35,7 +35,6 @@ dependencies:
   # 直播播放时保持屏幕常亮。该插件本来就在 media_kit_video 的依赖树里，
   # 这里显式声明只是为了能直接引用，不会引入新的原生插件。
   wakelock_plus: ^1.8.0
-  # 拼音首字母搜索（遥控器字母键盘只能给到 A-Z）。纯 Dart 实现，不涉及原生代码。
   lpinyin: ^2.0.3
 
 dev_dependencies:
@@ -46,18 +45,12 @@ dev_dependencies:
 dependency_overrides:
   media_kit_libs_windows_video:
     path: packages/media_kit_libs_windows_video
-  # Windows 上退出播放页几秒后闪退（#116）：原版在纹理注销之后才异步释放
-  # mpv render context，Render / CheckAndResize 回调会打到已释放的对象上。
-  # 覆盖包按「先释放画面输出、再注销纹理」的顺序收尾，并把 VideoOutput 的
-  # 创建 / 改尺寸 / 销毁串到同一条操作队列上，避免并发窗口。
   media_kit_video:
     path: packages/media_kit_video
+  shared_preferences_windows:
+    path: packages/shared_preferences_windows
 
 flutter:
   config:
     enable-swift-package-manager: false
   uses-material-design: true
-  assets:
-    - assets/video_enhancement/
-    # 番茄内置源：引擎启动配置与分类过滤规则。
-    - assets/fanqie/

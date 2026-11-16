@@ -651,8 +651,8 @@ func maccmsAPIBestRouteIndex(routes [][]maccmsAPIEpisode) int {
 }
 
 // fetchMaccmsAPICategories 取分类（ac=list 或直接取 videolist 带回的 class）。
-func (d *Downloader) fetchMaccmsAPICategories(ctx context.Context, endpoint, base string) []nativeCategory {
-	var categories []nativeCategory
+func (d *Downloader) fetchMaccmsAPICategories(ctx context.Context, endpoint, base string) []Category {
+	var categories []Category
 	var classes []map[string]any
 	for _, address := range []string{endpoint + "?ac=list", endpoint + "?ac=videolist&pg=1"} {
 		payload, err := d.maccmsAPICall(ctx, address, base+"/")
@@ -670,7 +670,7 @@ func (d *Downloader) fetchMaccmsAPICategories(ctx context.Context, endpoint, bas
 		if id == "" || name == "" {
 			continue
 		}
-		categories = append(categories, nativeCategory{ID: id, Name: name})
+		categories = append(categories, Category{ID: id, Name: name})
 	}
 	if len(categories) > 0 {
 		return categories
@@ -690,7 +690,7 @@ func (d *Downloader) fetchMaccmsAPICategories(ctx context.Context, endpoint, bas
 				continue
 			}
 			seen[id] = true
-			categories = append(categories, nativeCategory{ID: id, Name: name})
+			categories = append(categories, Category{ID: id, Name: name})
 		}
 	}
 	return categories

@@ -23,31 +23,9 @@ flutter_ios_podfile_setup
 target 'Runner' do
   use_frameworks!
   pod 'DuanjuCore', :path => 'DuanjuCore'
-  # 番茄内容引擎（Rust 核心静态库）。产物由 scripts/build_fanqie_engine.py
-  # 编出；没有产物时 podspec 会自动跳过链接，不影响其它功能。
-  pod 'FanqieEngine', :path => 'FanqieEngine'
   flutter_install_all_ios_pods File.dirname(File.realpath(__FILE__))
   target 'RunnerTests' do
     inherit! :search_paths
-  end
-end
-
-# ffmpeg_kit_flutter_new 的预编译框架由 podspec 的 prepare_command 下载，但
-# prepare_command 只在「这个 pod 需要安装」时才执行：Pods 目录被缓存还原、
-# Podfile.lock 与已装清单一致时整段跳过，框架就永远补不上，最后在编译期报
-# 'ffmpegkit/FFmpegKitConfig.h' file not found。pre_install 每次生成工程前都会跑，
-# 在这里把框架备好（幂等，已在则立即返回），搜索路径才不会缺 ffmpegkit。
-pre_install do |installer|
-  plugin = File.join(File.dirname(File.realpath(__FILE__)), '.symlinks', 'plugins',
-                     'ffmpeg_kit_flutter_new_min_gpl')
-  setup = File.join(plugin, 'scripts', 'setup_ios.sh')
-  frameworks = File.join(plugin, 'ios', 'Frameworks', 'ffmpegkit.xcframework')
-  if File.exist?(setup) && !File.exist?(frameworks)
-    Pod::UI.puts '  > ffmpeg_kit_flutter_new 的 iOS 框架不在，先下载'
-    environment = { 'FFMPEG_KIT_IOS_URL' => ENV['FFMPEG_KIT_IOS_URL'] }.compact
-    unless system(environment, 'bash', setup, :chdir => File.join(plugin, 'ios'))
-      raise 'ffmpeg_kit_flutter_new 的 iOS 框架下载失败；网络受限时用 FFMPEG_KIT_IOS_URL 指定镜像后重试'
-    end
   end
 end
 

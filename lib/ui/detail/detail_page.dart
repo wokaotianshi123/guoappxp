@@ -17,8 +17,11 @@ import '../widgets/cover_image.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/follow_button.dart';
 import '../theme/motion.dart';
+import '../widgets/choice_panel.dart';
+import '../widgets/motion/motion_widgets.dart';
 import '../widgets/status_view.dart';
 import '../widgets/swipe_switch.dart';
+import 'television_detail.dart';
 
 class _Metrics {
   const _Metrics({
@@ -45,7 +48,6 @@ class _Metrics {
     required this.cellGap,
     this.columns = 0,
     this.cellWidth = 0,
-    this.vipBadge = false,
     this.follow = 40,
   });
   final Size cover;
@@ -71,7 +73,6 @@ class _Metrics {
   final double cellGap;
   final int columns;
   final double cellWidth;
-  final bool vipBadge;
   final double follow;
 
   int columnsFor(double width) => columns > 0
@@ -155,37 +156,16 @@ const _pad = _Metrics(
   follow: 44,
 );
 
-const _television = _Metrics(
-  cover: Size(140, 210),
-  coverRadius: 12,
-  title: 28,
-  meta: 16,
-  tag: 14,
-  note: 15,
-  body: 15,
-  bodyHeight: 1.65,
-  button: 52,
-  buttonText: 18,
-  buttonIcon: 24,
-  section: 20,
-  summary: 15,
-  chip: 40,
-  chipRadius: 12,
-  chipText: 16,
-  chipPadding: 18,
-  cell: 60,
-  cellRadius: 12,
-  cellText: 20,
-  cellGap: 12,
-  columns: 6,
-  vipBadge: true,
-  follow: 52,
-);
-
 class DetailPage extends StatefulWidget {
-  const DetailPage({super.key, required this.store, required this.drama});
+  const DetailPage({
+    super.key,
+    required this.store,
+    required this.drama,
+    this.autoplay = false,
+  });
   final LocalStore store;
   final Drama drama;
+  final bool autoplay;
 
   @override
   State<DetailPage> createState() => _DetailPageState();
@@ -195,15 +175,16 @@ class _DetailPageState extends State<DetailPage> {
   DramaDetails? _details;
   PlaybackHandle? _handle;
   bool _watching = false;
-  final _currentEpisode = GlobalKey();
+  var _currentEpisode = GlobalKey();
+  String _keyedDrama = '';
   bool _expanded = false;
-  final _playFocus = FocusNode();
-  final _followFocus = FocusNode();
-  final _descriptionFocus = FocusNode();
-  final _groupFocus = <FocusNode>[];
+  final _played = <Object>{};
   final _groupKeys = <GlobalKey>[];
-  final _episodeFocus = List.generate(episodeGroupSize, (_) => FocusNode());
+  final _televisionDetail = GlobalKey<TelevisionDetailState>();
   bool _entered = false;
+  PlaybackHandle? _watched;
+  late bool _autoplayPending = widget.autoplay;
+  late bool _curtain = widget.autoplay;
 
   @override
   void didChangeDependencies() {
@@ -212,24 +193,13 @@ class _DetailPageState extends State<DetailPage> {
       AppScope.of(context).repository,
       widget.store,
       widget.drama,
-    )
-      ..addListener(_preopen)
-      ..addListener(_syncSeasons);
+    )..addListener(_detailsChanged);
   }
 
   @override
   void dispose() {
     _handle?.dispose();
     _details?.dispose();
-    for (final node in [
-      _playFocus,
-      _followFocus,
-      _descriptionFocus,
-      ..._groupFocus,
-      ..._episodeFocus,
-    ]) {
-      node.dispose();
-    }
     super.dispose();
   }
 
@@ -267,15 +237,6 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  /// 切到另一季：先关掉当前播放器，避免在两季之间串进度。
-  Future<void> _selectSeason(DramaSeason season) async {
-    final details = _details!;
-    if (season.drama.id == details.drama.id) return;
-    _handle?.dispose();
-    _handle = null;
-    await details.selectSeason(season);
-  }
-
   PlaybackHandle _open(
     int index, {
     required double position,
@@ -287,14 +248,46 @@ class _DetailPageState extends State<DetailPage> {
     index: index,
     position: position,
     autoplay: autoplay,
+    preopen: widget.store.playbackPreferences.preopens(
+      television: AppScope.of(context).television,
+    ),
   );
 
-  /// 季列表通常比详情晚一步返回：到了就同步给已经开着的播放会话，
-  /// 这样「本季播完接下一季」不必等用户重新进详情页。
-  void _syncSeasons() {
-    final details = _details;
-    if (details == null || details.seasons.isEmpty) return;
-    _handle?.session.syncSeasons(details.seasons);
+  void _detailsChanged() {
+    final seasons = _details!.seasons;
+    _handle?.session.syncSeasons(seasons);
+    _watched?.session.syncSeasons(seasons);
+    _preopen();
+    unawaited(_autoplay());
+  }
+
+  Future<void> _autoplay() async {
+    final details = _details!;
+    if (!_autoplayPending || !mounted || details.loading) return;
+    _autoplayPending = false;
+    if (_ready && details.allowed) {
+      await _play(details.resumeIndex, resume: true);
+      if (!mounted) return;
+    }
+    if (_curtain) {
+      setState(() => _curtain = false);
+    } else if (AppScope.of(context).television &&
+        details.currentIndex == null) {
+      _televisionDetail.currentState?.focusPlay();
+    }
+  }
+
+  void _liftCurtainAfter(Animation<double> entering) {
+    void lift(AnimationStatus status) {
+      if (status != AnimationStatus.completed) return;
+      entering.removeStatusListener(lift);
+      if (!mounted || !_curtain) return;
+      _entered = true;
+      setState(() => _curtain = false);
+    }
+
+    entering.addStatusListener(lift);
+    lift(entering.status);
   }
 
   void _preopen() {
@@ -318,7 +311,7 @@ class _DetailPageState extends State<DetailPage> {
     final details = _details!;
     final episode = details.episodes[index];
     if (episode.vip &&
-        details.drama.source != SourceSite.dsd.id &&
+        SourceSite.byId(details.drama.source).vipPrompt &&
         await showDialog<bool>(
               context: context,
               builder: (context) => AlertDialog(
@@ -343,23 +336,35 @@ class _DetailPageState extends State<DetailPage> {
     final position = _startAt(index, resume: resume);
     final handle = _handle ?? _open(index, position: position);
     _handle = null;
+    handle.session.syncSeasons(details.seasons);
     handle.session.start(index, position: position);
     _watching = true;
-    await Navigator.of(context, rootNavigator: true).push(
-      MaterialPageRoute<void>(
-        builder: (_) => PlaybackPage(store: widget.store, handle: handle),
-      ),
+    _watched = handle;
+    final route = MaterialPageRoute<void>(
+      builder: (_) => PlaybackPage(store: widget.store, handle: handle),
     );
+    final closed = Navigator.of(context, rootNavigator: true).push(route);
+    if (_curtain) _liftCurtainAfter(route.animation!);
+    await closed;
     _watching = false;
-    if (mounted && AppScope.of(context).television) _focusWatched(details);
+    _watched = null;
+    if (!mounted) return;
+    final played = handle.session.detail.drama.id;
+    if (played != details.drama.id) {
+      final season = details.seasons
+          .where((season) => season.drama.id == played)
+          .firstOrNull;
+      if (season != null) await details.selectSeason(season);
+      if (!mounted) return;
+    }
+    if (AppScope.of(context).television) _focusWatched(details);
   }
 
   void _focusWatched(DramaDetails details) {
     final index = details.currentIndex;
     if (index == null) return;
-    details.selectGroup(index ~/ episodeGroupSize);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted) _episodeFocus[index % episodeGroupSize].requestFocus();
+      if (mounted) _televisionDetail.currentState?.focusEpisode(index);
     });
   }
 
@@ -387,6 +392,7 @@ class _DetailPageState extends State<DetailPage> {
     listenable: _details!,
     builder: (context, _) {
       final details = _details!;
+      _renewKeys(details.drama.id);
       if (!details.allowed) {
         return Scaffold(
           appBar: AppBar(),
@@ -395,6 +401,12 @@ class _DetailPageState extends State<DetailPage> {
             message: '请返回剧库后重新选择。',
             icon: Icons.lock_outline_rounded,
           ),
+        );
+      }
+      if (_curtain) {
+        return const Scaffold(
+          backgroundColor: Colors.black,
+          body: Center(child: CircularProgressIndicator()),
         );
       }
       final form = AppScope.formFactorOf(context);
@@ -453,6 +465,13 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
+  Widget _enter(int index, Widget child) => EnterOnce(
+    id: 'section-$index',
+    played: _played,
+    index: index,
+    child: child,
+  );
+
   Widget _phonePage(DramaDetails details) {
     const m = _phone;
     final top = MediaQuery.paddingOf(context).top + kToolbarHeight;
@@ -483,7 +502,10 @@ class _DetailPageState extends State<DetailPage> {
                           Expanded(
                             child: Padding(
                               padding: const EdgeInsets.only(top: 6),
-                              child: _followingHeadline(details, m, 6),
+                              child: _enter(
+                                0,
+                                _followingHeadline(details, m, 6),
+                              ),
                             ),
                           ),
                         ],
@@ -491,17 +513,17 @@ class _DetailPageState extends State<DetailPage> {
                       if (_stats(drama, m) case final stats?)
                         Padding(
                           padding: const EdgeInsets.only(top: 14),
-                          child: stats,
+                          child: _enter(1, stats),
                         ),
                       if (_tags(drama, m) case final tags?)
                         Padding(
                           padding: const EdgeInsets.only(top: 10),
-                          child: tags,
+                          child: _enter(2, tags),
                         ),
                       if (drama.description.isNotEmpty)
                         Padding(
                           padding: const EdgeInsets.only(top: 12),
-                          child: _description(drama, m),
+                          child: _enter(3, _description(drama, m)),
                         ),
                       if (details.warning.isNotEmpty)
                         Padding(
@@ -513,18 +535,11 @@ class _DetailPageState extends State<DetailPage> {
                 ),
               ),
             ),
-            if (details.seasons.length > 1)
+            if (details.seasons.isNotEmpty)
               SliverToBoxAdapter(
                 child: Padding(
-                  padding: const EdgeInsets.fromLTRB(20, 6, 20, 0),
-                  child: _SeasonStrip(
-                    seasons: details.seasons,
-                    current: details.drama.id,
-                    store: widget.store,
-                    metrics: m,
-                    swipeHint: !AppScope.of(context).television,
-                    onSelected: (season) => unawaited(_selectSeason(season)),
-                  ),
+                  padding: const EdgeInsets.fromLTRB(16, 14, 16, 4),
+                  child: _seasonRow(details, m),
                 ),
               ),
             if (details.episodes.isEmpty)
@@ -609,7 +624,7 @@ class _DetailPageState extends State<DetailPage> {
             Expanded(
               child: Padding(
                 padding: const EdgeInsets.only(top: 4),
-                child: _followingHeadline(details, m, 4),
+                child: _enter(0, _followingHeadline(details, m, 4)),
               ),
             ),
           ],
@@ -617,10 +632,13 @@ class _DetailPageState extends State<DetailPage> {
         if (_stats(drama, m) case final stats?)
           Padding(
             padding: EdgeInsets.only(top: desktop ? 18 : 16),
-            child: stats,
+            child: _enter(1, stats),
           ),
         if (_tags(drama, m) case final tags?)
-          Padding(padding: const EdgeInsets.only(top: 10), child: tags),
+          Padding(
+            padding: const EdgeInsets.only(top: 10),
+            child: _enter(2, tags),
+          ),
         Padding(
           padding: EdgeInsets.only(top: desktop ? 22 : 20),
           child: Row(
@@ -634,7 +652,7 @@ class _DetailPageState extends State<DetailPage> {
         if (drama.description.isNotEmpty)
           Padding(
             padding: EdgeInsets.only(top: desktop ? 22 : 20),
-            child: _description(drama, m),
+            child: _enter(3, _description(drama, m)),
           ),
         if (details.warning.isNotEmpty)
           Padding(
@@ -643,9 +661,14 @@ class _DetailPageState extends State<DetailPage> {
           ),
       ],
     );
-    final episodes = details.episodes.isEmpty
-        ? SizedBox(height: 320, child: _episodeStatus(details))
+    final episodeList = details.episodes.isEmpty
+        ? SizedBox(
+            key: const ValueKey('status'),
+            height: 320,
+            child: _episodeStatus(details),
+          )
         : Column(
+            key: const ValueKey('episodes'),
             crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
               SizedBox(
@@ -666,10 +689,21 @@ class _DetailPageState extends State<DetailPage> {
                 ),
               Padding(
                 padding: const EdgeInsets.only(top: 14),
-                child: _grid(details, m),
+                child: desktop ? _grid(details, m) : _swipeGroups(details, m),
               ),
             ],
           );
+    final episodes = Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        if (details.seasons.isNotEmpty)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 8),
+            child: _seasonRow(details, m),
+          ),
+        FadeSwitcher(alignment: Alignment.topCenter, child: episodeList),
+      ],
+    );
     return Scaffold(
       extendBodyBehindAppBar: true,
       appBar: _appBar(details, 64),
@@ -679,44 +713,22 @@ class _DetailPageState extends State<DetailPage> {
           top + 336,
           Padding(
             padding: EdgeInsets.fromLTRB(inset, top + 4, inset, 40),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                // 桌面 / 平板宽屏布局以前只画 info + episodes，完全漏掉了
-                // 「系列多季」卡片条：手机页 _phonePage 有，Windows 走 _widePage
-                // 就永远看不到。以前几轮改 Go 核心 / Dart 补搜只动数据，
-                // 数据再全也不会自己长出一个 widget。这里补上整宽的季列表，
-                // 与手机页共用同一个 _SeasonStrip 和 _selectSeason。
-                if (details.seasons.length > 1)
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 18),
-                    child: _SeasonStrip(
-                      seasons: details.seasons,
-                      current: details.drama.id,
-                      store: widget.store,
-                      metrics: m,
-                      swipeHint: !AppScope.of(context).television,
-                      onSelected: (season) => unawaited(_selectSeason(season)),
+            child: LayoutBuilder(
+              builder: (context, constraints) =>
+                  constraints.maxWidth >= side + gap + 480
+                  ? Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      spacing: gap,
+                      children: [
+                        SizedBox(width: side, child: info),
+                        Expanded(child: episodes),
+                      ],
+                    )
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      spacing: gap,
+                      children: [info, episodes],
                     ),
-                  ),
-                LayoutBuilder(
-                  builder: (context, constraints) =>
-                      constraints.maxWidth >= side + gap + 480
-                      ? Row(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          spacing: gap,
-                          children: [
-                            SizedBox(width: side, child: info),
-                            Expanded(child: episodes),
-                          ],
-                        )
-                      : Column(
-                          crossAxisAlignment: CrossAxisAlignment.stretch,
-                          spacing: gap,
-                          children: [info, episodes],
-                        ),
-                ),
-              ],
             ),
           ),
         ),
@@ -725,357 +737,28 @@ class _DetailPageState extends State<DetailPage> {
   }
 
   Widget _televisionPage(DramaDetails details) {
-    const m = _television;
     if (_ready && !_entered) {
       _entered = true;
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (mounted) _playFocus.requestFocus();
+        if (mounted) _televisionDetail.currentState?.focusPlay();
       });
     }
-    while (_groupFocus.length < details.groupCount) {
-      _groupFocus.add(FocusNode());
-    }
-    final page = Scaffold(
-      body: _withBackdrop(
-        details.drama,
-        340,
-        Padding(
-          padding: const EdgeInsets.fromLTRB(
-            televisionInset,
-            40,
-            televisionInset,
-            27,
-          ),
-          child: Focus(
-            canRequestFocus: false,
-            skipTraversal: true,
-            onKeyEvent: (_, event) => _televisionKey(details, m, event),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              spacing: 40,
-              children: [
-                SizedBox(width: 380, child: _televisionInfo(details, m)),
-                Expanded(child: _televisionEpisodes(details, m)),
-              ],
-            ),
-          ),
+    return Scaffold(
+      body: TelevisionDetail(
+        key: _televisionDetail,
+        details: details,
+        store: widget.store,
+        status: _episodeStatus(details, autofocus: true),
+        onResume: _ready
+            ? () => _play(details.resumeIndex, resume: true)
+            : null,
+        onEpisode: _play,
+        onSeason: (season) => unawaited(_selectSeason(season)),
+        onDescription: () => showDialog<void>(
+          context: context,
+          builder: (_) => _DescriptionDialog(drama: details.drama),
         ),
       ),
-    );
-    return ListenableBuilder(
-      listenable: _playFocus,
-      builder: (context, child) => PopScope(
-        canPop: !_ready || _playFocus.hasFocus,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _playFocus.requestFocus();
-        },
-        child: child!,
-      ),
-      child: page,
-    );
-  }
-
-  KeyEventResult _televisionKey(
-    DramaDetails details,
-    _Metrics m,
-    KeyEvent event,
-  ) {
-    final node = FocusManager.instance.primaryFocus;
-    final key = event.logicalKey;
-    if (event is KeyUpEvent ||
-        node == null ||
-        !{
-          LogicalKeyboardKey.arrowUp,
-          LogicalKeyboardKey.arrowDown,
-          LogicalKeyboardKey.arrowLeft,
-          LogicalKeyboardKey.arrowRight,
-        }.contains(key)) {
-      return KeyEventResult.ignored;
-    }
-    final group = _groupFocus.indexOf(node);
-    final episode = _episodeFocus.indexOf(node);
-    if (node == _playFocus ||
-        node == _followFocus ||
-        node == _descriptionFocus) {
-      if (key == LogicalKeyboardKey.arrowRight && node == _playFocus) {
-        _followFocus.requestFocus();
-      } else if (key == LogicalKeyboardKey.arrowRight) {
-        _focusEpisodes(details);
-      } else if (key == LogicalKeyboardKey.arrowLeft && node == _followFocus) {
-        _playFocus.requestFocus();
-      } else if (key == LogicalKeyboardKey.arrowDown &&
-          node != _descriptionFocus &&
-          _descriptionFocus.context != null) {
-        _descriptionFocus.requestFocus();
-      } else if (key == LogicalKeyboardKey.arrowUp &&
-          node == _descriptionFocus) {
-        _playFocus.requestFocus();
-      }
-    } else if (group >= 0) {
-      if (key == LogicalKeyboardKey.arrowLeft) {
-        group == 0
-            ? _playFocus.requestFocus()
-            : _focusGroup(details, group - 1);
-      } else if (key == LogicalKeyboardKey.arrowRight &&
-          group + 1 < details.groupCount) {
-        _focusGroup(details, group + 1);
-      } else if (key == LogicalKeyboardKey.arrowDown) {
-        _focusEpisodes(details);
-      }
-    } else if (episode >= 0) {
-      final columns = m.columns;
-      final count = details.groupEpisodes.length;
-      final column = episode % columns;
-      final target = switch (key) {
-        LogicalKeyboardKey.arrowLeft when column == 0 => null,
-        LogicalKeyboardKey.arrowLeft => episode - 1,
-        LogicalKeyboardKey.arrowRight
-            when column < columns - 1 && episode + 1 < count =>
-          episode + 1,
-        LogicalKeyboardKey.arrowUp when episode >= columns => episode - columns,
-        LogicalKeyboardKey.arrowDown
-            when episode ~/ columns < (count - 1) ~/ columns =>
-          math.min(episode + columns, count - 1),
-        _ => episode,
-      };
-      if (target == null) {
-        _playFocus.requestFocus();
-      } else if (key == LogicalKeyboardKey.arrowUp &&
-          episode < columns &&
-          details.groupCount > 1) {
-        revealFocus(_groupFocus[details.group]);
-      } else {
-        _episodeFocus[target].requestFocus();
-      }
-    } else {
-      return KeyEventResult.ignored;
-    }
-    return KeyEventResult.handled;
-  }
-
-  void _focusGroup(DramaDetails details, int group) {
-    details.selectGroup(group);
-    revealFocus(_groupFocus[group]);
-  }
-
-  void _focusEpisodes(DramaDetails details) {
-    final count = details.groupEpisodes.length;
-    if (count == 0) return;
-    final start = details.group * episodeGroupSize;
-    final offset = (details.currentIndex ?? -1) - start;
-    _episodeFocus[offset >= 0 && offset < count ? offset : 0].requestFocus();
-  }
-
-  Widget _televisionInfo(DramaDetails details, _Metrics m) {
-    final drama = details.drama;
-    final colors = Theme.of(context).colorScheme;
-    final sub = TextStyle(
-      fontSize: m.note,
-      height: 1.4,
-      color: colors.onSurfaceVariant,
-    );
-    final meta = [
-      SourceSite.byId(drama.source).name,
-      if (drama.releaseStatus.isNotEmpty && drama.releaseStatus != 'unknown')
-        drama.releaseLabel,
-    ];
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          spacing: 20,
-          children: [
-            _cover(drama, m),
-            Expanded(
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                spacing: 6,
-                children: [
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 2),
-                    child: Text(
-                      drama.title,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: m.title,
-                        fontWeight: FontWeight.w800,
-                        height: 1.25,
-                      ),
-                    ),
-                  ),
-                  Text(
-                    meta.join(' · '),
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: sub.copyWith(fontSize: m.meta),
-                  ),
-                  if (drama.category.isNotEmpty)
-                    Text(
-                      drama.category,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: sub,
-                    ),
-                  if (drama.onlineDate.isNotEmpty)
-                    Text('${drama.onlineDate} 上线', style: sub),
-                  if (drama.tags.isNotEmpty)
-                    Padding(
-                      padding: const EdgeInsets.only(top: 6),
-                      child: SizedBox(
-                        height: 28,
-                        child: Wrap(
-                          spacing: 8,
-                          runSpacing: 8,
-                          clipBehavior: Clip.hardEdge,
-                          children: [
-                            for (final tag in drama.tags.take(12))
-                              Container(
-                                height: 28,
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 10,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: colors.surfaceContainerHighest,
-                                  borderRadius: BorderRadius.circular(8),
-                                ),
-                                child: Center(
-                                  widthFactor: 1,
-                                  child: Text(
-                                    tag,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: TextStyle(fontSize: m.tag),
-                                  ),
-                                ),
-                              ),
-                          ],
-                        ),
-                      ),
-                    ),
-                ],
-              ),
-            ),
-          ],
-        ),
-        Padding(
-          padding: const EdgeInsets.only(top: 24),
-          child: Row(
-            spacing: 12,
-            children: [
-              Expanded(child: _playButton(details, m, focusNode: _playFocus)),
-              FollowPill(
-                store: widget.store,
-                drama: drama,
-                height: m.follow,
-                focusNode: _followFocus,
-              ),
-            ],
-          ),
-        ),
-        if (drama.description.isNotEmpty)
-          Padding(
-            padding: const EdgeInsets.only(top: 18),
-            child: _televisionDescription(drama, m),
-          ),
-      ],
-    );
-  }
-
-  Widget _televisionDescription(Drama drama, _Metrics m) {
-    final colors = Theme.of(context).colorScheme;
-    final style = TextStyle(
-      fontSize: m.body,
-      height: m.bodyHeight,
-      color: colors.onSurfaceVariant,
-    );
-    return LayoutBuilder(
-      builder: (context, constraints) => Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Text(
-            drama.description,
-            maxLines: 4,
-            overflow: TextOverflow.ellipsis,
-            style: style,
-          ),
-          if (_exceeds(drama.description, style, 4, constraints.maxWidth))
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: FocusRing(
-                radius: 18,
-                child: FilledButton(
-                  focusNode: _descriptionFocus,
-                  onPressed: () => showDialog<void>(
-                    context: context,
-                    builder: (_) => _DescriptionDialog(drama: drama),
-                  ),
-                  style: FilledButton.styleFrom(
-                    backgroundColor: colors.surfaceContainerHighest,
-                    foregroundColor: colors.onSurface,
-                    minimumSize: const Size(0, 36),
-                    padding: const EdgeInsets.symmetric(horizontal: 16),
-                    textStyle: const TextStyle(
-                      fontSize: 15,
-                      fontWeight: FontWeight.w500,
-                    ),
-                  ),
-                  child: const Text('展开简介'),
-                ),
-              ),
-            ),
-        ],
-      ),
-    );
-  }
-
-  Widget _televisionEpisodes(DramaDetails details, _Metrics m) {
-    if (details.episodes.isEmpty) {
-      return _episodeStatus(details, autofocus: true);
-    }
-    final grouped = details.groupCount > 1;
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.stretch,
-      children: [
-        SizedBox(
-          height: 40,
-          child: Align(
-            alignment: Alignment.centerLeft,
-            child: _episodeTitle(details, m, prefix: '共 '),
-          ),
-        ),
-        if (grouped)
-          Padding(
-            padding: const EdgeInsets.only(top: 10),
-            child: Transform.translate(
-              offset: const Offset(-4, 0),
-              child: SizedBox(
-                height: m.chip + 8,
-                child: SingleChildScrollView(
-                  scrollDirection: Axis.horizontal,
-                  padding: const EdgeInsets.all(4),
-                  child: Row(
-                    spacing: 12,
-                    children: [
-                      for (var group = 0; group < details.groupCount; group++)
-                        _groupChip(
-                          details,
-                          m,
-                          group,
-                          focusNode: _groupFocus[group],
-                        ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ),
-        Padding(
-          padding: EdgeInsets.only(top: grouped ? 14 : 18),
-          child: _grid(details, m, focus: _episodeFocus),
-        ),
-      ],
     );
   }
 
@@ -1092,7 +775,11 @@ class _DetailPageState extends State<DetailPage> {
     ),
     child: SizedBox.fromSize(
       size: m.cover,
-      child: DramaCover(drama: drama, radius: m.coverRadius),
+      child: DramaCover(
+        drama: drama,
+        radius: m.coverRadius,
+        heroScope: 'drama',
+      ),
     ),
   );
 
@@ -1129,6 +816,8 @@ class _DetailPageState extends State<DetailPage> {
           ),
         ),
         Text(meta.join(' · '), style: sub(m.meta)),
+        if (drama.score.isNotEmpty)
+          Text('评分 ${drama.score}', style: sub(m.meta)),
         if (drama.category.isNotEmpty) Text(drama.category, style: sub(m.meta)),
         if (drama.source == 'huangdou')
           Text(
@@ -1223,16 +912,27 @@ class _DetailPageState extends State<DetailPage> {
         return Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            Text(
-              drama.description,
-              maxLines: _expanded ? null : 3,
-              overflow: _expanded ? null : TextOverflow.ellipsis,
-              style: style,
+            AnimatedSize(
+              duration: Motion.of(context, Motion.long),
+              curve: Motion.standard,
+              alignment: Alignment.topCenter,
+              child: Text(
+                drama.description,
+                maxLines: _expanded ? null : 3,
+                overflow: _expanded ? null : TextOverflow.ellipsis,
+                style: style,
+              ),
             ),
             if (overflows)
               Align(
                 alignment: Alignment.centerRight,
-                child: TextButton(onPressed: toggle, child: label),
+                child: TextButton(
+                  onPressed: toggle,
+                  child: FadeSwitcher(
+                    duration: Motion.short,
+                    child: KeyedSubtree(key: ValueKey(_expanded), child: label),
+                  ),
+                ),
               ),
           ],
         );
@@ -1276,7 +976,7 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Widget _playButton(DramaDetails details, _Metrics m, {FocusNode? focusNode}) {
+  Widget _playButton(DramaDetails details, _Metrics m) {
     final label = details.watch != null && details.episodes.isNotEmpty
         ? '继续播放 · 第 ${details.episodes[details.resumeIndex].number} 集'
         : '立即播放';
@@ -1284,7 +984,6 @@ class _DetailPageState extends State<DetailPage> {
       radius: m.button / 2,
       child: FilledButton.icon(
         key: const ValueKey('detail-play'),
-        focusNode: focusNode,
         onPressed: _ready
             ? () => _play(details.resumeIndex, resume: true)
             : null,
@@ -1297,7 +996,14 @@ class _DetailPageState extends State<DetailPage> {
           ),
         ),
         icon: const Icon(Icons.play_arrow_rounded),
-        label: Text(label, maxLines: 1, overflow: TextOverflow.ellipsis),
+        label: FadeSwitcher(
+          child: Text(
+            label,
+            key: ValueKey(label),
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+          ),
+        ),
       ),
     );
   }
@@ -1319,9 +1025,16 @@ class _DetailPageState extends State<DetailPage> {
     ),
   );
 
-  Widget _episodeStatus(DramaDetails details, {bool autofocus = false}) {
-    if (details.loading) return const StatusView.loading();
+  Widget _episodeStatus(DramaDetails details, {bool autofocus = false}) =>
+      FadeSwitcher(
+        child: details.loading
+            ? const StatusView.loading(key: ValueKey('loading'))
+            : _episodeError(details, autofocus),
+      );
+
+  Widget _episodeError(DramaDetails details, bool autofocus) {
     return StatusView(
+      key: const ValueKey('error'),
       title: details.error != null ? '剧集信息暂时不可用' : '暂时没有可播放的集数',
       message: details.error ?? '可以更新剧集信息后重试。',
       icon: Icons.error_outline_rounded,
@@ -1331,10 +1044,10 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Widget _episodeTitle(DramaDetails details, _Metrics m, {String prefix = ''}) {
+  Widget _episodeTitle(DramaDetails details, _Metrics m) {
     final current = details.currentIndex;
     final summary = [
-      '$prefix${details.episodes.length} 集',
+      '${details.episodes.length} 集',
       if (current != null) '当前第 ${details.episodes[current].number} 集',
     ].join(' · ');
     return Row(
@@ -1372,29 +1085,45 @@ class _DetailPageState extends State<DetailPage> {
     ],
   );
 
-  Widget _groupChip(
-    DramaDetails details,
-    _Metrics m,
-    int group, {
-    FocusNode? focusNode,
-  }) => _GroupChip(
+  Widget _seasonRow(DramaDetails details, _Metrics m) => _SeasonStrip(
+    seasons: details.seasons,
+    current: details.drama.id,
+    store: widget.store,
+    metrics: m,
+    collapsed: AppScope.formFactorOf(context) == FormFactor.window,
+    onSelected: (season) => unawaited(_selectSeason(season)),
+  );
+
+  Future<void> _selectSeason(DramaSeason season) async {
+    final details = _details!;
+    if (season.drama.id == details.drama.id) return;
+    _handle?.dispose();
+    _handle = null;
+    await details.selectSeason(season);
+  }
+
+  Widget _groupChip(DramaDetails details, _Metrics m, int group) => _GroupChip(
     key: _groupKey(group),
     label: details.groupLabel(group),
     selected: group == details.group,
     metrics: m,
-    focusNode: focusNode,
     onPressed: () => details.selectGroup(group),
   );
 
-  /// 选集区左右滑切换分组（1-30 → 31-60……），分组按钮跟着滚到可见位置。
   Widget _swipeGroups(DramaDetails details, _Metrics m) {
-    if (details.groupCount < 2) return _grid(details, m);
     return SwipeSwitch(
       index: details.group,
       count: details.groupCount,
       onSwitch: (group) => _swipeTo(details, group),
       child: _grid(details, m),
     );
+  }
+
+  void _renewKeys(String drama) {
+    if (drama == _keyedDrama) return;
+    _keyedDrama = drama;
+    _currentEpisode = GlobalKey();
+    _groupKeys.clear();
   }
 
   GlobalKey _groupKey(int group) {
@@ -1426,11 +1155,7 @@ class _DetailPageState extends State<DetailPage> {
     });
   }
 
-  Widget _grid(
-    DramaDetails details,
-    _Metrics m, {
-    List<FocusNode> focus = const [],
-  }) {
+  Widget _grid(DramaDetails details, _Metrics m) {
     final extent = math.max(
       m.cell,
       MediaQuery.textScalerOf(context).scale(m.cellText) + 28,
@@ -1447,7 +1172,6 @@ class _DetailPageState extends State<DetailPage> {
             : ValueKey('episode-${episode.number}'),
         episode: episode,
         metrics: m,
-        focusNode: offset < focus.length ? focus[offset] : null,
         current: index == current,
         watched: current != null && index < current,
         onPressed: () => _play(index),
@@ -1457,28 +1181,331 @@ class _DetailPageState extends State<DetailPage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final columns = m.columnsFor(constraints.maxWidth);
-        return Column(
-          spacing: m.cellGap,
-          children: [
-            for (var row = 0; row < episodes.length; row += columns)
-              SizedBox(
-                height: extent,
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  spacing: m.cellGap,
+        final fade = Motion.of(context, Motion.medium);
+        return TweenAnimationBuilder<double>(
+          tween: Tween(begin: fade == Duration.zero ? 1 : 0, end: 1),
+          duration: fade,
+          curve: Motion.standard,
+          builder: (context, value, child) =>
+              Opacity(opacity: value, child: child),
+          child: Column(
+            spacing: m.cellGap,
+            children: [
+              for (var row = 0; row < episodes.length; row += columns)
+                SizedBox(
+                  height: extent,
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    spacing: m.cellGap,
+                    children: [
+                      for (var offset = row; offset < row + columns; offset++)
+                        Expanded(
+                          child: offset < episodes.length
+                              ? cell(offset)
+                              : const SizedBox.shrink(),
+                        ),
+                    ],
+                  ),
+                ),
+            ],
+          ),
+        );
+      },
+    );
+  }
+}
+
+class _SeasonStrip extends StatefulWidget {
+  const _SeasonStrip({
+    required this.seasons,
+    required this.current,
+    required this.store,
+    required this.metrics,
+    required this.collapsed,
+    required this.onSelected,
+  });
+  final bool collapsed;
+  final List<DramaSeason> seasons;
+  final String current;
+  final LocalStore store;
+  final _Metrics metrics;
+  final ValueChanged<DramaSeason> onSelected;
+
+  @override
+  State<_SeasonStrip> createState() => _SeasonStripState();
+}
+
+class _SeasonStripState extends State<_SeasonStrip> {
+  static const _cardWidth = 116.0;
+  static const _gap = 8.0;
+  final _scroll = ScrollController();
+
+  @override
+  void initState() {
+    super.initState();
+    _reveal(animate: false);
+  }
+
+  @override
+  void didUpdateWidget(_SeasonStrip oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (oldWidget.current != widget.current) _reveal(animate: true);
+  }
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  void _reveal({required bool animate}) {
+    final index = widget.seasons.indexWhere(
+      (season) => season.drama.id == widget.current,
+    );
+    if (index <= 0) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scroll.hasClients) return;
+      final offset = (index * (_cardWidth + _gap) - _cardWidth / 2).clamp(
+        0.0,
+        _scroll.position.maxScrollExtent,
+      );
+      if (animate) {
+        _scroll.animateTo(
+          offset,
+          duration: Motion.medium,
+          curve: Curves.easeOut,
+        );
+      } else {
+        _scroll.jumpTo(offset);
+      }
+    });
+  }
+
+  String _status(DramaSeason season, bool selected) {
+    if (selected) return '正在浏览';
+    final watched = widget.store.watched(season.drama.id);
+    if (watched != null && !watched.finished) return '看至第${watched.episode}集';
+    if (season.upcoming) return '待上线';
+    return season.drama.episodes > 0 ? '共 ${season.drama.episodes} 集' : '';
+  }
+
+  void _openMenu() {
+    unawaited(
+      showAnchoredPanel<void>(
+        context: context,
+        width: context.size!.width,
+        builder: (_) => GridView.builder(
+          shrinkWrap: true,
+          padding: const EdgeInsets.all(12),
+          itemCount: widget.seasons.length,
+          gridDelegate: const SliverGridDelegateWithMaxCrossAxisExtent(
+            maxCrossAxisExtent: 150,
+            mainAxisExtent: 82,
+            mainAxisSpacing: _gap,
+            crossAxisSpacing: _gap,
+          ),
+          itemBuilder: (menu, index) =>
+              _card(menu, widget.seasons[index], (season) {
+                Navigator.pop(menu);
+                widget.onSelected(season);
+              }),
+        ),
+      ),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final m = widget.metrics;
+    final background = colors.surfaceContainerHighest.withValues(alpha: .55);
+    final currentLabel = widget.seasons
+        .where((season) => season.drama.id == widget.current)
+        .firstOrNull
+        ?.label;
+    final content = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      spacing: 10,
+      children: [
+        Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 12),
+          child: Row(
+            children: [
+              Icon(Icons.layers_rounded, size: 16, color: colors.primary),
+              const SizedBox(width: 6),
+              Text(
+                '系列多季',
+                style: TextStyle(
+                  fontSize: m.section,
+                  fontWeight: FontWeight.w700,
+                ),
+              ),
+              const SizedBox(width: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 2),
+                decoration: BoxDecoration(
+                  color: colors.primary.withValues(alpha: .16),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '共 ${widget.seasons.length} 季',
+                  style: TextStyle(fontSize: m.tag, color: colors.primary),
+                ),
+              ),
+              const Spacer(),
+              if (widget.collapsed) ...[
+                if (currentLabel != null)
+                  Text(
+                    currentLabel,
+                    style: TextStyle(
+                      fontSize: m.tag,
+                      color: colors.onSurfaceVariant,
+                    ),
+                  ),
+                Icon(
+                  Icons.expand_more_rounded,
+                  size: 20,
+                  color: colors.onSurfaceVariant,
+                ),
+              ] else
+                Text(
+                  '左右滑动切换',
+                  style: TextStyle(
+                    fontSize: m.tag,
+                    color: colors.onSurfaceVariant,
+                  ),
+                ),
+            ],
+          ),
+        ),
+        if (!widget.collapsed)
+          SizedBox(
+            height: 90,
+            child: ListView.separated(
+              controller: _scroll,
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
+              itemCount: widget.seasons.length,
+              separatorBuilder: (_, _) => const SizedBox(width: _gap),
+              itemBuilder: (context, index) =>
+                  _card(context, widget.seasons[index], widget.onSelected),
+            ),
+          ),
+      ],
+    );
+    if (widget.collapsed) {
+      return Material(
+        color: background,
+        borderRadius: BorderRadius.circular(16),
+        clipBehavior: Clip.antiAlias,
+        child: InkWell(
+          onTap: _openMenu,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(4, 10, 4, 10),
+            child: content,
+          ),
+        ),
+      );
+    }
+    return Container(
+      padding: const EdgeInsets.fromLTRB(4, 10, 4, 12),
+      decoration: BoxDecoration(
+        color: background,
+        borderRadius: BorderRadius.circular(16),
+      ),
+      child: content,
+    );
+  }
+
+  Widget _card(
+    BuildContext context,
+    DramaSeason season,
+    ValueChanged<DramaSeason> onSelected,
+  ) {
+    final colors = Theme.of(context).colorScheme;
+    final m = widget.metrics;
+    final selected = season.drama.id == widget.current;
+    final foreground = selected ? colors.onPrimaryContainer : colors.onSurface;
+    final muted = selected
+        ? colors.onPrimaryContainer.withValues(alpha: .8)
+        : colors.onSurfaceVariant;
+    final status = _status(season, selected);
+    final online = season.onlineLabel;
+    return FocusRing(
+      radius: 12,
+      child: Material(
+        color: selected ? colors.primaryContainer : colors.surfaceContainer,
+        borderRadius: BorderRadius.circular(12),
+        child: InkWell(
+          borderRadius: BorderRadius.circular(12),
+          onTap: selected ? null : () => onSelected(season),
+          child: Container(
+            width: _cardWidth,
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              spacing: 3,
+              children: [
+                Row(
+                  spacing: 4,
                   children: [
-                    for (var offset = row; offset < row + columns; offset++)
-                      Expanded(
-                        child: offset < episodes.length
-                            ? cell(offset)
-                            : const SizedBox.shrink(),
+                    Flexible(
+                      child: Text(
+                        season.label,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: TextStyle(
+                          fontSize: m.meta,
+                          fontWeight: FontWeight.w700,
+                          color: foreground,
+                        ),
+                      ),
+                    ),
+                    if (selected)
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 5,
+                          vertical: 1,
+                        ),
+                        decoration: BoxDecoration(
+                          color: colors.onPrimaryContainer.withValues(
+                            alpha: .14,
+                          ),
+                          borderRadius: BorderRadius.circular(999),
+                        ),
+                        child: Text(
+                          '当前',
+                          style: TextStyle(
+                            fontSize: m.tag * .85,
+                            color: colors.onPrimaryContainer,
+                          ),
+                        ),
                       ),
                   ],
                 ),
-              ),
-          ],
-        );
-      },
+                if (status.isNotEmpty)
+                  Text(
+                    status,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(fontSize: m.tag, color: muted),
+                  ),
+                if (online != null)
+                  Text(
+                    online,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: TextStyle(
+                      fontSize: m.tag * .85,
+                      color: muted.withValues(alpha: .7),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1490,13 +1517,11 @@ class _GroupChip extends StatelessWidget {
     required this.selected,
     required this.metrics,
     required this.onPressed,
-    this.focusNode,
   });
   final String label;
   final bool selected;
   final _Metrics metrics;
   final VoidCallback onPressed;
-  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -1511,7 +1536,6 @@ class _GroupChip extends StatelessWidget {
       radius: m.chipRadius,
       child: selected
           ? FilledButton.tonal(
-              focusNode: focusNode,
               onPressed: onPressed,
               style: FilledButton.styleFrom(
                 shape: shape,
@@ -1525,7 +1549,6 @@ class _GroupChip extends StatelessWidget {
               child: Text(label),
             )
           : OutlinedButton(
-              focusNode: focusNode,
               onPressed: onPressed,
               style: OutlinedButton.styleFrom(
                 shape: shape,
@@ -1549,14 +1572,12 @@ class _EpisodeCell extends StatelessWidget {
     required this.current,
     required this.watched,
     required this.onPressed,
-    this.focusNode,
   });
   final Episode episode;
   final _Metrics metrics;
   final bool current;
   final bool watched;
   final VoidCallback onPressed;
-  final FocusNode? focusNode;
 
   @override
   Widget build(BuildContext context) {
@@ -1575,7 +1596,6 @@ class _EpisodeCell extends StatelessWidget {
           borderRadius: radius,
           clipBehavior: Clip.antiAlias,
           child: InkWell(
-            focusNode: focusNode,
             onTap: onPressed,
             child: Stack(
               fit: StackFit.expand,
@@ -1598,35 +1618,7 @@ class _EpisodeCell extends StatelessWidget {
                     ),
                   ),
                 ),
-                if (episode.vip && metrics.vipBadge)
-                  const Positioned(
-                    right: 0,
-                    top: 0,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: Color(0xFFF2C14E),
-                        borderRadius: BorderRadius.only(
-                          bottomLeft: Radius.circular(6),
-                        ),
-                      ),
-                      child: Padding(
-                        padding: EdgeInsets.symmetric(
-                          horizontal: 5,
-                          vertical: 1,
-                        ),
-                        child: Text(
-                          'VIP',
-                          style: TextStyle(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w800,
-                            height: 1.4,
-                            color: Color(0xFF3A2A00),
-                          ),
-                        ),
-                      ),
-                    ),
-                  )
-                else if (episode.vip)
+                if (episode.vip)
                   Positioned(
                     right: 5,
                     top: 4,
@@ -1712,244 +1704,4 @@ class _DescriptionDialogState extends State<_DescriptionDialog> {
       ],
     ),
   );
-}
-
-/// 详情页选集上方的「系列多季」卡片条：显示各季的集数 / 观看进度 / 上线日期，
-/// 点击切换到该季，电视遥控器可左右移动。
-class _SeasonStrip extends StatefulWidget {
-  const _SeasonStrip({
-    required this.seasons,
-    required this.current,
-    required this.store,
-    required this.metrics,
-    required this.swipeHint,
-    required this.onSelected,
-  });
-  final List<DramaSeason> seasons;
-  final String current;
-  final LocalStore store;
-  final _Metrics metrics;
-  final bool swipeHint;
-  final ValueChanged<DramaSeason> onSelected;
-
-  @override
-  State<_SeasonStrip> createState() => _SeasonStripState();
-}
-
-class _SeasonStripState extends State<_SeasonStrip> {
-  static const _cardWidth = 116.0;
-  static const _gap = 8.0;
-  final _scroll = ScrollController();
-
-  @override
-  void initState() {
-    super.initState();
-    // 打开就滚到当前季，长系列（第 10 季以后）不用手动找。
-    _reveal(animate: false);
-  }
-
-  @override
-  void didUpdateWidget(_SeasonStrip oldWidget) {
-    super.didUpdateWidget(oldWidget);
-    if (oldWidget.current != widget.current) _reveal(animate: true);
-  }
-
-  @override
-  void dispose() {
-    _scroll.dispose();
-    super.dispose();
-  }
-
-  void _reveal({required bool animate}) {
-    final index = widget.seasons.indexWhere(
-      (season) => season.drama.id == widget.current,
-    );
-    if (index <= 0) return;
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted || !_scroll.hasClients) return;
-      final offset = (index * (_cardWidth + _gap) - _cardWidth / 2).clamp(
-        0.0,
-        _scroll.position.maxScrollExtent,
-      );
-      if (animate) {
-        _scroll.animateTo(
-          offset,
-          duration: Motion.medium,
-          curve: Curves.easeOut,
-        );
-      } else {
-        _scroll.jumpTo(offset);
-      }
-    });
-  }
-
-  String _status(DramaSeason season, bool selected) {
-    if (selected) return '正在浏览';
-    final watched = widget.store.watched(season.drama.id);
-    if (watched != null) return '看至第${watched.episode}集';
-    if (season.upcoming) return '待上线';
-    return season.drama.episodes > 0 ? '共 ${season.drama.episodes} 集' : '';
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final m = widget.metrics;
-    return Container(
-      padding: const EdgeInsets.fromLTRB(4, 10, 4, 12),
-      decoration: BoxDecoration(
-        color: colors.surfaceContainerHighest.withValues(alpha: .55),
-        borderRadius: BorderRadius.circular(16),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 12),
-            child: Row(
-              children: [
-                Icon(Icons.layers_rounded, size: 16, color: colors.primary),
-                const SizedBox(width: 6),
-                Text(
-                  '系列多季',
-                  style: TextStyle(
-                    fontSize: m.section,
-                    fontWeight: FontWeight.w700,
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 2,
-                  ),
-                  decoration: BoxDecoration(
-                    color: colors.primary.withValues(alpha: .16),
-                    borderRadius: BorderRadius.circular(999),
-                  ),
-                  child: Text(
-                    '共 ${widget.seasons.length} 季',
-                    style: TextStyle(fontSize: m.tag, color: colors.primary),
-                  ),
-                ),
-                const Spacer(),
-                if (widget.swipeHint)
-                  Text(
-                    '左右滑动切换',
-                    style: TextStyle(
-                      fontSize: m.tag,
-                      color: colors.onSurfaceVariant,
-                    ),
-                  ),
-              ],
-            ),
-          ),
-          const SizedBox(height: 10),
-          SizedBox(
-            height: 90,
-            child: ListView.separated(
-              controller: _scroll,
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 4),
-              itemCount: widget.seasons.length,
-              separatorBuilder: (_, _) => const SizedBox(width: _gap),
-              itemBuilder: (context, index) =>
-                  _card(context, widget.seasons[index]),
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-
-  Widget _card(BuildContext context, DramaSeason season) {
-    final colors = Theme.of(context).colorScheme;
-    final m = widget.metrics;
-    final selected = season.drama.id == widget.current;
-    final foreground = selected ? colors.onPrimaryContainer : colors.onSurface;
-    final muted = selected
-        ? colors.onPrimaryContainer.withValues(alpha: .8)
-        : colors.onSurfaceVariant;
-    final status = _status(season, selected);
-    final online = season.onlineLabel;
-    return FocusRing(
-      radius: 12,
-      child: Material(
-        color: selected ? colors.primaryContainer : colors.surfaceContainer,
-        borderRadius: BorderRadius.circular(12),
-        child: InkWell(
-          borderRadius: BorderRadius.circular(12),
-          onTap: selected ? null : () => widget.onSelected(season),
-          child: Container(
-            width: _cardWidth,
-            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Row(
-                  children: [
-                    Flexible(
-                      child: Text(
-                        season.label,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: TextStyle(
-                          fontSize: m.meta,
-                          fontWeight: FontWeight.w700,
-                          color: foreground,
-                        ),
-                      ),
-                    ),
-                    if (selected) ...[
-                      const SizedBox(width: 4),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 5,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colors.onPrimaryContainer.withValues(
-                            alpha: .14,
-                          ),
-                          borderRadius: BorderRadius.circular(999),
-                        ),
-                        child: Text(
-                          '当前',
-                          style: TextStyle(
-                            fontSize: m.tag * .85,
-                            color: colors.onPrimaryContainer,
-                          ),
-                        ),
-                      ),
-                    ],
-                  ],
-                ),
-                if (status.isNotEmpty)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 3),
-                    child: Text(
-                      status,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: m.tag, color: muted),
-                    ),
-                  ),
-                if (online != null)
-                  Padding(
-                    padding: const EdgeInsets.only(top: 2),
-                    child: Text(
-                      online,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(fontSize: m.tag * .92, color: muted),
-                    ),
-                  ),
-              ],
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }

@@ -1,8 +1,5 @@
 package core
 
-// 模块商店的索引读取与按索引下载。移植自 guoappxpx，与上游一致：
-// 索引地址可在 moduleIndexAddresses 里改，条目带 sha256 校验，下载走两个镜像轮换。
-
 import (
 	"archive/zip"
 	"bytes"
@@ -97,12 +94,7 @@ func (engine *nativeEngine) moduleStore(ctx context.Context) (map[string]any, er
 	if err != nil && len(bundled) == 0 {
 		return nil, err
 	}
-	items := bundled
-	for _, entry := range entries {
-		if !isBundledModule(entry.ID) {
-			items = append(items, entry)
-		}
-	}
+	items := append(bundled, entries...)
 	result := map[string]any{"items": items}
 	if err != nil {
 		result["warning"] = err.Error()
@@ -110,8 +102,12 @@ func (engine *nativeEngine) moduleStore(ctx context.Context) (map[string]any, er
 	return result, nil
 }
 
-func (engine *nativeEngine) indexedModulePackage(ctx context.Context, id string) ([]byte, error) {
-	if modules, _ := readBundledModules(); modules[id].raw != nil {
+func (engine *nativeEngine) indexedModulePackage(ctx context.Context, id string, bundled bool) ([]byte, error) {
+	if bundled {
+		modules, _ := readBundledModules()
+		if modules[id].raw == nil {
+			return nil, fmt.Errorf("安装包没有内置 %s", id)
+		}
 		return zipModuleFiles(modules[id].raw, modules[id].code)
 	}
 	entries, mirror, err := engine.moduleIndex(ctx)

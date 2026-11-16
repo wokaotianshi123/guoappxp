@@ -23,21 +23,21 @@ type nativeDownloadEpisode struct {
 }
 
 type nativeDownloadJob struct {
-	ID            string      `json:"id"`
-	Drama         nativeDrama `json:"drama"`
-	Chapter       Chapter     `json:"chapter"`
-	Index         int         `json:"index"`
-	Quality       int         `json:"quality"`
-	ActualQuality int         `json:"actualQuality"`
-	State         string      `json:"state"`
-	Archived      bool        `json:"archived,omitempty"`
-	Folder        string      `json:"folder,omitempty"`
-	Bytes         int64       `json:"bytes"`
-	Total         int64       `json:"total"`
-	Progress      float64     `json:"progress"`
-	Error         string      `json:"error,omitempty"`
-	Created       int64       `json:"created"`
-	Revision      int64       `json:"revision,omitempty"`
+	ID            string       `json:"id"`
+	Drama         LibraryDrama `json:"drama"`
+	Chapter       Chapter      `json:"chapter"`
+	Index         int          `json:"index"`
+	Quality       int          `json:"quality"`
+	ActualQuality int          `json:"actualQuality"`
+	State         string       `json:"state"`
+	Archived      bool         `json:"archived,omitempty"`
+	Folder        string       `json:"folder,omitempty"`
+	Bytes         int64        `json:"bytes"`
+	Total         int64        `json:"total"`
+	Progress      float64      `json:"progress"`
+	Error         string       `json:"error,omitempty"`
+	Created       int64        `json:"created"`
+	Revision      int64        `json:"revision,omitempty"`
 }
 
 type nativeDownloadRecord struct {
@@ -60,14 +60,13 @@ type nativeDownloads struct {
 	jobs        map[string]*nativeDownloadRecord
 	active      map[string]context.CancelFunc
 	converting  map[string]bool
-	closed      bool
 	moving      bool
 	loadErr     error
 	workers     sync.WaitGroup
 	lastSaved   time.Time
 	concurrency int
 	bySource    bool
-	resolve     func(context.Context, nativeDownloadJob) (providerMedia, error)
+	resolve     func(context.Context, nativeDownloadJob) (ProviderMedia, error)
 }
 
 func nativeDownloadID(drama string, episode int) string {
@@ -86,13 +85,13 @@ func (manager *nativeDownloads) unarchivedCountLocked() int {
 }
 
 func newNativeDownloads(engine *nativeEngine) *nativeDownloads {
-	manager := &nativeDownloads{root: nativeDownloadLocation(engine.directory), engine: engine,
+	manager := &nativeDownloads{root: nativeDownloadLocation(engine.directory, engine.defaultDownloads), engine: engine,
 		jobs: map[string]*nativeDownloadRecord{}, active: map[string]context.CancelFunc{}, converting: map[string]bool{}}
 	settings := engine.resourceSettings()
 	manager.concurrency, manager.bySource = settings.DownloadConcurrency, settings.DownloadBySource
-	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (providerMedia, error) {
+	manager.resolve = func(ctx context.Context, job nativeDownloadJob) (ProviderMedia, error) {
 		return engine.downloader.resolveProviderMedia(ctx, Task{
-			DramaID: job.Drama.ID, DramaTitle: job.Drama.Title, Chapter: job.Chapter, Index: job.Index, Quality: job.Quality})
+			DramaID: job.Drama.ID, DramaTitle: job.Drama.Title, Chapter: job.Chapter, Index: job.Index})
 	}
 	manager.loadErr = manager.load()
 	return manager
@@ -227,11 +226,6 @@ func (manager *nativeDownloads) snapshot() ([]nativeDownloadJob, error) {
 	return jobs, nil
 }
 
-// snapshotSince 返回下载列表，并附带一个按列表内容算出的指纹。
-//
-// 客户端每 2 秒轮询一次下载列表；记录多时每次都把整份列表序列化、传过 FFI、
-// 再在 Dart 里解析一遍，开销随记录数线性增长。带上上次的指纹后，列表没变化
-// 时只回一个指纹字符串，不传 jobs。指纹取 sha256 前 8 字节，够用且短。
 func (manager *nativeDownloads) snapshotSince(since string) (map[string]any, error) {
 	jobs, err := manager.snapshot()
 	if err != nil {
@@ -249,15 +243,11 @@ func (manager *nativeDownloads) snapshotSince(since string) (map[string]any, err
 	return map[string]any{"jobs": json.RawMessage(data), "fingerprint": fingerprint}, nil
 }
 
-func (manager *nativeDownloads) enqueue(input nativeInput) (int, error) {
-	return manager.enqueueContext(context.Background(), input)
-}
-
 func (manager *nativeDownloads) enqueueContext(ctx context.Context, input nativeInput) (int, error) {
 	if !nativeDramaAvailable(input.Drama) {
 		return 0, errNativeBuildSource
 	}
-	if _, _, valid := splitProviderDramaID(input.Drama.ID); !valid {
+	if _, _, valid := SplitProviderDramaID(input.Drama.ID); !valid {
 		return 0, errors.New("剧集信息无效")
 	}
 	if len(input.Entries) == 0 || len(input.Entries) > 500 {
@@ -273,7 +263,7 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 	}
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
-	if manager.closed || manager.moving {
+	if manager.moving {
 		return 0, errors.New("下载目录正在迁移或队列已关闭，请稍后重试")
 	}
 	if manager.loadErr != nil {
@@ -302,7 +292,7 @@ func (manager *nativeDownloads) enqueueContext(ctx context.Context, input native
 				if _, changed := previous[id]; !changed {
 					previous[id] = *existing
 				}
-				existing.Drama = mergeNativeDrama(existing.Drama, input.Drama)
+				existing.Drama = MergeNativeDrama(existing.Drama, input.Drama)
 			}
 			if input.Force && (existing.State == "failed" || existing.State == "completed" && !manager.localFilesValid(*existing)) {
 				if existing.Archived {
@@ -345,7 +335,7 @@ func (manager *nativeDownloads) control(id, action string) error {
 	if manager.loadErr != nil {
 		return manager.loadErr
 	}
-	if manager.closed || manager.moving {
+	if manager.moving {
 		return errors.New("下载目录正在迁移或队列已关闭，请稍后重试")
 	}
 	previous := map[string]nativeDownloadRecord{}
@@ -431,7 +421,7 @@ func (manager *nativeDownloads) control(id, action string) error {
 }
 
 func (manager *nativeDownloads) scheduleLocked() {
-	if manager.closed || manager.moving {
+	if manager.moving {
 		return
 	}
 	for len(manager.active) < max(1, manager.concurrency) {
@@ -507,7 +497,7 @@ func (manager *nativeDownloads) run(ctx context.Context, job nativeDownloadJob) 
 		if interrupted {
 			record.Error = "下载已中断，点击重试可继续"
 		} else {
-			record.Error = publicError(err).Error()
+			record.Error = PublicError(err).Error()
 		}
 	}
 	if saveErr := manager.saveLocked(); saveErr != nil && manager.jobs[job.ID] != nil {
@@ -539,7 +529,7 @@ func (manager *nativeDownloads) transfer(ctx context.Context, job nativeDownload
 }
 
 func (manager *nativeDownloads) localPlan(drama string, index int) (nativePlan, bool, error) {
-	if !nativeDramaAvailable(nativeDrama{ID: drama}) {
+	if !nativeDramaAvailable(LibraryDrama{ID: drama}) {
 		return nativePlan{}, false, errNativeBuildSource
 	}
 	manager.mu.Lock()
@@ -562,27 +552,13 @@ func (manager *nativeDownloads) localPlan(drama string, index int) (nativePlan, 
 		path = manager.outputFile(record.Output)
 	}
 	if !manager.localFilesValid(*record) {
-		record.State, record.Error = "failed", "本地文件缺失，请重新下载"
+		record.State, record.Error = "failed", "本地文件缺失或大小与下载记录不符，请重新下载"
 		record.Archived = false
 		_ = manager.saveLocked()
 		return nativePlan{}, true, errNativeLocalFile
 	}
 	return nativePlan{URL: path, Key: record.Key, Local: true, Quality: record.ActualQuality,
 		Qualities: []int{}, Headers: map[string]string{}, RouteCount: 1}, true, nil
-}
-
-func (manager *nativeDownloads) close() {
-	manager.mu.Lock()
-	manager.closed = true
-	for id, cancel := range manager.active {
-		if job := manager.jobs[id]; job != nil && job.State == "downloading" {
-			job.State = "paused"
-		}
-		cancel()
-	}
-	_ = manager.saveLocked()
-	manager.mu.Unlock()
-	manager.workers.Wait()
 }
 
 func nativeDownloadError(status int) error {

@@ -8,6 +8,5 @@ analyzer:
     - android/**
     - windows/**
     - ios/**
-    - legacy_ui/**
-    - legacy_test/**
     - macos/**
+    - packages/media_kit_video/**

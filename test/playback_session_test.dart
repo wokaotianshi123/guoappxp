@@ -4,7 +4,6 @@ import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/playback_session.dart';
-import 'package:duanju_app/playback_recovery.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:media_kit/media_kit.dart';
 
@@ -15,13 +14,8 @@ class _PlaybackRepository extends FakeRepository {
   final resolved = <({int episode, int quality})>[];
   final released = <String>[];
   final preloaded = <int>[];
-  final routes = <int>[];
-  final resolvedRoutes = <int>[];
-  final preloadedRoutes = <int>[];
   var fallbacks = 0;
   var resolveFailure = '';
-  var resolveFailureCode = '';
-  var routeLimit = 2;
   var _sessions = 0;
 
   PlaybackPlan _plan({int route = 0}) {
@@ -29,8 +23,8 @@ class _PlaybackRepository extends FakeRepository {
     return PlaybackPlan(
       url: 'https://media.test/$_sessions.m3u8',
       session: 'session-$_sessions',
-      routeIndex: route < routeLimit ? route : 0,
-      routeCount: routeLimit,
+      routeIndex: route,
+      routeCount: 2,
       quality: 1080,
       qualities: const [1080, 720],
     );
@@ -42,14 +36,10 @@ class _PlaybackRepository extends FakeRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
-    int route = 0,
   }) async {
     resolved.add((episode: episode.number, quality: quality));
-    resolvedRoutes.add(route);
-    if (resolveFailure.isNotEmpty) {
-      throw AppFailure(resolveFailure, code: resolveFailureCode);
-    }
-    return _plan(route: route);
+    if (resolveFailure.isNotEmpty) throw AppFailure(resolveFailure);
+    return _plan();
   }
 
   @override
@@ -59,23 +49,14 @@ class _PlaybackRepository extends FakeRepository {
   }
 
   @override
-  Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async {
-    routes.add(route);
-    return _plan(route: route);
-  }
-
-  @override
   Future<PlaybackPlan?> preload(
     Drama drama,
     Episode episode, {
     int quality = 0,
     bool online = false,
-    bool adBlock = true,
-    int route = 0,
   }) async {
     preloaded.add(episode.number);
-    preloadedRoutes.add(route);
-    return _plan(route: route);
+    return _plan();
   }
 
   @override
@@ -120,13 +101,23 @@ void _close(PlaybackSession session) {
 Duration _seconds(num value) => Duration(milliseconds: (value * 1000).round());
 
 Future<void> _settle(FakePlayer player) async {
-  player.state = player.state.copyWith(buffer: _seconds(25));
-  player.progress(_seconds(5), duration: _seconds(100));
+  player.state = player.state.copyWith(buffer: _seconds(80));
+  player.progress(_seconds(60), duration: _seconds(100));
   await Future<void>.delayed(const Duration(milliseconds: 700));
   await pumpEventQueue();
 }
 
 void main() {
+  test('blocked words saved elsewhere reach the playing session', () async {
+    final store = await openStore();
+    final (session, _) = await _open(_PlaybackRepository(), store);
+
+    await store.setPlaybackPreferences(
+      store.playbackPreferences.copyWith(danmakuWords: const ['剧透']),
+    );
+    expect(session.danmaku.blockedWords, ['剧透']);
+  });
+
   test('opens the episode at the resume position and saves progress', () async {
     final repository = _PlaybackRepository();
     final store = await openStore();
@@ -216,85 +207,6 @@ void main() {
     expect(session.qualityLabel, '720P');
   });
 
-  test(
-    'manual route switching reuses the session and keeps position',
-    () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore();
-      final (session, player) = await _open(repository, store);
-
-      player.progress(_seconds(40), duration: _seconds(100));
-      await session.setRoute(1);
-
-      expect(repository.routes, [1]);
-      expect(repository.resolved, hasLength(1));
-      expect(repository.fallbacks, 0);
-      expect(player.opened, hasLength(2));
-      expect(player.opened.last.start, _seconds(40));
-      expect(session.routeIndex, 1);
-      expect(session.ready, isTrue);
-      expect(repository.released, contains('session-1'));
-    },
-  );
-
-  test('the selected route carries over to the next episode', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-
-    player.progress(_seconds(40), duration: _seconds(100));
-    await session.setRoute(1);
-    expect(session.routeIndex, 1);
-
-    await session.next();
-    expect(session.index, 1);
-    expect(session.routeIndex, 1);
-    expect(session.preferredRoute, 1);
-    if (repository.resolved.last.episode == 2) {
-      expect(repository.resolvedRoutes.last, 1);
-    }
-  });
-
-  test('an episode without the selected route falls back and later returns'
-      ' to it', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-
-    player.progress(_seconds(40), duration: _seconds(100));
-    await session.setRoute(1);
-    expect(session.routeIndex, 1);
-
-    repository.routeLimit = 1;
-    await session.next();
-    expect(session.routeIndex, 0);
-    expect(session.preferredRoute, 1);
-
-    repository.routeLimit = 2;
-    await session.next();
-    if (repository.resolved.last.episode == 3) {
-      expect(repository.resolvedRoutes.last, 1);
-    }
-    expect(session.routeIndex, 1);
-  });
-
-  test('an automatic route switch is kept for later episodes', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-
-    player.progress(_seconds(20), duration: _seconds(100));
-    player.fail('connection reset');
-    await Future<void>.delayed(const Duration(milliseconds: 1000));
-    await pumpEventQueue();
-    expect(session.routeIndex, 1);
-    expect(session.preferredRoute, 1);
-
-    await session.next();
-    expect(session.index, 1);
-    expect(session.routeIndex, 1);
-  });
-
   test('speed changes are saved and applied unless boosting', () async {
     final repository = _PlaybackRepository();
     final store = await openStore();
@@ -347,27 +259,6 @@ void main() {
 
     repository.resolveFailure = '';
     await session.retry();
-    expect(session.error, isNull);
-    expect(session.ready, isTrue);
-    expect(player.opened, hasLength(1));
-  });
-
-  test('a source_login failure shows 去登录 and clears after retry', () async {
-    final repository = _PlaybackRepository()
-      ..resolveFailure = '青空次元需要登录后才能播放'
-      ..resolveFailureCode = 'source_login';
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-
-    expect(session.ready, isFalse);
-    expect(session.loginRequired, isTrue);
-    expect(session.localFailure, isFalse);
-    expect(session.error, '青空次元需要登录后才能播放');
-
-    repository.resolveFailure = '';
-    repository.resolveFailureCode = '';
-    await session.retry();
-    expect(session.loginRequired, isFalse);
     expect(session.error, isNull);
     expect(session.ready, isTrue);
     expect(player.opened, hasLength(1));
@@ -539,23 +430,44 @@ void main() {
     session.endBoost();
     await pumpEventQueue();
     expect(player.rates.last, 1);
-  });
 
-  test('the next episode opens early and keeps loading while paused', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final standby = FakePlayer();
-    final (session, player) = await _open(repository, store, standby: standby);
-
-    session.togglePlayback();
-    player.state = player.state.copyWith(buffer: _seconds(4));
-    player.progress(_seconds(.5), duration: _seconds(100));
-    await Future<void>.delayed(const Duration(milliseconds: 700));
+    await store.setPlaybackPreferences(
+      store.playbackPreferences.copyWith(boostSpeed: 3),
+    );
+    session.holdBoost();
     await pumpEventQueue();
-
-    expect(player.state.playing, isFalse);
-    expect(session.standbyIndex, 1);
+    expect(player.rates.last, 3);
   });
+
+  test(
+    'the next episode opens near the end and keeps loading while paused',
+    () async {
+      final repository = _PlaybackRepository();
+      final store = await openStore();
+      final standby = FakePlayer();
+      final (session, player) = await _open(
+        repository,
+        store,
+        standby: standby,
+      );
+
+      session.togglePlayback();
+      player.state = player.state.copyWith(buffer: _seconds(24));
+      player.progress(_seconds(20), duration: _seconds(100));
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await pumpEventQueue();
+      expect(repository.preloaded, isEmpty);
+      expect(session.standbyIndex, -1);
+
+      player.state = player.state.copyWith(buffer: _seconds(64));
+      player.progress(_seconds(60), duration: _seconds(100));
+      await Future<void>.delayed(const Duration(milliseconds: 700));
+      await pumpEventQueue();
+
+      expect(player.state.playing, isFalse);
+      expect(session.standbyIndex, 1);
+    },
+  );
 
   test('a paused preopen does not open the next episode', () async {
     final repository = _PlaybackRepository();
@@ -607,201 +519,5 @@ void main() {
     expect(session.stalled, isTrue);
     player.buffer(false);
     expect(session.stalled, isFalse);
-  });
-
-  test('a recoverable error does not reload while the picture advances'
-      ' without video params', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-
-    // TV / 硬件解码常不上报视频尺寸，旧逻辑会因此把可自愈的错误当成
-    // 需要重新解析地址，反复加载几次后直接判失败。
-    expect(player.state.width, isNull);
-    player.progress(_seconds(20), duration: _seconds(100));
-    player.fail('connection reset');
-    player.progress(_seconds(21));
-    await Future<void>.delayed(const Duration(milliseconds: 1000));
-    await pumpEventQueue();
-
-    expect(repository.fallbacks, 0);
-    expect(repository.resolved, hasLength(1));
-    expect(player.opened, hasLength(1));
-    expect(session.ready, isTrue);
-  });
-
-  test(
-    'a TV that never reports position ignores a soft player error',
-    () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore();
-      final (session, player) = await _open(repository, store);
-
-      // TV / 硬解设备画面在播，却一个 position 事件都不发。旧逻辑会把
-      // 「900ms 内进度没前进」当成故障，反复切备用线路最后报恢复失败。
-      expect(player.state.playing, isTrue);
-      player.fail('non-fatal decoder warning');
-      await Future<void>.delayed(const Duration(milliseconds: 1000));
-      await pumpEventQueue();
-
-      expect(repository.fallbacks, 0);
-      expect(repository.resolved, hasLength(1));
-      expect(player.opened, hasLength(1));
-      expect(session.error, isNull);
-      expect(session.ready, isTrue);
-    },
-  );
-
-  test(
-    'a TV without position still recovers when playback really stalls',
-    () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore();
-      final (session, player) = await _open(repository, store);
-
-      // 真断流会卡在缓冲：即使设备不上报进度，也不能被上面的保护放过。
-      player.fail('connection reset');
-      player.buffer(true);
-      await Future<void>.delayed(const Duration(milliseconds: 1000));
-      await pumpEventQueue();
-
-      expect(repository.fallbacks, 1);
-      expect(player.opened, hasLength(2));
-      expect(session.ready, isTrue);
-    },
-  );
-
-  test('a brief background switch resumes without reloading', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-    expect(player.state.playing, isTrue);
-
-    session.setForeground(false);
-    await pumpEventQueue();
-    expect(player.state.playing, isFalse);
-
-    session.setForeground(true);
-    await pumpEventQueue();
-    expect(player.state.playing, isTrue);
-    expect(repository.resolved, hasLength(1));
-    expect(player.opened, hasLength(1));
-  });
-
-  test('a manual pause stays paused across a background switch', () async {
-    final repository = _PlaybackRepository();
-    final store = await openStore();
-    final (session, player) = await _open(repository, store);
-
-    session.togglePlayback();
-    await pumpEventQueue();
-    expect(player.state.playing, isFalse);
-
-    session.setForeground(false);
-    session.setForeground(true);
-    await pumpEventQueue();
-    expect(player.state.playing, isFalse);
-  });
-
-  test('buffering resets the stall clock, and a silent player never trips'
-      ' the watchdog', () {
-    final start = DateTime(2026, 1, 1);
-    bool stalled(
-      PlaybackHealth health,
-      Duration elapsed,
-      Duration position, {
-      bool buffering = false,
-    }) => health.stalled(
-      position: position,
-      playing: true,
-      foreground: true,
-      buffering: buffering,
-      now: start.add(elapsed),
-    );
-
-    final health = PlaybackHealth();
-    expect(stalled(health, Duration.zero, _seconds(5)), isFalse);
-    expect(stalled(health, const Duration(seconds: 1), _seconds(6)), isFalse);
-    expect(health.sawProgress, isTrue);
-    // 缓冲里进度不动，时钟要重置，不能累计成卡死。
-    expect(
-      stalled(
-        health,
-        const Duration(seconds: 21),
-        _seconds(6),
-        buffering: true,
-      ),
-      isFalse,
-    );
-    expect(stalled(health, const Duration(seconds: 22), _seconds(6)), isFalse);
-    expect(stalled(health, const Duration(seconds: 43), _seconds(6)), isTrue);
-
-    // 有的电视设备压根不发 position 事件：没有可信进度就不该反复重载。
-    final silent = PlaybackHealth();
-    for (var seconds = 0; seconds < 60; seconds += 1) {
-      expect(
-        stalled(silent, Duration(seconds: seconds), Duration.zero),
-        isFalse,
-      );
-    }
-    expect(silent.sawProgress, isFalse);
-  });
-
-  group('player volume memory', () {
-    test(
-      'a new session restores the volume saved by the previous one',
-      () async {
-        final repository = _PlaybackRepository();
-        final store = await openStore({'playerVolume': 42.0});
-        final (session, player) = await _open(repository, store);
-        expect(player.state.volume, 42.0);
-        expect(store.playerVolume, 42.0);
-      },
-    );
-
-    test('clamps a saved mute to a quiet but audible volume', () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore({'playerVolume': 0.0});
-      final (_, player) = await _open(repository, store);
-      expect(player.state.volume, 1.0);
-    });
-
-    test('volume changes are debounced and persisted, mute never is', () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore();
-      final (session, player) = await _open(repository, store);
-      expect(store.playerVolume, 100);
-
-      session.setVolume(65);
-      expect(player.state.volume, 65);
-      expect(store.playerVolume, 100, reason: '防抖窗口内还没落盘');
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      await pumpEventQueue();
-      expect(store.playerVolume, 65);
-
-      // 静音（0）不进入存档；解除静音也不该写 0。
-      session.setVolume(0);
-      session.toggleMute();
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      await pumpEventQueue();
-      expect(store.playerVolume, 65);
-
-      // 滑动调节（系统媒体音量语义）不写存档。
-      session.setVolume(88, persist: false);
-      await Future<void>.delayed(const Duration(milliseconds: 600));
-      await pumpEventQueue();
-      expect(store.playerVolume, 65);
-      expect(player.state.volume, 88);
-    });
-
-    test('disposing flushes a pending volume write', () async {
-      final repository = _PlaybackRepository();
-      final store = await openStore();
-      final (session, _) = await _open(repository, store);
-      session.setVolume(23);
-      _close(session);
-      await pumpEventQueue();
-      expect(store.playerVolume, 23);
-    });
   });
 }

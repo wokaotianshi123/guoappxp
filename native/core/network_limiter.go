@@ -16,14 +16,14 @@ type requestGate struct {
 	lastStart time.Time
 }
 
-type requestBackoff struct {
+type RequestBackoff struct {
 	host   string
 	until  time.Time
 	status int
 	reason string
 }
 
-func (backoff *requestBackoff) Error() string {
+func (backoff *RequestBackoff) Error() string {
 	reason := ""
 	if backoff.reason != "" {
 		reason = "：" + backoff.reason
@@ -56,7 +56,7 @@ func (d *Downloader) catalogResponseError(request *http.Request, response *http.
 	if d.limiter != nil && (response.StatusCode == http.StatusForbidden || response.StatusCode == http.StatusTooManyRequests || reason != "") {
 		d.limiter.mu.Lock()
 		backoffs := d.limiter.backoffs
-		if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && response.StatusCode != http.StatusTooManyRequests {
+		if background, _ := request.Context().Value(BackgroundCatalogKey{}).(bool); background && response.StatusCode != http.StatusTooManyRequests {
 			backoffs = d.limiter.backgroundBackoffs
 		}
 		if previous := backoffs[host]; previous != nil && previous.status == response.StatusCode {
@@ -84,12 +84,15 @@ type requestLimiter struct {
 	interval           time.Duration
 	mu                 sync.Mutex
 	gates              map[string]*requestGate
-	backoffs           map[string]*requestBackoff
-	backgroundBackoffs map[string]*requestBackoff
+	backoffs           map[string]*RequestBackoff
+	backgroundBackoffs map[string]*RequestBackoff
+	forbiddenStreaks   map[string]int
 	changed            chan struct{}
 }
 
-type backgroundCatalogKey struct{}
+const forbiddenStreakLimit = 3
+
+type BackgroundCatalogKey struct{}
 
 type requestLaneKey struct{}
 
@@ -97,7 +100,7 @@ func newRequestLimiter(concurrency int, interval time.Duration) *requestLimiter 
 	if concurrency < 1 {
 		concurrency = 1
 	}
-	return &requestLimiter{concurrency: concurrency, interval: interval, gates: map[string]*requestGate{}, backoffs: map[string]*requestBackoff{}, backgroundBackoffs: map[string]*requestBackoff{}, changed: make(chan struct{})}
+	return &requestLimiter{concurrency: concurrency, interval: interval, gates: map[string]*requestGate{}, backoffs: map[string]*RequestBackoff{}, backgroundBackoffs: map[string]*RequestBackoff{}, forbiddenStreaks: map[string]int{}, changed: make(chan struct{})}
 }
 
 func (limiter *requestLimiter) notifyLocked() {
@@ -106,9 +109,9 @@ func (limiter *requestLimiter) notifyLocked() {
 }
 
 func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Request) (func(), error) {
-	background, _ := ctx.Value(backgroundCatalogKey{}).(bool)
+	background, _ := ctx.Value(BackgroundCatalogKey{}).(bool)
 	host := strings.ToLower(request.URL.Hostname())
-	source := providerSourceForURL(request.URL.String())
+	source := ProviderSourceForURL(request.URL.String())
 	if source == "" {
 		source = host
 		if strings.HasSuffix(host, ".cloudfront.net") {
@@ -149,22 +152,13 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 		}
 		delay := time.Until(gate.lastStart.Add(limiter.interval))
 		if background {
-			// 后台任务主动让路：前台刚发过请求就等一个间隔，避免和用户操作抢节奏。
+
 			if idleDelay := time.Until(limiter.lastForeground.Add(limiter.interval)); idleDelay > delay {
 				delay = idleDelay
 			}
 		}
-		// 后台任务最多占 1 个并发槽：红果听书这类「翻近百页」的抓取如果占满
-		// 全部 3 个槽，用户点剧集、加载封面都会被排队，表现为整体卡顿。
-		concurrency := limiter.concurrency
-		if background {
-			concurrency = 1
-		}
-		// 后台让路条件：前台没有排队的请求即可，不要求 active 归零。
-		// 原来要求 active==0 太严——用户刚打开软件时前台几乎一直有请求在飞，
-		// 后台永远等不到机会，听书书池会一直停在 0 本。
-		lowPriorityReady := !background || limiter.foregroundWaiting == 0
-		if lowPriorityReady && !gate.busy && limiter.active < concurrency && delay <= 0 {
+		lowPriorityReady := !background || limiter.foregroundWaiting == 0 && limiter.active == 0
+		if lowPriorityReady && !gate.busy && limiter.active < limiter.concurrency && delay <= 0 {
 			gate.busy = true
 			gate.lastStart = time.Now()
 			limiter.active++
@@ -204,10 +198,27 @@ func (limiter *requestLimiter) acquire(ctx context.Context, request *http.Reques
 }
 
 func (limiter *requestLimiter) observe(request *http.Request, response *http.Response) {
-	if response.StatusCode != http.StatusForbidden && response.StatusCode != http.StatusTooManyRequests && !strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge") {
+	host := strings.ToLower(request.URL.Hostname())
+	challenged := strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge")
+	limiter.mu.Lock()
+	if response.StatusCode == http.StatusForbidden && !challenged {
+		limiter.forbiddenStreaks[host]++
+	} else {
+		delete(limiter.forbiddenStreaks, host)
+	}
+	repeatedlyForbidden := limiter.forbiddenStreaks[host] >= forbiddenStreakLimit
+	limiter.mu.Unlock()
+	if response.StatusCode != http.StatusTooManyRequests && !challenged && !repeatedlyForbidden {
 		return
 	}
 	limiter.observeBlock(request, response)
+}
+
+func (limiter *requestLimiter) observeMedia(request *http.Request, response *http.Response) {
+	if response.StatusCode == http.StatusForbidden && !strings.EqualFold(response.Header.Get("Cf-Mitigated"), "challenge") {
+		return
+	}
+	limiter.observe(request, response)
 }
 
 func (limiter *requestLimiter) observeBlock(request *http.Request, response *http.Response) {
@@ -223,11 +234,11 @@ func (limiter *requestLimiter) observeBlock(request *http.Request, response *htt
 	host := strings.ToLower(request.URL.Hostname())
 	limiter.mu.Lock()
 	backoffs := limiter.backoffs
-	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && response.StatusCode != http.StatusTooManyRequests {
+	if background, _ := request.Context().Value(BackgroundCatalogKey{}).(bool); background && response.StatusCode != http.StatusTooManyRequests {
 
 		backoffs = limiter.backgroundBackoffs
 	}
-	backoffs[host] = &requestBackoff{host: host, until: time.Now().Add(delay), status: response.StatusCode}
+	backoffs[host] = &RequestBackoff{host: host, until: time.Now().Add(delay), status: response.StatusCode}
 	limiter.notifyLocked()
 	limiter.mu.Unlock()
 }
@@ -243,34 +254,17 @@ func (body *limitedResponseBody) Close() error {
 	return err
 }
 
-// catalogLimiterSlowLog 是「在限流队列里等太久」的阈值。
-//
-// 同一 host 每 250ms 只允许一个请求在飞，正常排队最多等一个间隔；超过 1 秒
-// 说明前面压着别人的慢请求（同一个 gate 的串行等待会成倍放大用户感知的等待）。
-// 记进诊断日志后，「点了半天没反应」到底卡在网络还是卡在排队一眼能分开。
-const catalogLimiterSlowLog = time.Second
-
 func (d *Downloader) doCatalogRequestWithTimeout(request *http.Request, timeout time.Duration) (*http.Response, error) {
 	return d.doPreparedCatalogRequest(request, timeout, nil)
 }
 
 func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout time.Duration, prepare func(*http.Request)) (*http.Response, error) {
-	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && (timeout <= 0 || timeout > 8*time.Second) {
+	if background, _ := request.Context().Value(BackgroundCatalogKey{}).(bool); background && (timeout <= 0 || timeout > 8*time.Second) {
 		timeout = 8 * time.Second
 	}
-	queued := time.Now()
 	release, err := d.limiter.acquire(request.Context(), request)
 	if err != nil {
 		return nil, err
-	}
-	if waited := time.Since(queued); waited >= catalogLimiterSlowLog {
-		d.recordDiagnostic(diagnosticEvent{
-			Level: "info",
-			Event: "network.limiter_wait",
-			Host:  strings.ToLower(request.URL.Hostname()),
-			// path 不带查询串：query 里含设备标识与签名。
-			Message: fmt.Sprintf("waited=%dms path=%s", waited.Milliseconds(), request.URL.Path),
-		})
 	}
 	cancel := func() {}
 	if timeout > 0 {

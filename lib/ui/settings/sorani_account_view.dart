@@ -5,11 +5,11 @@ import 'package:flutter/services.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import '../../core_bridge.dart';
+import '../../models.dart';
 import '../../sorani_account.dart';
 import '../app_scope.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/form_text_field.dart';
-import '../widgets/group_card.dart';
 
 const _soraniSite = 'https://www.sorani.net/';
 
@@ -21,14 +21,20 @@ Future<SoraniAccount?> showSoraniLogin(BuildContext context) =>
           _SoraniLoginDialog(repository: AppScope.of(context).repository),
     );
 
-class SoraniAccountTile extends StatefulWidget {
-  const SoraniAccountTile({super.key});
-
-  @override
-  State<SoraniAccountTile> createState() => _SoraniAccountTileState();
+bool soraniAccountAvailable() {
+  final site = SourceSite.byId('sorani');
+  return site.available && site.account;
 }
 
-class _SoraniAccountTileState extends State<SoraniAccountTile> {
+class SoraniAccountButton extends StatefulWidget {
+  const SoraniAccountButton({super.key, this.style});
+  final ButtonStyle? style;
+
+  @override
+  State<SoraniAccountButton> createState() => _SoraniAccountButtonState();
+}
+
+class _SoraniAccountButtonState extends State<SoraniAccountButton> {
   SoraniAccount? _account;
   var _busy = false;
 
@@ -76,25 +82,14 @@ class _SoraniAccountTileState extends State<SoraniAccountTile> {
 
   @override
   Widget build(BuildContext context) {
-    final account = _account;
-    final loggedIn = account?.loggedIn ?? false;
-    final enabled = account != null && !_busy;
-    return SettingsTile(
-      title: '青空账号',
-      subtitle: account == null
-          ? '正在读取登录状态'
-          : loggedIn
-          ? '已登录：${account.name}'
-          : '未登录。青空目前需要登录后才能播放',
-      onTap: _toggle,
-      // 电视上进入「站源账号」时焦点直接落在这一行；退出登录后
-      // 本行不重建，焦点保持在青空账号上。
-      autofocus: true,
-      trailing: ExcludeFocus(
-        child: TextButton(
-          onPressed: enabled ? (loggedIn ? _logout : _login) : null,
-          child: Text(loggedIn ? '退出登录' : '登录'),
-        ),
+    final loggedIn = _account?.loggedIn ?? false;
+    return FocusRing(
+      radius: 20,
+      child: FilledButton.tonalIcon(
+        style: widget.style,
+        onPressed: _account != null && !_busy ? _toggle : null,
+        icon: Icon(loggedIn ? Icons.logout_rounded : Icons.login_rounded),
+        label: Text(loggedIn ? '退出登录' : '登录'),
       ),
     );
   }

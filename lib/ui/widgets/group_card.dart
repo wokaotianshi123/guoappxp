@@ -25,7 +25,6 @@ class SettingsTile extends StatelessWidget {
     this.trailing,
     this.onTap,
     this.enabled = true,
-    this.autofocus = false,
   });
   final String title;
   final String? subtitle;
@@ -34,13 +33,11 @@ class SettingsTile extends StatelessWidget {
   final Widget? trailing;
   final VoidCallback? onTap;
   final bool enabled;
-  final bool autofocus;
 
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     return TileFocus(
-      autofocus: autofocus,
       builder: (focusNode) => ListTile(
         focusNode: focusNode,
         minTileHeight: subtitle == null ? 60 : 72,

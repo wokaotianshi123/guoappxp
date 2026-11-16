@@ -1,9 +1,5 @@
 package core
 
-// 随包内置的模块：放在 native/core/bundled/<标识>/ 下，编译进二进制。
-// 安装包自带的模块被卸载后可在这里装回（见模块页的「从内置安装」）。
-// 当前内置目录只有 .gitkeep，为将来的官方模块预留。
-
 import (
 	"embed"
 	"encoding/json"

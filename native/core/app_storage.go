@@ -15,15 +15,15 @@ type nativeStorageInfo struct {
 	Bytes     int64  `json:"bytes"`
 	Free      int64  `json:"free"`
 	Files     int    `json:"files"`
-	Cache     int64  `json:"cache"`
+	Default   bool   `json:"default"`
 }
 
-func (engine *nativeEngine) storage(extra string) (nativeStorageInfo, error) {
+func (engine *nativeEngine) storage() (nativeStorageInfo, error) {
 	manager := engine.downloads
 	manager.mu.Lock()
 	root := manager.root
 	manager.mu.Unlock()
-	info := nativeStorageInfo{Directory: root}
+	info := nativeStorageInfo{Directory: root, Default: root == engine.defaultDownloads}
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
@@ -42,53 +42,60 @@ func (engine *nativeEngine) storage(extra string) (nativeStorageInfo, error) {
 	if err != nil {
 		return info, errors.New("无法读取下载目录，请检查存储设备")
 	}
-	// 缓存也算应用占用的空间，一并计入总用量：存储页要能反映「清理缓存」
-	// 到底能腾出多少，否则清完数字不变会让人以为没生效。
-	// 统计口径与 cacheInfo / clearCache 完全一致（同一份白名单文件集），
-	// 这样「总量」减「清理后总量」正好等于清理释放的字节数。
-	info.Cache = engine.cacheInfo(extra).Bytes
-	info.Bytes += info.Cache
+	if !nativePathInside(root, engine.cacheDirectory) {
+		info.Bytes += engine.cacheBytes()
+	}
 	info.Free = nativeFreeSpace(root)
 	return info, nil
 }
 
-func nativeDownloadLocation(directory string) string {
+func nativeDownloadLocation(directory, fallback string) string {
 	var value struct {
 		Directory string `json:"directory"`
 	}
-	body, _ := os.ReadFile(filepath.Join(directory, "download-location.json"))
+	location := filepath.Join(directory, "download-location.json")
+	body, _ := os.ReadFile(location)
 	if json.Unmarshal(body, &value) == nil && filepath.IsAbs(value.Directory) {
 		return filepath.Clean(value.Directory)
 	}
+	legacy := nativeDefaultDownloads(directory)
+	if fallback != legacy && nativeDownloadsInUse(legacy) {
+		data, _ := json.Marshal(map[string]string{"directory": legacy})
+		_ = nativeDownloadWrite(location, data)
+		return legacy
+	}
+	return fallback
+}
+
+func nativeDownloadsInUse(root string) bool {
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return false
+	}
+	for _, entry := range entries {
+		if entry.Name() != "index.json" {
+			return true
+		}
+	}
+	body, err := os.ReadFile(filepath.Join(root, "index.json"))
+	if os.IsNotExist(err) {
+		return false
+	}
+	var records []json.RawMessage
+	return err != nil || json.Unmarshal(body, &records) != nil || len(records) > 0
+}
+
+func nativeDefaultDownloads(directory string) string {
 	return filepath.Join(directory, "downloads")
 }
 
-// nativeCanonicalPath 把路径解析成可相互比较的形式。Windows 上临时目录常以
-// 8.3 短名（如 ADMINI~1）返回，而 EvalSymlinks 会还原成长名；两者混用时
-// filepath.Rel 会算出跨目录的 ".." 前缀，使包含关系判定失效。
-func nativeCanonicalPath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return filepath.Clean(resolved)
-	}
-	return filepath.Clean(path)
-}
-
 func nativeCopyTree(ctx context.Context, source, target string) error {
-	source = nativeCanonicalPath(source)
-	target = nativeCanonicalPath(target)
-	// 目标若落在源目录内，遍历过程中不断创建子目录会形成无限递归，必须提前拒绝。
-	if nativePathsOverlap(source, target) {
-		return errors.New("目标目录不能位于待迁移目录内部")
-	}
 	return filepath.WalkDir(source, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
 		if err := ctx.Err(); err != nil {
 			return err
-		}
-		if path == target {
-			return filepath.SkipDir
 		}
 		if entry.Type()&os.ModeSymlink != 0 {
 			return errors.New("下载目录中包含符号链接，无法迁移")
@@ -137,44 +144,48 @@ func nativeCopyTree(ctx context.Context, source, target string) error {
 	})
 }
 
-func (engine *nativeEngine) moveDownloads(ctx context.Context, parent string) error {
-	if !filepath.IsAbs(parent) {
-		return errors.New("请选择有效的保存目录")
+func (engine *nativeEngine) moveDownloads(ctx context.Context, parent string) (string, string, error) {
+	target := engine.defaultDownloads
+	if parent != "" {
+		if !filepath.IsAbs(parent) {
+			return "", "", errors.New("请选择有效的保存目录")
+		}
+		resolved, err := filepath.EvalSymlinks(parent)
+		if err != nil {
+			return "", "", errors.New("无法打开所选目录")
+		}
+		target = filepath.Join(filepath.Clean(resolved), "zhenguojian-downloads")
 	}
 	manager := engine.downloads
-	resolved, err := filepath.EvalSymlinks(parent)
-	if err != nil {
-		return errors.New("无法打开所选目录")
-	}
-	parent = resolved
 	engine.mu.Lock()
 	defer engine.mu.Unlock()
-	target := filepath.Join(filepath.Clean(parent), "zhenguojian-downloads")
 	manager.mu.Lock()
 	if manager.loadErr != nil {
 		manager.mu.Unlock()
-		return errors.New("下载记录无法读取，已停止迁移并保留原索引和文件；请先恢复下载记录")
+		return "", "", errors.New("下载记录无法读取，已停止迁移并保留原索引和文件；请先恢复下载记录")
 	}
-	if manager.closed || manager.moving {
+	if manager.moving {
 		manager.mu.Unlock()
-		return errors.New("下载目录正在处理，请稍后重试")
+		return "", "", errors.New("下载目录正在处理，请稍后重试")
 	}
 	if len(manager.converting) > 0 {
 		manager.mu.Unlock()
-		return errors.New("请等待下载的分集处理完成后再迁移")
+		return "", "", errors.New("请等待下载的分集处理完成后再迁移")
 	}
-	source := nativeCanonicalPath(manager.root)
-	if target == source {
+	if target == manager.root {
 		manager.mu.Unlock()
-		return nil
+		return "", "", nil
 	}
-	if nativePathsOverlap(source, target) {
+	if nativePathsOverlap(manager.root, target) {
 		manager.mu.Unlock()
-		return errors.New("新目录不能与原下载目录互相包含")
+		return "", "", errors.New("新目录不能与原下载目录互相包含")
 	}
-	if _, err := os.Stat(target); !os.IsNotExist(err) {
+	if _, err := os.Stat(target); err == nil {
 		manager.mu.Unlock()
-		return errors.New("目标中已有应用下载目录，请选择空目录，避免覆盖文件")
+		return "", "", errors.New("目标中已有应用下载目录，请选择空目录，避免覆盖文件")
+	} else if !os.IsNotExist(err) {
+		manager.mu.Unlock()
+		return "", "", errors.New("无法检查目标目录：" + err.Error())
 	}
 	manager.moving = true
 	for id, job := range manager.jobs {
@@ -192,35 +203,48 @@ func (engine *nativeEngine) moveDownloads(ctx context.Context, parent string) er
 	defer manager.mu.Unlock()
 	defer func() { manager.moving = false }()
 	if saveErr != nil {
-		return saveErr
+		return "", "", saveErr
 	}
+	source := manager.root
 	if err := os.Mkdir(target, 0700); err != nil {
-		return errors.New("无法创建目标目录，请检查权限或选择其他位置")
+		return "", "", errors.New("无法创建目标目录，请检查权限或选择其他位置")
 	}
 	if err := nativeCopyTree(ctx, source, target); err != nil {
 		_ = os.RemoveAll(target)
-		return errors.New("文件迁移未完成，原文件已保留，请检查空间与目录权限")
+		return "", "", errors.New("文件迁移未完成，原文件已保留，请检查空间与目录权限")
 	}
 	if err := ctx.Err(); err != nil {
 		_ = os.RemoveAll(target)
-		return err
+		return "", "", err
 	}
-	data, _ := json.Marshal(map[string]string{"directory": target})
-	if err := nativeDownloadWrite(filepath.Join(engine.directory, "download-location.json"), data); err != nil {
+	location := filepath.Join(engine.directory, "download-location.json")
+	var persistErr error
+	if target == nativeDefaultDownloads(engine.directory) {
+		if err := os.Remove(location); !os.IsNotExist(err) {
+			persistErr = err
+		}
+	} else {
+		data, _ := json.Marshal(map[string]string{"directory": target})
+		persistErr = nativeDownloadWrite(location, data)
+	}
+	if persistErr != nil {
 		_ = os.RemoveAll(target)
-		return errors.New("保存下载目录失败，原文件已保留")
+		return "", "", errors.New("保存下载目录失败，原文件已保留")
 	}
 	manager.root = target
-	_ = os.RemoveAll(source)
-	return nil
+	if err := os.RemoveAll(source); err != nil {
+		return source, err.Error(), nil
+	}
+	return "", "", nil
+}
+
+func nativePathInside(base, path string) bool {
+	relative, err := filepath.Rel(base, path)
+	return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
 }
 
 func nativePathsOverlap(first, second string) bool {
-	inside := func(base, path string) bool {
-		relative, err := filepath.Rel(base, path)
-		return err == nil && relative != ".." && !strings.HasPrefix(relative, ".."+string(os.PathSeparator))
-	}
-	return inside(first, second) || inside(second, first)
+	return nativePathInside(first, second) || nativePathInside(second, first)
 }
 
 func (engine *nativeEngine) workLease(id, command string) (int, error) {
@@ -233,7 +257,7 @@ func (engine *nativeEngine) workLease(id, command string) (int, error) {
 	manager.mu.Lock()
 	defer manager.mu.Unlock()
 	if id != "" {
-		if id != "storage" {
+		if id != "storage" && id != "merge" {
 			return 0, errors.New("无效的本地任务")
 		}
 		if command != "start" && command != "end" {
@@ -242,6 +266,12 @@ func (engine *nativeEngine) workLease(id, command string) (int, error) {
 		if command == "start" {
 			if engine.work[id] || manager.moving {
 				return 0, errors.New("已有本地任务正在运行，请稍后重试")
+			}
+			if id == "storage" && engine.work["merge"] {
+				return 0, errors.New("正在合并视频，请等合并完成后再迁移下载目录")
+			}
+			if id == "merge" && engine.work["storage"] {
+				return 0, errors.New("正在迁移下载目录，请稍后再合并")
 			}
 			engine.work[id] = true
 		} else {

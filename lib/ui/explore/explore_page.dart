@@ -2,11 +2,13 @@ import 'dart:async';
 
 import 'package:flutter/material.dart';
 
+import '../../drama_feed.dart';
 import '../../explore_feed.dart';
-import '../../live/live_page.dart';
 import '../../local_store.dart';
 import '../../models.dart';
+import '../../live/live_page.dart';
 import '../app_scope.dart';
+import '../cover_blur.dart';
 import '../shell/app_shell.dart';
 import '../theme/motion.dart';
 import '../detail/detail_page.dart';
@@ -15,6 +17,7 @@ import '../widgets/category_tabs.dart';
 import '../widgets/choice_panel.dart';
 import '../widgets/drama_grid.dart';
 import '../widgets/follow_button.dart';
+import '../widgets/motion/motion_widgets.dart';
 import '../widgets/page_header.dart';
 import '../widgets/source_bar.dart';
 import '../widgets/status_view.dart';
@@ -33,6 +36,7 @@ class ExplorePage extends StatefulWidget {
 class ExplorePageState extends State<ExplorePage> {
   ExploreFeed? _explore;
   final _scroll = ScrollController();
+  final _search = TextEditingController();
   final _tabsKey = GlobalKey();
   final _refreshKey = GlobalKey<RefreshIndicatorState>();
   String _shown = '';
@@ -47,6 +51,7 @@ class ExplorePageState extends State<ExplorePage> {
   void dispose() {
     _explore?.dispose();
     _scroll.dispose();
+    _search.dispose();
     super.dispose();
   }
 
@@ -55,7 +60,6 @@ class ExplorePageState extends State<ExplorePage> {
     await _explore?.refresh();
   }
 
-  /// 再点一次「发现」标签：不在顶部先回到顶部，已经在顶部就刷新。
   void reselect() {
     if (!_scroll.hasClients) return;
     if (_scroll.offset <= 0) {
@@ -71,12 +75,6 @@ class ExplorePageState extends State<ExplorePage> {
     );
   }
 
-  void _open(Drama drama) => openPage<void>(
-    context,
-    (_) => DetailPage(store: widget.store, drama: drama),
-  );
-
-  /// 点已选中的分类不再重复加载，而是回到列表顶部；已在顶部则不动。
   void _selectTab(String id) {
     if (id != _explore!.tab.id) {
       _explore!.select(id);
@@ -92,6 +90,11 @@ class ExplorePageState extends State<ExplorePage> {
     );
   }
 
+  void _open(Drama drama, {bool autoplay = false}) => openPage<void>(
+    context,
+    (_) => DetailPage(store: widget.store, drama: drama, autoplay: autoplay),
+  );
+
   Future<void> _pickCategory(BuildContext anchor) async {
     final explore = _explore!;
     final value = await showChoicePanel<String>(
@@ -104,25 +107,25 @@ class ExplorePageState extends State<ExplorePage> {
     if (value != null) explore.select(value);
   }
 
+  void _searchSubmitted(SourceSite source, String query) {
+    if (query.trim().isEmpty) return;
+    _search.clear();
+    openSearch(context, widget.store, source, query: query);
+  }
+
   void _resetScroll(ExploreFeed explore, {required bool deferred}) {
     final source = '${explore.source?.id}|';
     final shown = '$source${explore.tab.id}';
     if (shown == _shown) return;
     final switched = _shown.startsWith(source);
     _shown = shown;
-    // 滑动切换时由 SwipeSwitch 在切换动画的中段调 _toTop，这里不再抢着跳，
-    // 否则旧内容会先「闪」一下到顶部。
     if (deferred && switched) return;
     WidgetsBinding.instance.addPostFrameCallback((_) => _toTop());
   }
 
-  void _toTop() {
-    if (_scroll.hasClients) _scroll.jumpTo(0);
-  }
-
   @override
   Widget build(BuildContext context) => ListenableBuilder(
-    listenable: _explore!,
+    listenable: Listenable.merge([_explore!, widget.store]),
     builder: (context, _) {
       final explore = _explore!;
       final source = explore.source;
@@ -137,12 +140,20 @@ class ExplorePageState extends State<ExplorePage> {
             child: Column(
               children: [
                 if (!television) const PageHeader(title: '发现'),
-                const Expanded(
-                  child: StatusView(
-                    title: '暂无可用站源',
-                    message: '请在站源管理中开启站源，或联系管理员开放权限。',
-                    icon: Icons.public_off_rounded,
-                  ),
+                Expanded(
+                  child: SourceSite.values.isEmpty
+                      ? StatusView(
+                          title: '还没有安装站源',
+                          message: widget.store.profile.admin
+                              ? '站源以模块的形式提供，请在 我的 › 模块 安装。'
+                              : '请联系管理员安装站源模块。',
+                          icon: Icons.extension_off_rounded,
+                        )
+                      : const StatusView(
+                          title: '暂无可用站源',
+                          message: '请在 我的 › 模块 中开启站源，或联系管理员开放权限。',
+                          icon: Icons.public_off_rounded,
+                        ),
                 ),
               ],
             ),
@@ -176,8 +187,21 @@ class ExplorePageState extends State<ExplorePage> {
               if (!television)
                 SourceBar(
                   source: source.name,
+                  searchController: _search,
                   onSwitchSource: (anchor) => pickSource(anchor, widget.store),
                   onOpenSearch: () => openSearch(context, widget.store, source),
+                  onSearchSubmitted: (query) => _searchSubmitted(source, query),
+                  leading: [
+                    if (widget.store.blurCoversButton)
+                      if (CoverBlurScope.of(context) case final blur?)
+                        BarButton(
+                          icon: blur.mode != CoverBlur.off
+                              ? Icons.visibility_off_rounded
+                              : Icons.visibility_rounded,
+                          tooltip: blur.mode != CoverBlur.off ? '显示封面' : '模糊封面',
+                          onPressed: blur.onToggle,
+                        ),
+                  ],
                   actions: [
                     BarButton(
                       icon: Icons.live_tv_rounded,
@@ -208,7 +232,6 @@ class ExplorePageState extends State<ExplorePage> {
     },
   );
 
-  /// 手机 / 平板可以左右滑切换分类；电视用遥控器、桌面用鼠标点标签。
   bool _swipes(FormFactor form) =>
       form == FormFactor.phone || form == FormFactor.pad;
 
@@ -220,7 +243,6 @@ class ExplorePageState extends State<ExplorePage> {
       key: ValueKey(explore.source?.id),
       index: index,
       count: tabs.length,
-      // 新分类还没加载出来时先让旧内容变暗停留，加载好再换，避免闪一下空白。
       ready: switch (explore.feed) {
         final feed? => feed.items.isNotEmpty || !feed.loading,
         null => true,
@@ -229,6 +251,10 @@ class ExplorePageState extends State<ExplorePage> {
       onEnter: _toTop,
       child: child,
     );
+  }
+
+  void _toTop() {
+    if (_scroll.hasClients) _scroll.jumpTo(0);
   }
 
   Widget _content(
@@ -241,26 +267,65 @@ class ExplorePageState extends State<ExplorePage> {
     final hero = _hero(explore);
     final items = explore.items;
     if (feed.items.isEmpty) {
-      if (feed.loading) return const StatusView.loading();
-      if (feed.error.isNotEmpty) {
-        return StatusView(
-          title: '暂时无法加载',
-          message: feed.error,
-          icon: Icons.cloud_off_rounded,
-          action: '重试',
-          onAction: () => feed.reload(force: true),
-        );
-      }
-      return StatusView(
-        title: '这里还没有剧',
-        message: '换一个分类看看',
-        icon: Icons.inbox_outlined,
-        action: '刷新',
-        onAction: () => feed.reload(force: true),
-      );
+      return FadeSwitcher(child: _status(feed));
     }
     final phone = AppScope.formFactorOf(context) == FormFactor.phone;
     final desktop = AppScope.formFactorOf(context) == FormFactor.window;
+    return _grid(
+      explore,
+      feed,
+      hero,
+      items,
+      inset,
+      television,
+      tabs,
+      phone,
+      desktop,
+    );
+  }
+
+  Widget _status(DramaFeed feed) {
+    if (feed.loading) {
+      return const StatusView.loading(key: ValueKey('loading'));
+    }
+    if (feed.error.isNotEmpty) {
+      return StatusView(
+        key: const ValueKey('error'),
+        title: '暂时无法加载',
+        message: feed.error,
+        icon: Icons.cloud_off_rounded,
+        action: '重试',
+        onAction: () => feed.reload(force: true),
+      );
+    }
+    return StatusView(
+      key: const ValueKey('empty'),
+      title: '这里还没有剧',
+      message: '换一个分类看看',
+      icon: Icons.inbox_outlined,
+      action: '刷新',
+      onAction: () => feed.reload(force: true),
+    );
+  }
+
+  Widget _grid(
+    ExploreFeed explore,
+    DramaFeed feed,
+    Widget? hero,
+    List<Drama> items,
+    double inset,
+    bool television,
+    Widget tabs,
+    bool phone,
+    bool desktop,
+  ) {
+    final heroSection = hero == null
+        ? const SizedBox(key: ValueKey('none'), width: double.infinity)
+        : Padding(
+            key: hero.key,
+            padding: EdgeInsets.fromLTRB(inset, phone ? 12 : 16, inset, 0),
+            child: hero,
+          );
     return LayoutBuilder(
       builder: (context, constraints) {
         final scroll = CustomScrollView(
@@ -272,18 +337,32 @@ class ExplorePageState extends State<ExplorePage> {
                 padding: const EdgeInsets.only(top: 8),
                 sliver: SliverToBoxAdapter(child: tabs),
               ),
-            if (hero != null)
-              SliverPadding(
-                padding: EdgeInsets.fromLTRB(inset, phone ? 12 : 16, inset, 0),
-                sliver: SliverToBoxAdapter(child: hero),
-              ),
+            SliverToBoxAdapter(
+              child: television
+                  ? heroSection
+                  : AnimatedSize(
+                      key: ValueKey(explore.tab.id),
+                      duration: Motion.of(context, Motion.long),
+                      curve: Motion.enter,
+                      alignment: Alignment.topCenter,
+                      clipBehavior: Clip.none,
+                      child: FadeSwitcher(
+                        alignment: Alignment.topCenter,
+                        child: heroSection,
+                      ),
+                    ),
+            ),
             SliverPadding(
               padding: EdgeInsets.fromLTRB(inset, desktop ? 20 : 16, inset, 0),
               sliver: DramaSliverGrid(
                 width: constraints.maxWidth - inset * 2,
                 items: items,
                 rankOf: explore.rankOf,
-                autofocus: television && hero == null,
+                autofocus:
+                    television && hero == null && ShellForeground.of(context),
+                heroScope: 'drama',
+                showScore: !explore.recommending,
+                exploreBlur: true,
                 onOpen: _open,
                 onMore: (drama) => quickFollow(context, widget.store, drama),
               ),
@@ -311,13 +390,25 @@ class ExplorePageState extends State<ExplorePage> {
                       child: scroll,
                     ),
             ),
-            if (feed.loading)
-              const Positioned(
-                left: 0,
-                right: 0,
-                top: 0,
-                child: LinearProgressIndicator(minHeight: 2),
+            Positioned(
+              left: 0,
+              right: 0,
+              top: 0,
+              child: IgnorePointer(
+                child: ExcludeSemantics(
+                  excluding: !feed.loading,
+                  child: AnimatedOpacity(
+                    opacity: feed.loading ? 1 : 0,
+                    duration: Motion.of(context, Motion.medium),
+                    curve: Motion.standard,
+                    child: TickerMode(
+                      enabled: feed.loading,
+                      child: const LinearProgressIndicator(minHeight: 2),
+                    ),
+                  ),
+                ),
               ),
+            ),
           ],
         );
       },
@@ -332,6 +423,7 @@ class ExplorePageState extends State<ExplorePage> {
           ? entry.episode + 1
           : entry.episode;
       return ExploreHero(
+        key: ValueKey(('resume', drama.id)),
         drama: drama,
         kicker: '继续观看',
         meta: total > 0
@@ -339,12 +431,13 @@ class ExplorePageState extends State<ExplorePage> {
             : '看到第 ${entry.episode} 集',
         progress: total > 0 ? entry.episode / total : null,
         action: '继续第 $next 集',
-        onPlay: () => _open(drama),
+        onPlay: () => _open(drama, autoplay: true),
         onDetail: () => _open(drama),
       );
     }
     if (explore.featured case final drama?) {
       return ExploreHero(
+        key: ValueKey(('featured', drama.id)),
         drama: drama,
         kicker: '今日推荐',
         meta: [
@@ -352,7 +445,7 @@ class ExplorePageState extends State<ExplorePage> {
           if (drama.episodes > 0) '共 ${drama.episodes} 集',
         ].join(' · '),
         action: '立即观看',
-        onPlay: () => _open(drama),
+        onPlay: () => _open(drama, autoplay: true),
         onDetail: () => _open(drama),
       );
     }

@@ -6,11 +6,8 @@ import 'package:path_provider_windows/path_provider_windows.dart';
 import 'package:shared_preferences_platform_interface/shared_preferences_platform_interface.dart';
 import 'package:shared_preferences_windows/shared_preferences_windows.dart';
 
-/// Windows 便携版：程序旁边有 `userdata` 文件夹时，设置、记录、缓存、
-/// 日志和默认下载都存到这里，换机器整包拷走即可。
 const portableDataFolder = 'userdata';
 
-/// 便携模式的根目录；为空表示按系统默认位置存放。
 String? portableDataPath;
 
 void enablePortableData() {
@@ -35,4 +32,8 @@ class _PortablePathProvider extends PathProviderWindows {
 
   @override
   Future<String?> getApplicationSupportPath() async => directory;
+
+  @override
+  Future<String?> getApplicationCachePath() async =>
+      path.join(directory, 'cache');
 }

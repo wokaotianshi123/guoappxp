@@ -56,12 +56,12 @@ class SearchField extends StatelessWidget {
   Widget build(BuildContext context) {
     final decoration = _decoration(Theme.of(context).colorScheme);
     final television = AppScope.of(context).television;
-    // 隐藏 EditText 那套原生输入法只有 Android 侧实现了。Windows / macOS 即使在
-    // 设置里切到「电视」界面，也得继续用普通输入框，否则点搜索框什么都不会发生。
-    final native = defaultTargetPlatform == TargetPlatform.android;
     return SizedBox(
       height: height,
-      child: television && native
+      child:
+          television &&
+              (letterKeyboard ||
+                  defaultTargetPlatform == TargetPlatform.android)
           ? _TelevisionSearchField(
               decoration: decoration,
               controller: controller,

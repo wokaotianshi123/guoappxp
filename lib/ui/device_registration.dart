@@ -2,15 +2,14 @@ import 'package:flutter/material.dart';
 
 import '../core_bridge.dart';
 import '../local_store.dart';
-import '../resource_settings.dart';
+import '../models.dart';
 import 'app_scope.dart';
+import 'settings/settings_page.dart';
+import 'update_prompt.dart';
 import 'widgets/focus_ring.dart';
 
-// 整个进程只注册一次：主题 / 语言切换会重建 App，但门禁不该再弹一遍。
 var _devicesReady = false;
 
-/// 首启门禁：先把红果主设备和辅助设备注册好，再挂载 AppShell 加载推荐等内容。
-/// 已注册过的设备直接放行；老版本升级后只有辅助设备缺失，会弹一次补注册。
 class DeviceRegistrationGate extends StatefulWidget {
   const DeviceRegistrationGate({
     super.key,
@@ -36,13 +35,24 @@ class _DeviceRegistrationGateState extends State<DeviceRegistrationGate> {
   Future<void> _open() async {
     if (!mounted) return;
     final repository = AppScope.of(context).repository;
-    var ready = await repository.hongguoDevices().catchError((_) => false);
+    final pending = <SourceSite>[
+      for (final site in SourceSite.values.where((site) => site.devices))
+        if (!await repository.sourceDevices(site.id).catchError((_) => false))
+          site,
+    ];
+    var ready = pending.isEmpty;
     if (!ready && mounted) {
+      await runStartupChecks(context, widget.store);
+      if (!mounted) return;
       ready =
           await showDialog<bool>(
             context: context,
             barrierDismissible: false,
-            builder: (_) => _RegistrationDialog(repository: repository),
+            builder: (_) => _RegistrationDialog(
+              repository: repository,
+              store: widget.store,
+              sources: pending,
+            ),
           ) ??
           false;
     }
@@ -56,8 +66,14 @@ class _DeviceRegistrationGateState extends State<DeviceRegistrationGate> {
 }
 
 class _RegistrationDialog extends StatefulWidget {
-  const _RegistrationDialog({required this.repository});
+  const _RegistrationDialog({
+    required this.repository,
+    required this.store,
+    required this.sources,
+  });
   final AppRepository repository;
+  final LocalStore store;
+  final List<SourceSite> sources;
 
   @override
   State<_RegistrationDialog> createState() => _RegistrationDialogState();
@@ -76,7 +92,13 @@ class _RegistrationDialogState extends State<_RegistrationDialog> {
     if (_error != null) setState(() => _error = null);
     String error;
     try {
-      if (await widget.repository.hongguoDevices(register: true)) {
+      var ready = true;
+      for (final site in widget.sources) {
+        ready =
+            await widget.repository.sourceDevices(site.id, register: true) &&
+            ready;
+      }
+      if (ready) {
         if (mounted) Navigator.pop(context, true);
         return;
       }
@@ -87,32 +109,8 @@ class _RegistrationDialogState extends State<_RegistrationDialog> {
     if (mounted) setState(() => _error = error);
   }
 
-  /// 注册失败常见于网络不通 / 代理不对，这里直接改代理后自动重试，
-  /// 不必先退出播放流程去设置页绕一圈。
   Future<void> _openProxy() async {
-    ResourceSettings? settings;
-    try {
-      settings = await widget.repository.resourceSettings();
-    } catch (_) {
-      // 未解锁或无权读取时仍允许手动填一个地址。
-    }
-    if (!mounted) return;
-    final address = await showDialog<String>(
-      context: context,
-      builder: (_) => _ProxyAddressDialog(initial: settings?.proxyUrl ?? ''),
-    );
-    if (address == null) return;
-    try {
-      await widget.repository.saveResourceSettings(
-        (settings ?? const ResourceSettings()).copyWith(
-          proxyMode: 'manual',
-          proxyUrl: address,
-        ),
-      );
-    } catch (failure) {
-      if (mounted) setState(() => _error = '网络设置保存失败：$failure');
-      return;
-    }
+    await openProxySettings(context, widget.store);
     if (mounted) await _register();
   }
 
@@ -124,17 +122,21 @@ class _RegistrationDialogState extends State<_RegistrationDialog> {
       child: AlertDialog(
         title: Text(error == null ? '正在注册设备...' : '设备注册失败'),
         content: error == null
-            ? const Row(
+            ? Row(
                 spacing: 16,
                 children: [
-                  SizedBox.square(
+                  const SizedBox.square(
                     dimension: 24,
                     child: CircularProgressIndicator(strokeWidth: 3),
                   ),
-                  Flexible(child: Text('正在注册红果设备和辅助设备，完成后自动进入')),
+                  Flexible(
+                    child: Text(
+                      '正在注册${widget.sources.map((site) => site.name).join('、')}的设备，完成后自动进入',
+                    ),
+                  ),
                 ],
               )
-            : Text('$error\n\n请检查网络，或在网络设置中修改代理后重试。'),
+            : Text('$error\n\n可以直接重试，或在网络设置中修改代理后重试。'),
         actions: error == null
             ? null
             : [
@@ -157,48 +159,4 @@ class _RegistrationDialogState extends State<_RegistrationDialog> {
       ),
     );
   }
-}
-
-class _ProxyAddressDialog extends StatefulWidget {
-  const _ProxyAddressDialog({required this.initial});
-  final String initial;
-
-  @override
-  State<_ProxyAddressDialog> createState() => _ProxyAddressDialogState();
-}
-
-class _ProxyAddressDialogState extends State<_ProxyAddressDialog> {
-  late final TextEditingController _controller = TextEditingController(
-    text: widget.initial,
-  );
-
-  @override
-  void dispose() {
-    _controller.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('网络设置'),
-    content: TextField(
-      controller: _controller,
-      autofocus: true,
-      decoration: const InputDecoration(
-        labelText: '代理地址',
-        hintText: 'http://127.0.0.1:7890',
-      ),
-      onSubmitted: (_) => Navigator.pop(context, _controller.text.trim()),
-    ),
-    actions: [
-      TextButton(
-        onPressed: () => Navigator.pop(context),
-        child: const Text('取消'),
-      ),
-      FilledButton(
-        onPressed: () => Navigator.pop(context, _controller.text.trim()),
-        child: const Text('保存并重试'),
-      ),
-    ],
-  );
 }

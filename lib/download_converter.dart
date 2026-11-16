@@ -6,6 +6,7 @@ import 'package:path/path.dart' as path;
 
 import 'core_bridge.dart';
 import 'diary_service.dart';
+import 'download_export.dart';
 import 'download_overview.dart';
 import 'media_pipeline.dart';
 import 'models.dart';
@@ -42,7 +43,7 @@ class DownloadConverter extends ChangeNotifier {
     '-i',
     work.input,
     '-map',
-    '0:v:0',
+    '0:v:0?',
     '-map',
     '0:a:0?',
     '-c',
@@ -125,6 +126,23 @@ class DownloadConverter extends ChangeNotifier {
         _sync();
       }
     }
+    if (result == 'done') await _export(job);
+  }
+
+  Future<void> _export(DownloadJob job) async {
+    if (!Platform.isAndroid || !downloads.store.autoExport || _disposed) return;
+    try {
+      await exportDownload(
+        repository,
+        job,
+        delete: downloads.store.deleteAfterAutoExport,
+      );
+    } catch (error) {
+      DiaryService.add(
+        '[下载] ${job.drama.title} 第 ${job.episode.number} 集导出失败：$error',
+      );
+    }
+    if (!_disposed) await downloads.refresh();
   }
 
   Future<double> _duration(String input) async {

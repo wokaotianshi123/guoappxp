@@ -21,9 +21,9 @@ void main() {
     await editor.load();
     expect(editor.settings?.catalogConcurrency, 4);
 
-    await editor.save(editor.settings!.copyWith(catalogIntervalMs: 1000));
-    expect(repository.savedResources.single.catalogIntervalMs, 1000);
-    expect(editor.settings?.catalogIntervalMs, 1000);
+    await editor.save(editor.settings!.copyWith(downloadConcurrency: 5));
+    expect(repository.savedResources.single.downloadConcurrency, 5);
+    expect(editor.settings?.downloadConcurrency, 5);
     expect(editor.saving, isFalse);
   });
 
@@ -54,5 +54,4 @@ void main() {
     expect(editor.settings?.downloadConcurrency, 2);
     expect(editor.saving, isFalse);
   });
-
 }

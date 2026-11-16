@@ -7,13 +7,7 @@ class DiaryService {
   static final List<String> _entries = <String>[];
   static const int maxEntries = 500;
   static String? nativeLogPath;
-
-  /// 原生核心的标准错误落盘位置（见 bridge 的 DuanjuInstallStderrLog）。
-  /// 核心内部 panic 只会对外回一句「本地核心处理失败，请重试」，真正有用的
-  /// 堆栈只写在这里，所以要和普通日志一起展示。
-  static String? nativeStderrLogPath;
   static String _nativeText = '';
-  static String _crashText = '';
   static int _clears = 0;
   static final ValueNotifier<int> revision = ValueNotifier<int>(0);
 
@@ -30,13 +24,11 @@ class DiaryService {
   static List<String> get entries => List<String>.unmodifiable([
     ..._entries,
     if (_nativeText.isNotEmpty) ..._nativeText.split('\n'),
-    if (_crashText.isNotEmpty) ..._crashText.split('\n'),
   ]);
 
   static Future<void> clear() async {
     _entries.clear();
     _nativeText = '';
-    _crashText = '';
     _clears++;
     revision.value++;
     final path = nativeLogPath;
@@ -48,88 +40,45 @@ class DiaryService {
         continue;
       }
     }
-    final crash = nativeStderrLogPath;
-    if (crash != null) {
-      try {
-        await File(crash).delete();
-      } on FileSystemException {
-        // 忽略：文件不存在或核心正持有句柄。
-      }
-    }
   }
 
-  static String get fullText =>
-      [_entries.join('\n'), _nativeText, _crashText].join('\n');
+  static String get fullText => [_entries.join('\n'), _nativeText].join('\n');
 
   static Future<void> refreshNativeLogs() async {
     final path = nativeLogPath;
+    if (path == null) return;
     final clears = _clears;
     final lines = <String>[];
-    if (path != null) {
-      for (final name in ['$path.1', path]) {
-        RandomAccessFile? file;
-        try {
-          file = await File(name).open();
-          final size = await file.length();
-          final start = size > 128 * 1024 ? size - 128 * 1024 : 0;
-          await file.setPosition(start);
-          final text = utf8.decode(
-            await file.read(size - start),
-            allowMalformed: true,
-          );
-          for (final line in text.split('\n').skip(start > 0 ? 1 : 0)) {
-            try {
-              final event = jsonDecode(line) as Map<String, dynamic>;
-              final name = event['event'] as String? ?? '';
-              if (name.startsWith('stream.')) {
-                lines.add(_nativeLine(event, name.substring('stream.'.length)));
-              }
-            } catch (_) {}
-          }
-        } on FileSystemException {
-          continue;
-        } finally {
-          await file?.close();
+    for (final name in ['$path.1', path]) {
+      RandomAccessFile? file;
+      try {
+        file = await File(name).open();
+        final size = await file.length();
+        final start = size > 128 * 1024 ? size - 128 * 1024 : 0;
+        await file.setPosition(start);
+        final text = utf8.decode(
+          await file.read(size - start),
+          allowMalformed: true,
+        );
+        for (final line in text.split('\n').skip(start > 0 ? 1 : 0)) {
+          try {
+            final event = jsonDecode(line) as Map<String, dynamic>;
+            final name = event['event'] as String? ?? '';
+            if (name.startsWith('stream.')) {
+              lines.add(_nativeLine(event, name.substring('stream.'.length)));
+            }
+          } catch (_) {}
         }
+      } on FileSystemException {
+        continue;
+      } finally {
+        await file?.close();
       }
     }
-    final crash = await _readStderrTail();
     if (clears != _clears) return;
     _nativeText = lines
         .skip(lines.length > 500 ? lines.length - 500 : 0)
         .join('\n');
-    _crashText = crash;
-  }
-
-  /// 读取原生核心 stderr 日志尾部。这里不做解析：Go 的 panic 堆栈是纯文本，
-  /// 原样保留（含 goroutine 编号与调用链）才有定位价值。
-  static Future<String> _readStderrTail() async {
-    final path = nativeStderrLogPath;
-    if (path == null) return '';
-    RandomAccessFile? file;
-    final lines = <String>[];
-    try {
-      file = await File(path).open();
-      final size = await file.length();
-      if (size == 0) return '';
-      final start = size > 128 * 1024 ? size - 128 * 1024 : 0;
-      await file.setPosition(start);
-      final text = utf8.decode(
-        await file.read(size - start),
-        allowMalformed: true,
-      );
-      for (final line in text.split('\n').skip(start > 0 ? 1 : 0)) {
-        if (line.trim().isEmpty) continue;
-        lines.add(line);
-      }
-    } on FileSystemException {
-      return '';
-    } finally {
-      await file?.close();
-    }
-    if (lines.isEmpty) return '';
-    final kept = lines.skip(lines.length > 400 ? lines.length - 400 : 0);
-    return ['[原生核心日志]', ...kept].join('\n');
   }
 
   static String _nativeLine(Map<String, dynamic> event, String name) {

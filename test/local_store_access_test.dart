@@ -1,13 +1,12 @@
 import 'dart:convert';
 
-import 'package:duanju_app/app_build.dart';
 import 'package:duanju_app/local_profiles.dart';
-import 'package:duanju_app/local_snapshot.dart';
 import 'package:duanju_app/local_store.dart';
 import 'package:duanju_app/models.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fakes.dart';
+import 'support/source_fixture.dart';
 
 Map<String, Object> _viewer(List<String> sources) => {
   'profiles': jsonEncode([
@@ -61,10 +60,7 @@ void main() {
       );
       await store.saveProfile(name: '访客', sources: [], download: false);
       expect(store.profiles, hasLength(2));
-      expect(
-        store.preferences.getString(LocalSnapshot.storageKey),
-        isNot(contains('abcdef12')),
-      );
+      expect(jsonEncode(await store.files.dump()), isNot(contains('abcdef12')));
     });
 
     test('each user sees only their own records and sources', () async {
@@ -78,10 +74,10 @@ void main() {
       expect(store.canDownload, isFalse);
       await store.toggleFavorite(huangdou);
       expect(store.favorites, isEmpty);
-      // 站源开关不再要求管理员：普通用户也能自己决定看哪些源。
-      await store.setSourceEnabled('hongguo', false);
-      expect(store.sourceEnabled('hongguo'), isFalse);
-      await store.setSourceEnabled('hongguo', true);
+      await expectLater(
+        store.setSourceEnabled('hongguo', false),
+        throwsStateError,
+      );
 
       await expectLater(
         store.switchProfile('default', pin: 'wrong'),
@@ -96,7 +92,7 @@ void main() {
       final store = await _withVisitor();
       expect(store.forceLogin, isTrue);
 
-      final restarted = restartStore(store);
+      final restarted = await restartStore(store);
       expect(restarted.locked, isTrue);
       expect(restarted.sources, isEmpty);
       expect(restarted.canDownload, isFalse);
@@ -104,7 +100,7 @@ void main() {
       expect(restarted.canDownload, isTrue);
       await restarted.setForceLogin(false);
 
-      final unlocked = restartStore(restarted);
+      final unlocked = await restartStore(restarted);
       expect(unlocked.locked, isFalse);
       unlocked.lock();
       expect(unlocked.locked, isTrue);
@@ -132,20 +128,12 @@ void main() {
   });
 
   group('sources', () {
-    test('restricted sources start switched off', () async {
+    test('available sources start switched on', () async {
       final store = await openStore();
-      // 默认只显示不受限的站源；列表随版本增减（如新增 A123、爱看机器人），
-      // 因此按 SourceSite 自己算，不要在测试里写死。
-      final expected = [
-        for (final site in SourceSite.values)
-          if (!SourceSite.isRestricted(site.id)) site.id,
-      ];
-      expect(expected, isNotEmpty);
-      expect(store.sources.map((site) => site.id), expected);
-      for (final site in SourceSite.restrictedValues) {
-        expect(store.sourceEnabled(site.id), isFalse, reason: site.id);
-        expect(store.allowsSource(site.id), isFalse, reason: site.id);
-      }
+      expect(
+        store.sources.map((site) => site.id),
+        SourceSite.values.map((site) => site.id),
+      );
     });
 
     test('switches persist and follow the build edition', () async {
@@ -160,37 +148,10 @@ void main() {
         );
       }
 
-      final restarted = restartStore(store);
+      final restarted = await restartStore(store);
       expect(restarted.allowsSource('hongguo'), isFalse);
       expect(restarted.allowsSource('dsd'), allSourcesEnabled);
-      if (allSourcesEnabled) {
-        expect(restarted.sources, isNotEmpty);
-        expect(restarted.source, restarted.sources.first.id);
-        expect(restarted.source, isNot('hongguo'));
-      } else {
-        // 红果鉴仍内置番茄源：关掉红果后应回落到番茄。
-        expect(restarted.sources.map((site) => site.id), ['fanqie']);
-        expect(restarted.source, 'fanqie');
-      }
-    });
-
-    test('红果是首页默认站源，番茄仅作为可切换的内置源', () async {
-      final store = await openStore();
-      expect(SourceSite.defaultSource.id, 'hongguo');
-      expect(store.source, 'hongguo');
-      if (!allSourcesEnabled) {
-        // 红果鉴只保留这两个源，红果排在前才不会被番茄抢走默认位。
-        expect(store.sources.map((site) => site.id), ['hongguo', 'fanqie']);
-      }
-
-      // 番茄没有被删：切过去能用，重新读档后仍记得这次手动选择。
-      await store.setCatalogSource('fanqie', allSources: false);
-      expect(store.source, 'fanqie');
-      expect(restartStore(store).source, 'fanqie');
-
-      // 存档里的源失效时回落到默认主站源，而不是列表里随便一个。
-      await store.setSourceEnabled('fanqie', false);
-      expect(restartStore(store).source, 'hongguo');
+      expect(restarted.source, allSourcesEnabled ? 'hanxiaoquan' : '');
     });
 
     for (final source in ['huangdou', 'dsd']) {
@@ -210,15 +171,12 @@ void main() {
     }
   });
 
-  test('build edition names match the source list', () {
-    expect(appSlug, allSourcesEnabled ? 'zhenguojian' : 'hongguojian');
-    expect(appName, allSourcesEnabled ? '真果鉴' : '红果鉴');
+  test('installed sources match the source list', () {
     expect(
       SourceSite.values.map((site) => site.id),
       allSourcesEnabled
           ? SourceSite.allValues.map((site) => site.id)
-          // 红果鉴只留红果与番茄两个源，红果在前（默认主站源）。
-          : ['hongguo', 'fanqie'],
+          : ['hongguo'],
     );
     expect(SourceSite.isKnown('dsd'), isTrue);
     expect(SourceSite.isAvailable('dsd'), allSourcesEnabled);

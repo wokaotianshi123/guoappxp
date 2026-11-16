@@ -1,8 +1,5 @@
 package core
 
-// 模块 host 对象的工具方法：抓取之外的能力（限流名额、目录上下文、缓存、
-// 编解码与加解密）。移植自 guoappxpx，标识改用 module.id()。
-
 import (
 	"context"
 	"crypto/aes"
@@ -104,7 +101,7 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			}
 		},
 		"finishMedia": func(media jsMedia) (jsMedia, error) {
-			finished, err := p.host.FinishMedia(instance.ctx, media.providerMedia(), p.module.id())
+			finished, err := p.host.FinishMedia(instance.ctx, media.providerMedia(), p.module.manifest.ID)
 			return moduleMedia(finished), err
 		},
 		"catalogContext": func() jsCatalogContext {
@@ -121,7 +118,7 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			if err := instance.decode(items, &dramas); err != nil {
 				return err
 			}
-			ReportLibraryProgress(instance.ctx, p.module.id(), dramas, nil, false)
+			ReportLibraryProgress(instance.ctx, p.module.manifest.ID, dramas, nil, false)
 			return nil
 		},
 		"cacheGet": func(key string) goja.Value {
@@ -163,7 +160,7 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			return instance.jsonValue(moduleHTMLTree(document))
 		},
 		"utf8Encode": func(text string) goja.Value { return bytesValue([]byte(text)) },
-		"utf8Decode": func(data goja.Value) string { return strings.ToValidUTF8(string(bytesOf(data)), "\uFFFD") },
+		"utf8Decode": func(data goja.Value) string { return strings.ToValidUTF8(string(bytesOf(data)), "�") },
 		"hexEncode":  func(data goja.Value) string { return hex.EncodeToString(bytesOf(data)) },
 		"hexDecode": func(text string) (goja.Value, error) {
 			data, err := hex.DecodeString(strings.TrimSpace(text))
@@ -363,8 +360,6 @@ func (p *jsProvider) storeCache(key, value string, ttl time.Duration) error {
 	return nil
 }
 
-// preserveIntegers 把超出双精度安全范围的长整数包成字符串，避免经过 JS 转一手
-// 之后 ID 尾数被抹平（站点 ID 常见 19 位）。
 func preserveIntegers(text string) string {
 	var out strings.Builder
 	out.Grow(len(text) + 64)

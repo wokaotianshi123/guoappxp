@@ -4,19 +4,16 @@ import 'package:flutter/material.dart';
 
 import '../../local_store.dart';
 import '../../models.dart';
-import '../../source_modules.dart';
 import '../app_scope.dart';
 import '../shell/app_shell.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/group_card.dart';
 import 'custom_sources_view.dart';
-import 'modules_view.dart';
 import 'settings_rows.dart';
-import 'sorani_account_view.dart';
 
 /// 站源管理：内置源的显示开关 + 自定义源（MacCMS 站点 / XBPQ 规则）管理入口。
 ///
-/// 源显示属于「谁用谁看」的本机偏好，所有用户都能调整，不再要求管理员身份。
+/// 源显示属于「谁用谁看」的本机偏好，所有用户都能调整，不要求管理员身份。
 /// 每台设备、每个用户各自保存自己的开关状态，互不影响。
 class SourcesView extends StatefulWidget {
   const SourcesView({super.key, required this.store});
@@ -38,17 +35,14 @@ class _SourcesViewState extends State<SourcesView> {
     unawaited(_syncCustom());
   }
 
-  /// 自定义源与模块源都以原生核心为准，这里拉一次同步到本地缓存，
-  /// 让源栏、搜索、追剧等处能立刻按真实名称与开关展示。
+  /// 自定义源以原生核心为准，这里拉一次同步到本地缓存，
+  /// 让源栏、搜索等处能立刻按真实名称与开关展示。
   Future<void> _syncCustom() async {
     if (_syncing || !mounted) return;
     _syncing = true;
     try {
       final repository = AppScope.of(context).repository;
       await widget.store.syncCustomSources(await repository.customSources());
-      await widget.store.syncModuleSources(
-        moduleSourceSites(await repository.modules()),
-      );
     } catch (_) {
       // 读取失败不影响内置源开关，页面上自定义源区域会显示为空。
     } finally {
@@ -81,7 +75,6 @@ class _SourcesViewState extends State<SourcesView> {
     builder: (context, _) {
       final store = widget.store;
       final customs = store.customSources;
-      final modules = store.moduleSources;
       return ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
@@ -130,61 +123,9 @@ class _SourcesViewState extends State<SourcesView> {
             '自定义源由你自行添加，支持 MacCMS 规范的站点地址或 XBPQ 爬虫规则 JSON。'
             '所有用户都可以添加、修改和删除，内容保存在本机。',
           ),
-          const SizedBox(height: 20),
-          const SectionHeader(title: '模块源', padding: EdgeInsets.zero),
-          const SizedBox(height: 8),
-          SettingsCard(
-            children: [
-              if (modules.isNotEmpty)
-                for (final site in modules)
-                  _SourceTile(
-                    title: site.displayName,
-                    subtitle: '站源模块 · ${site.id}',
-                    enabled: store.sourceEnabled(site.id),
-                    onChanged: (value) => _toggle(site.id, value, false),
-                  ),
-              SettingsTile(
-                icon: Icons.extension_outlined,
-                title: '管理模块',
-                subtitle: modules.isEmpty
-                    ? '安装站源模块，装上的源会出现在这里'
-                    : '共 ${modules.length} 个模块源 · 安装、更新、卸载',
-                onTap: _openModules,
-              ),
-            ],
-          ),
-          const SizedBox(height: 12),
-          const _Note(
-            '模块源由已安装的站源模块提供，和内置源用同一套开关：关闭后不在发现、搜索、'
-            '追剧和观看记录中显示，记录保留。与本体同名的模块会另行标记、两者共存。',
-          ),
         ],
       );
     },
-  );
-
-  Future<void> _openModules() => openPage<void>(
-    context,
-    (_) => Scaffold(
-      appBar: AppBar(title: const Text('模块')),
-      body: ModulesView(store: widget.store),
-    ),
-  );
-}
-
-/// 站源账号：部分站源（目前是青空次元）要求登录后才能取流。
-/// 登录状态保存在本机、对这台设备上的所有用户生效，因此所有用户都能登录或退出。
-class SourceAccountsView extends StatelessWidget {
-  const SourceAccountsView({super.key});
-
-  @override
-  Widget build(BuildContext context) => ListView(
-    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
-    children: const [
-      SettingsCard(children: [SoraniAccountTile()]),
-      SizedBox(height: 12),
-      _Note('登录状态保存在本机，这台设备上的所有用户共用同一个青空账号。'),
-    ],
   );
 }
 

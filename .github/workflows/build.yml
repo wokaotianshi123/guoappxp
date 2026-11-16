@@ -3,41 +3,45 @@ name: Build app packages
 on:
   workflow_dispatch:
     inputs:
-      with_ios:
-        description: '构建 iOS 包（macOS runner 按 10 倍分钟计费；一次约 200 账单分钟，Free 额度一个月只够一次，默认关）'
-        type: boolean
-        default: false
-      with_macos:
-        description: '构建 macOS 包（同样走 macOS runner、同样 10 倍计费；默认关，需要 dmg 时再勾）'
-        type: boolean
-        default: false
-      full_variants:
-        description: 'iOS / macOS 出两个版本（红果鉴 + 真果鉴）；不勾只出真果鉴，省一半 macOS 计费分钟'
-        type: boolean
-        default: false
-      republish:
-        description: '重复发布：同一版本已有 Release / tag 时覆盖重发（取消勾选则报错停止）'
+      android:
+        description: '构建 Android APK'
         type: boolean
         default: true
+      windows:
+        description: '构建 Windows 安装包与便携版'
+        type: boolean
+        default: true
+      webserver:
+        description: '构建本地服务版（网页版单文件程序）'
+        type: boolean
+        default: true
+      ios:
+        description: '构建 iOS 未签名 IPA（需在 Mac 侧验证）'
+        type: boolean
+        default: false
+      macos:
+        description: '构建 macOS 安装包（需在 Mac 侧验证）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
 
-# 同一个分支只留一个运行：以前没开 cancel-in-progress，手动重跑时会排在旧运行
-# 后面变成 pending（旧运行若正卡在等 macOS runner，新运行连 job 都不会出现，
-# 看上去就像「不分配 runner」）。取消旧运行是安全的：发布用的 prepare 会检查
-# 同名 Release/tag，republish 默认勾选即覆盖重发。
 concurrency:
   group: app-build-${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: true
 
 env:
   GOPROXY: https://proxy.golang.org,direct
   GOSUMDB: sum.golang.org
-  # Windows runner 的 Python 默认按系统 ANSI 代码页（cp1252）打 stdout，
-  # 脚本里一句中文 print 就会 UnicodeEncodeError 直接打断构建。这里统一强制
-  # UTF-8；脚本自身也有兜底（scripts/build_fanqie_engine.py 的 ensure_printable_stdio）。
-  PYTHONIOENCODING: utf-8
+  UPDATE_SERVER_URL: ${{ vars.UPDATE_SERVER_URL }}
+  PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
+  # 内置站源模块目录。私有仓库拿不到时留空，构建出「不含内置模块」的包，
+  # 站源改从站源页的模块商店安装。
+  BUNDLED_MODULES: ${{ vars.BUNDLED_MODULES }}
+  PYTHONUTF8: '1'
+  PROJECT_URL: ${{ vars.PROJECT_URL }}
+  TELEGRAM_GROUP_URL: ${{ vars.TELEGRAM_GROUP_URL }}
+  TELEGRAM_CHANNEL_URL: ${{ vars.TELEGRAM_CHANNEL_URL }}
 
 jobs:
   checks:
@@ -64,27 +68,9 @@ jobs:
       # 测试当前不阻塞出包（开发优先、集中验证暂缓），结果仍会显示在运行详情里。
       - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true
         continue-on-error: true
-      - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true --dart-define=ALL_SOURCES=true
+      - run: flutter test --dart-define=DISABLE_REMOTE_IMAGES=true --dart-define=ONLY_HONGGUO=true
         continue-on-error: true
-      - name: 校验 Go 核心不含 C++ 后端
-        working-directory: native
-        run: |
-          set -uo pipefail
-          if ! cxx=$(GOOS=android GOARCH=arm64 CGO_ENABLED=1 go list \
-            -deps \
-            -f '{{if .CXXFiles}}{{.ImportPath}}{{end}}' ./bridge | sed '/^$/d'); then
-            echo "::warning::go list 未能完成（多为模块下载抖动），本次跳过 C++ 依赖检查"
-            exit 0
-          fi
-          if [ -n "$cxx" ]; then
-            echo "::error::android/arm64 依赖里仍有 C++ 目标文件：$cxx"
-            exit 1
-          fi
-          echo "android/arm64 依赖图无 C++ 目标文件"
       - run: go test -race ./...
-        working-directory: native
-        continue-on-error: true
-      - run: go test -race -ldflags="-X duanjuapp/native/core.buildAllSources=true" ./...
         working-directory: native
         continue-on-error: true
 
@@ -94,35 +80,15 @@ jobs:
     outputs:
       version: ${{ steps.version.outputs.version }}
       tag: ${{ steps.version.outputs.tag }}
-      exists_tag: ${{ steps.version.outputs.exists_tag }}
-      exists_release: ${{ steps.version.outputs.exists_release }}
-      engine_matrix: ${{ steps.engines.outputs.engine_matrix }}
     steps:
       - uses: actions/checkout@v4
-      - id: engines
-        env:
-          INPUT_WITH_MACOS: ${{ inputs.with_macos }}
-        run: |
-          set -euo pipefail
-          # 番茄引擎的构建矩阵：Windows / Linux 常驻，macOS 那一格只在真出
-          # macOS 包时才加。macOS runner 按 10 倍分钟计费，没勾 with_macos
-          # 却先白烧一台苹果机器编引擎（而产物根本没人用）最不划算。
-          entries='{"runner":"windows-latest","platform":"windows","arguments":""}'
-          entries="$entries"',{"runner":"ubuntu-latest","platform":"linux","arguments":""}'
-          if [ "${INPUT_WITH_MACOS:-false}" = "true" ]; then
-            entries="$entries"',{"runner":"macos-latest","platform":"macos","arguments":"--macos-universal"}'
-          fi
-          echo "engine_matrix=[$entries]" >> "$GITHUB_OUTPUT"
       - id: version
         env:
           GH_TOKEN: ${{ github.token }}
-          INPUT_REPUBLISH: ${{ inputs.republish }}
         run: |
           set -euo pipefail
-          # 仓库默认分支是 master；早期文档写的是 main，两个都放行，避免手动运行时
-          # 被分支名校验直接拦下（Actions 只能选仓库里真实存在的分支）。
-          if [ "$GITHUB_REF" != "refs/heads/main" ] && [ "$GITHUB_REF" != "refs/heads/master" ]; then
-            echo "只能从 main / master 分支手动发布，当前为 $GITHUB_REF。" >&2
+          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
+            echo "只能从 main 分支手动发布，当前为 $GITHUB_REF。" >&2
             exit 1
           fi
           version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
@@ -131,100 +97,26 @@ jobs:
             exit 1
           fi
           tag="app-v${version//+/-}"
-          exists_tag=0
-          exists_release=0
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            exists_tag=1
-          fi
-          if gh release view "$tag" >/dev/null 2>&1; then
-            exists_release=1
-          fi
-          if [ "$exists_tag" = "1" ] || [ "$exists_release" = "1" ]; then
-            if [ "$INPUT_REPUBLISH" != "true" ]; then
-              echo "版本 $version（$tag）已发布过。勾选 republish 可覆盖重发，" >&2
-              echo "或提升 pubspec.yaml 的 version 后再发布。" >&2
-              exit 1
-            fi
-            echo "::warning::版本 $version（$tag）已存在（tag=$exists_tag release=$exists_release），勾选了重复发布，本次将覆盖旧 Release 与 tag 并把新包指到当前提交。"
+          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || gh release view "$tag" >/dev/null 2>&1; then
+            echo "版本 $version（$tag）已发布过，请先提升 pubspec.yaml 的 version。" >&2
+            exit 1
           fi
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
-          echo "exists_tag=$exists_tag" >> "$GITHUB_OUTPUT"
-          echo "exists_release=$exists_release" >> "$GITHUB_OUTPUT"
-
-  # 番茄内容引擎：上游 GPL-3.0 项目 ch6vip/fqapp 的 Rust 核心，按固定提交号
-  # 拉源码编译。Android 用的是仓库里预编译的 .so，桌面端与本地服务版则需要
-  # 各平台自己编一份：
-  #   * fanqie_engine：可执行，Windows / macOS / Linux 由宿主进程拉起；
-  #   * libfanqie_shim：Android 的 .so 与 iOS 的静态库。
-  # 这一步失败不拦发布——缺引擎的平台番茄源照样显示，只是播放时提示引擎未就绪。
-  # 要编哪些平台由 prepare 算出来的矩阵决定：macOS 只在勾了 with_macos 时才有。
-  engines:
-    needs: prepare
-    # 引擎编不出来不该连坐：windows / web / macos 只是拿不到对应平台的引擎，
-    # 番茄源会降级提示，其余站源、其余产物照常。
-    continue-on-error: true
-    strategy:
-      fail-fast: false
-      matrix:
-        include: ${{ fromJSON(needs.prepare.outputs.engine_matrix) }}
-    runs-on: ${{ matrix.runner }}
-    timeout-minutes: 45
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: '3.12'
-      - name: Rust 交叉目标（macOS 通用二进制）
-        if: matrix.platform == 'macos'
-        run: rustup target add aarch64-apple-darwin x86_64-apple-darwin
-      - name: 编译番茄引擎
-        continue-on-error: true
-        run: python scripts/build_fanqie_engine.py --out build/fanqie/${{ matrix.platform }} ${{ matrix.arguments }}
-      - uses: actions/upload-artifact@v4
-        with:
-          name: fanqie-engine-${{ matrix.platform }}
-          path: build/fanqie/${{ matrix.platform }}/*
-          if-no-files-found: warn
-          retention-days: 14
 
   android:
+    if: ${{ inputs.android }}
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 45
-    strategy: &editions
-      fail-fast: false
-      matrix:
-        include:
-          # 红果鉴：只用 core 里的内置源（红果、XBPQ、红果听书、番茄听书、直播），
-          # 不检出外置站源仓库，包体与以前一致。
-          - edition: hongguojian
-            arguments: ''
-            sources: ''
-          # 真果鉴：core 内置源 + 外置站源仓库（guoapp-sources）里的全部站源。
-          - edition: zhenguojian
-            arguments: '--all-sources'
-            sources: '--sources guoapp-sources'
     steps:
       - uses: actions/checkout@v4
-      - name: 检查外置站源凭据
-        if: matrix.edition == 'zhenguojian'
-        shell: bash
-        env:
-          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
-        run: |
-          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
-            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
-            exit 1
-          fi
-      - name: 检出外置站源（真果鉴）
-        if: matrix.edition == 'zhenguojian'
+      - &checkout-hongguo
         uses: actions/checkout@v4
+        continue-on-error: true
         with:
-          repository: ${{ github.repository_owner }}/guoapp-sources
-          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
-          path: guoapp-sources
+          repository: ${{ vars.BUNDLED_MODULES_REPO }}
+          path: bundled-modules/hongguo
       - &setup-python
         uses: actions/setup-python@v5
         with:
@@ -235,17 +127,6 @@ jobs:
           java-version: '17'
       - *setup-go
       - *setup-flutter
-      # Gradle wrapper 首次构建要联网下载分发包（约 225MB）以及 Android Gradle
-      # Plugin 等依赖，命中缓存后可以完全跳过这段网络请求。
-      - name: Cache Gradle
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.gradle/wrapper
-            ~/.gradle/caches
-          key: gradle-${{ runner.os }}-${{ hashFiles('android/gradle/wrapper/gradle-wrapper.properties', 'android/gradle.properties', 'android/**/*.gradle.kts') }}
-          restore-keys: |
-            gradle-${{ runner.os }}-
       - name: Set up Android SDK
         uses: android-actions/setup-android@v3
         with:
@@ -253,76 +134,31 @@ jobs:
           accept-android-sdk-licenses: true
       - run: sdkmanager 'ndk;28.2.13676358'
       - name: Configure Android signing
-        id: signing
         env:
-          ANDROID_KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          ANDROID_KEYSTORE_BASE64: ${{ secrets.SIGNING_KEYSTORE_BASE64 }}
         run: |
           set -euo pipefail
           if [ -z "$ANDROID_KEYSTORE_BASE64" ]; then
-            echo "::warning::未配置 Android 签名 Secrets，本次使用 debug 签名出包。"
-            echo "::warning::debug 签名的 APK 不能覆盖升级已发布的正式版本，仅可用于测试；正式发布请在仓库 Secrets 配置 ANDROID_KEYSTORE_BASE64 / ANDROID_KEYSTORE_PASSWORD / ANDROID_KEY_ALIAS / ANDROID_KEY_PASSWORD。"
-            echo "mode=debug" >> "$GITHUB_OUTPUT"
-            exit 0
-          fi
-          if ! printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/release.jks" 2>/dev/null; then
-            echo "ANDROID_KEYSTORE_BASE64 不是合法 base64，请重新导出 keystore。" >&2
+            echo "未配置签名 Secrets，拒绝发布 debug 签名的 APK。" >&2
             exit 1
           fi
+          printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
-          echo "mode=release" >> "$GITHUB_OUTPUT"
-      # 番茄引擎：APK 是按 ABI 拆分的（--split-per-abi），每个包里都得有自己那份
-      # libfanqie_shim.so，否则那个包上一定提示「引擎未就绪」。仓库里只放了
-      # arm64-v8a 一份（真机验证过的），这里补编缺失的 ABI，已有的一律不覆盖。
-      - name: Cache Rust（安卓番茄引擎）
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/registry
-            ~/.cargo/git
-            build/fanqie_engine
-          key: fanqie-android-${{ hashFiles('native/fanqie_shim/**', 'scripts/build_fanqie_engine.py') }}
-          restore-keys: |
-            fanqie-android-
-      - name: 编译安卓番茄引擎（补齐缺失 ABI）
-        continue-on-error: true
-        run: |
-          rustup target add aarch64-linux-android armv7-linux-androideabi x86_64-linux-android
-          python scripts/build_fanqie_engine.py --android \
-            --out android/app/src/main/jniLibs --android-skip-existing
-          ls -l android/app/src/main/jniLibs/*/libfanqie_shim.so || true
-      # 分发包下载属外部依赖，网络抖动（GitHub Releases 504、镜像超时）会让整条
-      # 流水线白跑；原生库有 Go 构建缓存，重试成本很低，因此做一次有限重试。
-      - name: 构建并打包 APK
-        shell: bash
-        run: |
-          set -euo pipefail
-          for attempt in 1 2; do
-            if python scripts/build_android.py ${{ matrix.arguments }} ${{ matrix.sources }}; then
-              exit 0
-            fi
-            if [ "$attempt" -ge 2 ]; then
-              echo "::error::APK 构建连续 2 次失败"
-              exit 1
-            fi
-            echo "::warning::APK 构建第 ${attempt} 次失败，10 秒后重试"
-            sleep 10
-          done
+      - run: python scripts/build_android.py
         env:
-          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.ANDROID_KEYSTORE_PASSWORD }}
-          ANDROID_KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
-          ANDROID_KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
+          ANDROID_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
+          ANDROID_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
       - name: 校验 APK 签名证书
-        # 只在用正式 keystore 签名时校验；debug 签名模式下证书必然不匹配，
-        # 跳过而不是让整个构建失败（日志里已有 warning 提示）。
-        if: steps.signing.outputs.mode == 'release'
         shell: bash
         env:
-          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+          CERT_SHA256: ${{ vars.SIGNING_CERT_SHA256 }}
+          CERT_VARIABLE: SIGNING_CERT_SHA256
         run: |
           set -euo pipefail
-          expected=$(printf '%s' "$ANDROID_CERT_SHA256" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
+          expected=$(printf '%s' "$CERT_SHA256" | tr -d ': ' | tr '[:upper:]' '[:lower:]')
           if [ -z "$expected" ]; then
-            echo "未设置仓库变量 ANDROID_CERT_SHA256，无法确认发布证书。" >&2
+            echo "未设置仓库变量 $CERT_VARIABLE，无法确认发布证书。" >&2
             exit 1
           fi
           apksigner=$(find "${ANDROID_HOME}/build-tools" -name apksigner -type f 2>/dev/null | sort | tail -n1 || true)
@@ -343,41 +179,19 @@ jobs:
           done
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.edition }}-android
+          name: android
           path: dist/android/*
           if-no-files-found: error
           retention-days: 14
 
   windows:
-    needs: [prepare, engines]
+    if: ${{ inputs.windows }}
+    needs: prepare
     runs-on: windows-latest
     timeout-minutes: 45
-    strategy: *editions
     steps:
       - uses: actions/checkout@v4
-      - name: 检查外置站源凭据
-        if: matrix.edition == 'zhenguojian'
-        shell: bash
-        env:
-          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
-        run: |
-          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
-            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
-            exit 1
-          fi
-      - name: 检出外置站源（真果鉴）
-        if: matrix.edition == 'zhenguojian'
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/guoapp-sources
-          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
-          path: guoapp-sources
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: fanqie-engine-windows
-          path: build/fanqie/windows
+      - *checkout-hongguo
       - *setup-go
       - *setup-python
       - *setup-flutter
@@ -392,80 +206,25 @@ jobs:
           if (-not $exe) { throw 'MinGW-w64 安装失败，找不到 gcc' }
           Split-Path $exe | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
           & $exe --version | Select-Object -First 1
-      # media_kit 的 Windows 原生库（libmpv / ANGLE）都挂在 GitHub release 上，
-      # 下载会 302 到 release-assets.githubusercontent.com，偶发 403/429/连接重置。
-      # 只靠 CMake 里一次 file(DOWNLOAD)，抖一下就整条构建停在
-      # 「Unable to generate build files」。这里先用 curl 带重试拉一遍，
-      # 成功后交给 CMake 当本地缓存（它仍会校验 sha256）；预下载失败也不致命，
-      # CMake 会退回自己重试的网络路径。
-      - name: Prefetch media_kit native archives
+      - name: Set up Inno Setup
         shell: pwsh
-        run: |
-          $dir = Join-Path $env:GITHUB_WORKSPACE 'build\media-cache'
-          New-Item -ItemType Directory -Force -Path $dir | Out-Null
-          $items = @(
-            @{ Name = 'mpv-dev-x86_64-20260920-git-e76a35ec95.7z'; Url = 'https://downloads.sourceforge.net/project/mpv-player-windows/libmpv/mpv-dev-x86_64-20260920-git-e76a35ec95.7z' },
-            @{ Name = 'ANGLE-v1.0.1.7z'; Url = 'https://github.com/alexmercerind/flutter-windows-ANGLE-OpenGL-ES/releases/download/v1.0.1/ANGLE.7z' }
-          )
-          foreach ($item in $items) {
-            $out = Join-Path $dir $item.Name
-            if (Test-Path $out) { Remove-Item $out -Force }
-            for ($attempt = 1; $attempt -le 3; $attempt++) {
-              curl.exe -L --fail --silent --show-error --retry 4 --retry-all-errors --retry-delay 5 --connect-timeout 20 -o $out $item.Url
-              if ($LASTEXITCODE -eq 0 -and (Test-Path $out) -and (Get-Item $out).Length -gt 0) { break }
-              Write-Host "下载 $($item.Name) 失败（第 $attempt 次），稍后重试"
-              if (Test-Path $out) { Remove-Item $out -Force }
-              Start-Sleep -Seconds (5 * $attempt)
-            }
-            if (-not (Test-Path $out)) { Write-Host "::warning::$($item.Name) 预下载失败，交给 CMake 自行重试" }
-          }
-          foreach ($line in @(
-            "DUANJU_MPV_ARCHIVE=$dir\mpv-dev-x86_64-20260920-git-e76a35ec95.7z",
-            "DUANJU_ANGLE_ARCHIVE=$dir\ANGLE-v1.0.1.7z"
-          )) { [System.IO.File]::AppendAllText($env:GITHUB_ENV, "$line`n") }
-      - run: python scripts/build_windows.py ${{ matrix.arguments }} ${{ matrix.sources }}
+        run: choco upgrade innosetup --no-progress -y
+      - run: python scripts/build_windows.py
       - uses: actions/upload-artifact@v4
         with:
-          name: ${{ matrix.edition }}-windows
+          name: windows
           path: dist/windows/*
           if-no-files-found: error
           retention-days: 14
 
-  # 注意：macOS runner 的分钟数按 10 倍计费（Free 计划每月 2000 分钟，折合 macOS
-  # 只有约 200 分钟），整条流程里只有这一个 job 用苹果机器，所以它最容易被额度掐掉。
-  # 因此：
-  #   1. 用 with_ios 开关控制要不要跑（额度紧张时手动关掉）；
-  #   2. 两个版本放在同一个 job 里顺序构建——Flutter/Go 环境初始化、pub get、
-  #      pod install 只付一次，第二个版本还能吃到同 job 内的 Go 构建缓存；
-  #   3. continue-on-error：iOS 出包失败不再连带把 Android / Windows / 网页版
-  #      的发布也一起拦下来。
   ios:
+    if: ${{ inputs.ios }}
     needs: prepare
-    if: ${{ inputs.with_ios }}
-    continue-on-error: true
     runs-on: macos-latest
-    # 卡住时最多烧 60×10=600 分钟账单；实测单变体约 20 分钟墙钟，留足余量。
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: 检查外置站源凭据
-        if: true
-        shell: bash
-        env:
-          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
-        run: |
-          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
-            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
-            exit 1
-          fi
-      - name: 检出外置站源（真果鉴）
-        if: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/guoapp-sources
-          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
-          path: guoapp-sources
+      - *checkout-hongguo
       - *setup-python
       - *setup-go
       - *setup-flutter
@@ -484,33 +243,8 @@ jobs:
           go version
           flutter --version
           flutter precache --ios
-      # pub get 必须在缓存之前跑：依赖 Flutter 插件清单算 cache key。
-      - run: flutter pub get --enforce-lockfile
-      # iOS 不能加载 App 包外的动态库、也不能 fork 子进程，所以番茄引擎编成
-      # 静态库链进 Runner。失败不拦出包：FanqieEngine.podspec 会跳过链接，
-      # 应用照常能装，只是番茄源会提示引擎未就绪。
-      - name: 编译番茄引擎静态库（iOS）
-        continue-on-error: true
-        run: |
-          rustup target add aarch64-apple-ios
-          python scripts/build_fanqie_engine.py --out ios/FanqieEngine --target aarch64-apple-ios
-      - name: Cache CocoaPods
-        uses: actions/cache@v4
-        with:
-          path: ios/Pods
-          key: pods-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('ios/Podfile', '.flutter-plugins-dependencies') }}
-          restore-keys: |
-            pods-${{ runner.os }}-${{ runner.arch }}-
-      - name: Build unsigned iOS packages (红果鉴)
-        if: ${{ inputs.full_variants }}
+      - name: Build unsigned iOS packages
         run: python scripts/build_ios.py
-      - name: Build unsigned iOS packages (真果鉴)
-        run: python scripts/build_ios.py --all-sources --sources guoapp-sources
-      - name: 提示 iOS 未出包
-        if: failure() || cancelled()
-        run: |
-          echo "::warning::iOS 本次未参与构建/未完成出包，Android、Windows、网页版仍会照常发布。"
-          echo "::warning::若这里是「账单额度不足」，请到 Settings → Billing 查看 Actions 用量或调高 spending limit。"
       - uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned
@@ -518,40 +252,14 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  # macOS：macos-latest 现在是 Apple 芯片机器，脚本里两片都编（arm64 + x86_64）
-  # 再 lipo 成通用二进制，所以只出一个 dmg，Intel 机器同样能跑。
   macos:
-    needs: [prepare, engines]
-    if: ${{ inputs.with_macos }}
-    continue-on-error: true
+    if: ${{ inputs.macos }}
+    needs: prepare
     runs-on: macos-latest
-    # 卡住时最多烧 60×10=600 分钟账单；实测单变体约 20 分钟墙钟，留足余量。
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - name: 检查外置站源凭据
-        if: true
-        shell: bash
-        env:
-          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
-        run: |
-          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
-            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
-            exit 1
-          fi
-      - name: 检出外置站源（真果鉴）
-        if: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/guoapp-sources
-          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
-          path: guoapp-sources
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: fanqie-engine-macos
-          path: build/fanqie/macos
+      - *checkout-hongguo
       - *setup-python
       - *setup-go
       - *setup-flutter
@@ -566,22 +274,12 @@ jobs:
             brew install cocoapods
           fi
           pod --version
-          # dmgbuild 负责 dmg 里的拖拽安装布局，Pillow 画背景图；任一缺失只是
-          # 退回普通 dmg，不影响出包，所以不设成硬依赖。
           python -m pip install dmgbuild Pillow
           go version
           flutter --version
           flutter precache --macos
-      - name: Build macOS packages (红果鉴)
-        if: ${{ inputs.full_variants }}
+      - name: Build macOS packages
         run: python scripts/build_macos.py
-      - name: Build macOS packages (真果鉴)
-        run: python scripts/build_macos.py --all-sources --sources guoapp-sources
-      - name: 提示 macOS 未出包
-        if: failure() || cancelled()
-        run: |
-          echo "::warning::macOS 本次未参与构建/未完成出包，Android、Windows、网页版仍会照常发布。"
-          echo "::warning::若这里是「账单额度不足」，请到 Settings → Billing 查看 Actions 用量或调高 spending limit。"
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -589,131 +287,90 @@ jobs:
           if-no-files-found: error
           retention-days: 14
 
-  web:
-    needs: [prepare, engines]
+  # 本地服务版：纯 Go 单文件可执行程序，内含网页前端，双击后浏览器打开即可用。
+  # 不依赖 Flutter 构建产物，因此单列一个任务，四个平台一次出齐。
+  webserver:
+    if: ${{ inputs.webserver }}
+    needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
-      - name: 检查外置站源凭据
-        if: true
-        shell: bash
-        env:
-          SOURCES_DEPLOY_KEY: ${{ secrets.SOURCES_DEPLOY_KEY }}
-        run: |
-          if [ -z "$SOURCES_DEPLOY_KEY" ]; then
-            echo "::error::真果鉴要编入外置站源，但仓库 Secrets 缺少 SOURCES_DEPLOY_KEY。"
-            echo "::error::请为 ${{ github.repository_owner }}/guoapp-sources 生成只读 Deploy Key，把私钥存到本仓库 Secrets（名字 SOURCES_DEPLOY_KEY）。"
-            exit 1
-          fi
-      - name: 检出外置站源（真果鉴）
-        if: true
-        uses: actions/checkout@v4
-        with:
-          repository: ${{ github.repository_owner }}/guoapp-sources
-          ssh-key: ${{ secrets.SOURCES_DEPLOY_KEY }}
-          path: guoapp-sources
-      # 本地服务版要带齐三个平台的番茄引擎；缺哪个平台就跳过哪个平台的引擎，
-      # 包仍然能出，只是那个平台的番茄源会提示引擎未就绪。
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: fanqie-engine-windows
-          path: build/fanqie/windows
-      - uses: actions/download-artifact@v4
-        continue-on-error: true
-        with:
-          name: fanqie-engine-linux
-          path: build/fanqie/linux
-      # macOS 引擎只在勾了 with_macos 时才编（见 prepare 算的矩阵），这里跟着
-      # 开关走，免得平白多出一条「artifact 不存在」的红色报错。
-      - uses: actions/download-artifact@v4
-        if: ${{ inputs.with_macos }}
-        continue-on-error: true
-        with:
-          name: fanqie-engine-macos
-          path: build/fanqie/macos
-      - name: 提示本包不含 macOS 引擎
-        if: ${{ !inputs.with_macos }}
-        run: echo "::warning::未勾选 with_macos，本地服务版 zip 内不含 macOS 版番茄引擎；macOS 上跑本地服务版时番茄源会提示引擎未就绪。要连 macOS 引擎一起打，勾 with_macos 重跑。"
       - *setup-go
       - *setup-python
-      # 交叉编译 4 个平台的本地服务二进制（CGO_ENABLED=0，无需各平台 SDK），
-      # 随包带上 Windows 静态 ffmpeg.exe。产物：dist/web/zhenguoweb.zip
-      - name: Build local service edition (红果鉴 / 真果鉴)
-        run: python scripts/build_web.py --sources guoapp-sources
-      # 「编过 + 打进 zip」不等于能用：把两个二进制真跑起来打一遍接口，顺带校验
-      # 内嵌网页与仓库里的 native/server/web 逐字节一致、站源裁剪确实生效。
-      # 失败就让 web job 红掉，别等用户解压之后才发现打不开。
-      - name: 冒烟自检（真跑一次本地服务）
-        run: python scripts/check_web.py
-      # 两个单独版本 zip 只随 zhenguoweb.zip 合集发布，不在 release 里单独出资产。
+      - name: Build local server packages
+        run: python scripts/build_web.py
       - uses: actions/upload-artifact@v4
         with:
-          name: web
-          path: dist/web/zhenguoweb.zip
+          name: webserver
+          path: dist/web/*
           if-no-files-found: error
           retention-days: 14
 
-  # macOS 分钟最容易被账单额度掐掉，iOS / macOS job 也可能直接没有出包
-  # （见 with_ios / with_macos）。这里显式列出各 job 的 result 而不是单纯依赖
-  # needs：iOS 与 macOS 跳过/失败只影响它自己，Android、Windows、网页版照常发布；
-  # 只有这几个失败才真正拦住发布。
+
   release:
-    needs: [checks, prepare, android, windows, ios, macos, web]
-    if: >-
-      ${{ !cancelled() &&
-          needs.prepare.result == 'success' &&
-          needs.checks.result == 'success' &&
-          needs.android.result == 'success' &&
-          needs.windows.result == 'success' &&
-          needs.web.result == 'success' }}
+    needs: [checks, prepare, android, windows, ios, macos, webserver]
+    # 平台是按需勾选的：没勾的平台会 skipped，用 always() 接管后再逐一校验，
+    # 只要能出包就发 Release，已勾选却失败的平台会让下面直接报错终止。
+    if: always() && needs.prepare.result == 'success'
     runs-on: ubuntu-latest
     timeout-minutes: 20
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@v4
-      - name: 检查 Release 令牌是否有写权限
-        env:
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          REPO: ${{ github.repository }}
-        run: |
-          set -euo pipefail
-          headers=$(curl -sS -D - -o /dev/null \
-            -H "Authorization: Bearer $GH_TOKEN" -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/$REPO" || true)
-          accepted=$(printf '%s\n' "$headers" | tr -d '\r' | awk -F': ' 'tolower($1)=="x-accepted-oauth-scopes"{print $2}')
-          echo "该仓库 Release 接口要求的权限：$accepted"
-          if printf '%s' "$accepted" | grep -qi "repo\|contents"; then :; else
-            echo "::warning::拿不到 API 的权限头，无法预处理判断，等下一步实际创建时再说。"
-          fi
       - uses: actions/download-artifact@v4
+        # 一个平台都没勾选时这里没有产物可取，交给下一步给出更清楚的提示。
+        continue-on-error: true
         with:
           path: release
           merge-multiple: true
-      - name: 发布 Release
+      - name: 校验已勾选平台都出了包
         env:
-          # 仓库默认令牌可能被仓库/组织设置压成只读；配了 RELEASE_TOKEN（有 repo 权限的
-          # 个人访问令牌）时优先用它作为兜底。
-          GH_TOKEN: ${{ secrets.RELEASE_TOKEN || github.token }}
-          VERSION: ${{ needs.prepare.outputs.version }}
-          TAG: ${{ needs.prepare.outputs.tag }}
-          EXISTS_TAG: ${{ needs.prepare.outputs.exists_tag }}
-          EXISTS_RELEASE: ${{ needs.prepare.outputs.exists_release }}
-          ANDROID_CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+          WANT_ANDROID: ${{ inputs.android }}
+          WANT_WINDOWS: ${{ inputs.windows }}
+          WANT_WEBSERVER: ${{ inputs.webserver }}
+          WANT_IOS: ${{ inputs.ios }}
+          WANT_MACOS: ${{ inputs.macos }}
         run: |
           set -euo pipefail
-          if [ -n "$ANDROID_CERT_SHA256" ]; then
-            cert_note="签名证书 SHA-256：${ANDROID_CERT_SHA256}"
-          else
-            cert_note="签名证书：未配置 ANDROID_CERT_SHA256，本次 APK 为 debug 签名（仅测试用，不能覆盖升级正式版本）"
+          fail=0
+          expect() {
+            local want="$1" label="$2" pattern="$3"
+            if [ "$want" != "true" ]; then
+              echo "跳过（未勾选）：$label"
+              return
+            fi
+            if compgen -G "release/$pattern" >/dev/null; then
+              echo "已出包：$label"
+            else
+              echo "已勾选但缺少安装包：$label（找不到 release/$pattern）" >&2
+              fail=1
+            fi
+          }
+          expect "$WANT_ANDROID" "Android" "*.apk"
+          expect "$WANT_WINDOWS" "Windows" "*.exe"
+          expect "$WANT_WEBSERVER" "本地服务版" "*-web-*"
+          expect "$WANT_IOS" "iOS" "*.ipa"
+          expect "$WANT_MACOS" "macOS" "*.dmg"
+          if [ "$fail" -ne 0 ]; then
+            echo "有已勾选的平台没有产出安装包，已终止发布。" >&2
+            exit 1
           fi
+          if ! compgen -G "release/*" >/dev/null; then
+            echo "没有任何安装包可发布。" >&2
+            exit 1
+          fi
+      - name: 发布 Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.prepare.outputs.version }}
+          TAG: ${{ needs.prepare.outputs.tag }}
+          SIGNING_CERT_SHA256: ${{ vars.SIGNING_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
           cat > notes.md <<EOF
-          版本 ${VERSION}。两个版本功能相同，区别只在站源范围，按需选择：
-
-          - 红果鉴 hongguojian：红果 + 番茄两个站源（番茄为内置源，内容由本机番茄内容引擎提供）
-          - 真果鉴 zhenguojian：全部站源
+          版本 ${VERSION}。安装包内置红果站源，其余站源在 设置 › 站源 › 模块管理 的模块商店安装。
 
           Android：
           - *-arm64-v8a.apk：适用于较新的安卓设备
@@ -724,16 +381,17 @@ jobs:
           - *-ios-unsigned.ipa：未签名 IPA，可用相关工具安装
 
           Windows：
-          - *-windows-x64.zip：解压后运行 hongguojian.exe 或 zhenguojian.exe
+          - *-windows-x64-setup.exe：安装包，默认安装到当前用户，无需管理员权限；安装时可改为所有用户
+          - *-windows-x64.zip：便携版，解压后运行 guoapp.exe；设置、记录、海报缓存和默认下载都保存在程序旁的 userdata 目录，升级时把旧版的 userdata 目录复制过来即可
+
+          本地服务版（无需安装，双击运行后用浏览器打开）：
+          - *-web-windows-amd64.exe / *-web-linux-amd64 / *-web-macos-*：对应平台的单文件程序，网页前端已内置
+          - 听书、直播、站源与自定义源、跨源搜索、去广告、投屏在网页端同样可用
 
           macOS：
-          - *-macos-universal.dmg：适用于 macOS 12 及以上的 Apple 芯片和 Intel 电脑，打开后把应用拖进 Applications；未经公证，首次打开前在终端执行 xattr -dr com.apple.quarantine /Applications/红果鉴.app（真果鉴为 真果鉴.app）
+          - *-macos-universal.dmg：适用于 macOS 12 及以上的 Apple 芯片和 Intel 电脑，打开后拖入 Applications；未经公证，首次打开前在终端执行 xattr -dr com.apple.quarantine /Applications/小果影视.app
 
-          本地服务版（web/zhenguoweb.zip）：
-          - zhenguoweb.zip：红果鉴 / 真果鉴 两个版本的合集（解压后得到 hongguojian.zip / zhenguojian.zip，含 SHA256SUMS.txt）
-          - 两个版本 zip 内均已内置 Windows 版 ffmpeg.exe，解压后双击 start.bat（Windows）或执行 sh start.sh（macOS/Linux），浏览器打开 http://127.0.0.1:8000/web/
-
-          ${cert_note}
+          Android 签名证书 SHA-256：${SIGNING_CERT_SHA256}
           EOF
           changes="$(awk -v heading="## ${VERSION}" '
             $0 == heading { found = 1; next }
@@ -746,68 +404,7 @@ jobs:
             { printf '更新内容：\n\n%s\n\n' "$changes"; cat notes.md; } > notes.tmp
             mv notes.tmp notes.md
           fi
-          ipa_count=$(find release -maxdepth 1 -name '*.ipa' | wc -l)
-          if [ "$ipa_count" -eq 0 ]; then
-            echo "::warning::本次发布未包含 iOS 包（未勾选 with_ios 或 iOS job 未成功）。"
-            printf '\n注意：本次发布未包含 iOS 包，原因见 Actions 运行详情里的 ios job。\n' >> notes.md
-          fi
-          dmg_count=$(find release -maxdepth 1 -name '*.dmg' | wc -l)
-          if [ "$dmg_count" -eq 0 ]; then
-            echo "::warning::本次发布未包含 macOS 包（未勾选 with_macos 或 macos job 未成功）。"
-            printf '\n注意：本次发布未包含 macOS 包，原因见 Actions 运行详情里的 macos job。\n' >> notes.md
-          fi
-          # 减量构建：iOS / macOS 只有勾了 full_variants 才出红果鉴。说明里必须写清楚，
-          # 否则拿到包的人会以为红果鉴 IPA / dmg 是漏发了。
-          hongguo_ipa=$(find release -maxdepth 1 -name 'hongguojian-*.ipa' | wc -l)
-          if [ "$ipa_count" -gt 0 ] && [ "$hongguo_ipa" -eq 0 ]; then
-            echo "::warning::本次 iOS 只出了真果鉴（full_variants 未勾选）。"
-            printf '\n注意：本次 iOS 只出了真果鉴（为节省 macOS 计费分钟），红果鉴 IPA 需另行构建。\n' >> notes.md
-          fi
-          hongguo_dmg=$(find release -maxdepth 1 -name 'hongguojian-*.dmg' | wc -l)
-          if [ "$dmg_count" -gt 0 ] && [ "$hongguo_dmg" -eq 0 ]; then
-            echo "::warning::本次 macOS 只出了真果鉴（full_variants 未勾选）。"
-            printf '\n注意：本次 macOS 只出了真果鉴（为节省 macOS 计费分钟），红果鉴 dmg 需另行构建。\n' >> notes.md
-          fi
-          if [ "$EXISTS_RELEASE" = "1" ] || [ "$EXISTS_TAG" = "1" ]; then
-            printf '\n本次为重复发布：已用同名包覆盖此前的 %s 旧资产。\n' "$TAG" >> notes.md
-          fi
-          # 重复发布：先把同名 Release 和 tag 清掉，再按当前提交重建，否则 gh release
-          # create 会因为 tag 已存在而失败。顺序很重要——先删 Release（它靠 tag 定位），
-          # 再删 tag ref；任何一步失败都退到下面的「更新现有 Release」兜底。
-          if [ "$EXISTS_RELEASE" = "1" ]; then
-            echo "删除已存在的 Release $TAG …"
-            gh release delete "$TAG" --yes --cleanup-artifacts || true
-          fi
-          if [ "$EXISTS_TAG" = "1" ]; then
-            echo "删除已存在的远端 tag $TAG …"
-            gh api -X DELETE "repos/$GITHUB_REPOSITORY/git/refs/tags/$TAG" >/dev/null 2>&1 || true
-          fi
-          # 这里常见的失败是 HTTP 403 Resource not accessible by integration：
-          # 仓库/组织设置把 GITHUB_TOKEN 的默认权限压成了只读（job 里写的
-          # contents: write 未必能覆盖仓库级默认值）。给一句人能看懂的处理办法，
-          # 免得每次都来对 POST /releases 干瞪眼。
-          publishing_failed() {
-            echo "::error::发布 Release 失败。若提示 Resource not accessible by integration，"
-            echo "::error::请把 Settings → Actions → General → Workflow permissions 改成"
-            echo "::error::「Read and write permissions」，或在仓库 Secrets 配 RELEASE_TOKEN"
-            echo "::error::（带 repo 权限的个人访问令牌）；改完后必须重新触发一次新的运行，"
-            echo "::error::点 Re-run 重跑不生效——重跑会沿用原运行当时的令牌权限。"
-            exit 1
-          }
-          if gh release create "$TAG" release/* --target "$GITHUB_SHA" \
-                --title "红果鉴 / 真果鉴 ${VERSION}" --notes-file notes.md; then
-            exit 0
-          fi
-          # tag 没删干净（比如令牌没有删 ref 的权限）时落到这条兜底：
-          # 沿用已有 Release，覆盖同名资产并更新说明。
-          if gh release view "$TAG" >/dev/null 2>&1; then
-            echo "::warning::无法重建 Release，改为更新现有 Release 的资产与说明。"
-            gh release upload "$TAG" release/* --clobber || publishing_failed
-            gh release edit "$TAG" --title "红果鉴 / 真果鉴 ${VERSION}" \
-              --notes-file notes.md || publishing_failed
-            exit 0
-          fi
-          publishing_failed
+          gh release create "$TAG" release/* --target "$GITHUB_SHA" --title "小果影视 ${VERSION}" --notes-file notes.md
       - name: 推送到 Telegram 频道
         continue-on-error: true
         env:
@@ -823,7 +420,7 @@ jobs:
           fi
           changes="$(cat changes.md)"
           url="$GITHUB_SERVER_URL/$GITHUB_REPOSITORY/releases/tag/$TAG"
-          text="红果鉴 / 真果鉴 ${VERSION} 已发布"
+          text="小果影视 ${VERSION} 已发布"
           if [ -n "$changes" ]; then
             text="$(printf '%s\n\n更新内容：\n\n%s' "$text" "${changes:0:3500}")"
           fi

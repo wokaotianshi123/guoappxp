@@ -42,8 +42,8 @@ var maccmsDetailLink = regexp.MustCompile(`(?i)/(?:index\.php/vod/)?(?:detail|vo
 func maccmsEpisodeNodes(document *html.Node) []*html.Node {
 	var nodes []*html.Node
 	collect := func(match func(*html.Node) bool) {
-		for _, list := range providerHTMLNodes(document, match) {
-			nodes = append(nodes, providerHTMLNodes(list, func(node *html.Node) bool { return node.Data == "a" })...)
+		for _, list := range ProviderHTMLNodes(document, match) {
+			nodes = append(nodes, ProviderHTMLNodes(list, func(node *html.Node) bool { return node.Data == "a" })...)
 		}
 	}
 	for _, name := range []string{"content__playlist", "content__list", "playlink", "pcDrama_catalogItem", "catalogItem", "playlist",
@@ -58,8 +58,8 @@ func maccmsEpisodeNodes(document *html.Node) []*html.Node {
 		}
 	}
 	if len(nodes) == 0 {
-		nodes = providerHTMLNodes(document, func(node *html.Node) bool {
-			return node.Data == "a" && maccmsEpisodeLink.MatchString(providerHTMLAttr(node, "href"))
+		nodes = ProviderHTMLNodes(document, func(node *html.Node) bool {
+			return node.Data == "a" && maccmsEpisodeLink.MatchString(ProviderHTMLAttr(node, "href"))
 		})
 	}
 	return nodes
@@ -79,8 +79,8 @@ func maccmsEpisodesFromDocument(document *html.Node) []providerEpisode {
 	var episodes []providerEpisode
 	seen := map[string]bool{}
 	for index, anchor := range maccmsEpisodeNodes(document) {
-		link := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
-		title := providerHTMLText(anchor)
+		link := strings.TrimSpace(ProviderHTMLAttr(anchor, "href"))
+		title := ProviderHTMLText(anchor)
 		if !maccmsEpisodeLinkLikely(link) {
 			continue
 		}
@@ -184,25 +184,25 @@ func maccmsCollapseRouteEpisodes(episodes []providerEpisode) []providerEpisode {
 }
 
 func maccmsCardCover(card *html.Node, pageURL string) string {
-	for _, image := range providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "img" }) {
+	for _, image := range ProviderHTMLNodes(card, func(node *html.Node) bool { return node.Data == "img" }) {
 		for _, attribute := range []string{"data-original", "data-src", "src"} {
-			if address := providerCoverAddress(providerHTMLAttr(image, attribute), pageURL); address != "" {
+			if address := providerCoverAddress(ProviderHTMLAttr(image, attribute), pageURL); address != "" {
 				return address
 			}
 		}
 		// 部分模板（如 myui）封面写在 img 的 style="background: url(...)" 中。
-		if address := maccmsStyleCover(providerHTMLAttr(image, "style"), pageURL); address != "" {
+		if address := maccmsStyleCover(ProviderHTMLAttr(image, "style"), pageURL); address != "" {
 			return address
 		}
 	}
-	for _, anchor := range providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
+	for _, anchor := range ProviderHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
 		for _, attribute := range []string{"data-original", "data-src"} {
-			if address := providerCoverAddress(providerHTMLAttr(anchor, attribute), pageURL); address != "" {
+			if address := providerCoverAddress(ProviderHTMLAttr(anchor, attribute), pageURL); address != "" {
 				return address
 			}
 		}
 		// myui 模板封面常挂在 a.myui-vodlist__thumb 的 style="background: url(...)" 上。
-		if address := maccmsStyleCover(providerHTMLAttr(anchor, "style"), pageURL); address != "" {
+		if address := maccmsStyleCover(ProviderHTMLAttr(anchor, "style"), pageURL); address != "" {
 			return address
 		}
 	}
@@ -223,16 +223,16 @@ func maccmsStyleCover(style, pageURL string) string {
 
 func maccmsCardTitle(card *html.Node) string {
 	for _, attribute := range []string{"title", "alt"} {
-		for _, node := range providerHTMLNodes(card, func(node *html.Node) bool {
+		for _, node := range ProviderHTMLNodes(card, func(node *html.Node) bool {
 			return node.Data == "a" || node.Data == "img"
 		}) {
-			if text := strings.TrimSpace(providerHTMLAttr(node, attribute)); text != "" {
+			if text := strings.TrimSpace(ProviderHTMLAttr(node, attribute)); text != "" {
 				return text
 			}
 		}
 	}
-	for _, node := range providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
-		if text := providerHTMLText(node); text != "" {
+	for _, node := range ProviderHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
+		if text := ProviderHTMLText(node); text != "" {
 			return text
 		}
 	}
@@ -240,8 +240,8 @@ func maccmsCardTitle(card *html.Node) string {
 }
 
 func maccmsCardLink(card *html.Node, base string) string {
-	for _, anchor := range providerHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
-		link := providerHTMLAttr(anchor, "href")
+	for _, anchor := range ProviderHTMLNodes(card, func(node *html.Node) bool { return node.Data == "a" }) {
+		link := ProviderHTMLAttr(anchor, "href")
 		if link == "" || strings.Contains(link, "javascript:") {
 			continue
 		}
@@ -254,8 +254,8 @@ func maccmsCardLink(card *html.Node, base string) string {
 
 func maccmsCardRemark(card *html.Node) string {
 	for _, name := range []string{"meta-post-type2", "imagelabel", "module-item-note", "pic-text", "lastChapter", "SecondList_totalChapterNum", "SecondList_bookType"} {
-		if node := providerHTMLFirstClass(card, name); node != nil {
-			if text := providerHTMLText(node); text != "" {
+		if node := ProviderHTMLFirstClass(card, name); node != nil {
+			if text := ProviderHTMLText(node); text != "" {
 				return text
 			}
 		}
@@ -267,7 +267,7 @@ func maccmsCards(document *html.Node, source, base string) []Drama {
 	var cards []*html.Node
 	seen := map[*html.Node]bool{}
 	for _, name := range maccmsCardClasses {
-		for _, node := range providerHTMLNodes(document, maccmsClassMatcher(name)) {
+		for _, node := range ProviderHTMLNodes(document, maccmsClassMatcher(name)) {
 			if !seen[node] {
 				seen[node] = true
 				cards = append(cards, node)
@@ -310,7 +310,7 @@ func maccmsCards(document *html.Node, source, base string) []Drama {
 
 func maccmsClassMatcher(name string) func(*html.Node) bool {
 	return func(node *html.Node) bool {
-		for _, value := range strings.Fields(providerHTMLAttr(node, "class")) {
+		for _, value := range strings.Fields(ProviderHTMLAttr(node, "class")) {
 			if value == name || strings.HasSuffix(value, "-"+name) {
 				return true
 			}
@@ -322,8 +322,8 @@ func maccmsClassMatcher(name string) func(*html.Node) bool {
 func maccmsAnchorCards(document *html.Node) []*html.Node {
 	var cards []*html.Node
 	seen := map[*html.Node]bool{}
-	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool {
-		return node.Data == "a" && maccmsDetailLink.MatchString(providerHTMLAttr(node, "href"))
+	for _, anchor := range ProviderHTMLNodes(document, func(node *html.Node) bool {
+		return node.Data == "a" && maccmsDetailLink.MatchString(ProviderHTMLAttr(node, "href"))
 	}) {
 		for parent := anchor.Parent; parent != nil && parent.Type == html.ElementNode; parent = parent.Parent {
 			if seen[parent] {
@@ -725,14 +725,14 @@ func maccmsDetailCandidates(source, base, sourceID string) []string {
 
 func maccmsDetailTitle(document *html.Node) string {
 	for _, name := range []string{"module-info-heading", "detail-title", "video-info-title", "page-title"} {
-		if node := providerHTMLFirstClass(document, name); node != nil {
-			if text := providerHTMLText(node); text != "" {
+		if node := ProviderHTMLFirstClass(document, name); node != nil {
+			if text := ProviderHTMLText(node); text != "" {
 				return maccmsCleanTitle(text)
 			}
 		}
 	}
-	if node := providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "title" }); len(node) > 0 {
-		return maccmsCleanTitle(providerHTMLText(node[0]))
+	if node := ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "title" }); len(node) > 0 {
+		return maccmsCleanTitle(ProviderHTMLText(node[0]))
 	}
 	return ""
 }
@@ -794,15 +794,15 @@ func maccmsTitleTailIsSeo(tail string) bool {
 
 func maccmsDetailIntro(document *html.Node) string {
 	for _, name := range []string{"module-info-introduction-content", "detail-content", "video-info-content", "introduction_introEllipsis"} {
-		if node := providerHTMLFirstClass(document, name); node != nil {
-			if text := providerHTMLText(node); text != "" {
+		if node := ProviderHTMLFirstClass(document, name); node != nil {
+			if text := ProviderHTMLText(node); text != "" {
 				return truncate(text, 2000)
 			}
 		}
 	}
-	for _, meta := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "meta" }) {
-		if strings.EqualFold(providerHTMLAttr(meta, "name"), "description") {
-			if content := strings.TrimSpace(providerHTMLAttr(meta, "content")); content != "" {
+	for _, meta := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "meta" }) {
+		if strings.EqualFold(ProviderHTMLAttr(meta, "name"), "description") {
+			if content := strings.TrimSpace(ProviderHTMLAttr(meta, "content")); content != "" {
 				return truncate(content, 2000)
 			}
 		}
@@ -812,15 +812,15 @@ func maccmsDetailIntro(document *html.Node) string {
 
 func maccmsDetailCover(document *html.Node, pageURL string) string {
 	for _, name := range []string{"module-item-pic", "detail-pic", "video-info-pic", "pic"} {
-		for _, node := range providerHTMLNodes(document, func(node *html.Node) bool { return providerHTMLClass(node, name) }) {
+		for _, node := range ProviderHTMLNodes(document, func(node *html.Node) bool { return ProviderHTMLClass(node, name) }) {
 			if address := maccmsCardCover(node, pageURL); address != "" {
 				return address
 			}
 		}
 	}
-	for _, image := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "img" }) {
+	for _, image := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "img" }) {
 		for _, attribute := range []string{"data-original", "data-src", "src"} {
-			if address := providerCoverAddress(providerHTMLAttr(image, attribute), pageURL); address != "" {
+			if address := providerCoverAddress(ProviderHTMLAttr(image, attribute), pageURL); address != "" {
 				return address
 			}
 		}
@@ -830,11 +830,11 @@ func maccmsDetailCover(document *html.Node, pageURL string) string {
 
 func maccmsDetailCategory(document *html.Node) string {
 	for _, name := range []string{"module-info-tag-link", "detail-tag", "video-info-actor"} {
-		nodes := providerHTMLNodes(document, func(node *html.Node) bool { return providerHTMLClass(node, name) })
+		nodes := ProviderHTMLNodes(document, func(node *html.Node) bool { return ProviderHTMLClass(node, name) })
 		if len(nodes) > 0 {
 			var parts []string
-			for _, anchor := range providerHTMLNodes(nodes[0], func(node *html.Node) bool { return node.Data == "a" }) {
-				if text := providerHTMLText(anchor); text != "" {
+			for _, anchor := range ProviderHTMLNodes(nodes[0], func(node *html.Node) bool { return node.Data == "a" }) {
+				if text := ProviderHTMLText(anchor); text != "" {
 					parts = append(parts, text)
 				}
 			}
@@ -1160,8 +1160,8 @@ func maccmsHomeDetailGlued(document *html.Node) bool {
 		return false
 	}
 	glued, slashed := 0, 0
-	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
-		href := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
+	for _, anchor := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		href := strings.TrimSpace(ProviderHTMLAttr(anchor, "href"))
 		parsed, err := url.Parse(href)
 		if err != nil {
 			continue
@@ -1229,8 +1229,8 @@ func maccmsCustomHomeSignals(document *html.Node) ([]maccmsCategorySignal, strin
 	typePrefix := ""
 	firstDetail := ""
 	seen := map[string]bool{}
-	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
-		href := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
+	for _, anchor := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		href := strings.TrimSpace(ProviderHTMLAttr(anchor, "href"))
 		parsed, err := url.Parse(href)
 		if err != nil {
 			continue
@@ -1245,9 +1245,9 @@ func maccmsCustomHomeSignals(document *html.Node) ([]maccmsCategorySignal, strin
 			!maccmsDetailPath.MatchString(path+"/") {
 			continue
 		}
-		name := maccmsCleanAnchorText(providerHTMLText(anchor))
+		name := maccmsCleanAnchorText(ProviderHTMLText(anchor))
 		if name == "" {
-			name = maccmsCleanAnchorText(providerHTMLAttr(anchor, "title"))
+			name = maccmsCleanAnchorText(ProviderHTMLAttr(anchor, "title"))
 		}
 		matched := false
 		for _, pattern := range maccmsHomeTypePatterns {
@@ -1308,7 +1308,7 @@ func maccmsCustomProfileFor(ctx context.Context, d *Downloader, source, base str
 }
 
 // fetchMaccmsCustomCategories 返回自定义站点首页导航中的分类（缓存于模板探测结果）。
-func (d *Downloader) fetchMaccmsCustomCategories(ctx context.Context, source string) ([]nativeCategory, error) {
+func (d *Downloader) fetchMaccmsCustomCategories(ctx context.Context, source string) ([]Category, error) {
 	base := d.duanjuBaseURL(source)
 	if base == "" {
 		return nil, errors.New("站源地址不可用")
@@ -1328,12 +1328,12 @@ func (d *Downloader) fetchMaccmsCustomCategories(ctx context.Context, source str
 		// 首页抓取失败（连接超时 / HTTP 错误 / 反爬挑战页），给出明确提示而非笼统报错。
 		return nil, errors.New("站点首页无法访问（连接超时或 HTTP 错误），请确认网址正确且站点可访问")
 	}
-	var categories []nativeCategory
+	var categories []Category
 	for _, signal := range profile.Categories {
 		if signal.ID == "" || signal.Name == "" {
 			continue
 		}
-		categories = append(categories, nativeCategory{ID: signal.ID, Name: signal.Name})
+		categories = append(categories, Category{ID: signal.ID, Name: signal.Name})
 	}
 	if len(categories) == 0 {
 		// 认不出导航但认得出模板时不再报死：返回空分类，让「全部站源」照常可用。
@@ -1482,8 +1482,8 @@ func maccmsCustomHomeDetailPrefix(document *html.Node, categoryPrefix string) st
 		return ""
 	}
 	pattern := regexp.MustCompile(`^/([a-z][a-z0-9_]*)/(\d{4,})\.html$`)
-	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
-		href := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
+	for _, anchor := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		href := strings.TrimSpace(ProviderHTMLAttr(anchor, "href"))
 		parsed, err := url.Parse(href)
 		if err != nil || parsed.Path == "" {
 			continue

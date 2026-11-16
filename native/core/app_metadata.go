@@ -3,79 +3,40 @@ package core
 import (
 	"context"
 	"errors"
-	"net/url"
 	"time"
 )
 
-func nativeNeedsExtraMetadata(drama nativeDrama) bool {
-	return drama.Source == sourceHongguo && drama.OnlineDate == "" ||
-		drama.Source == sourceHuangdou && (drama.Heat == "" || drama.VIP == nil)
-}
-
-// engineNeedsExtraMetadata 在原有内置判断之外，先问站源自己要不要补元数据
-// （上游 MetadataEnricher 契约），这样外置源可以自己声明需要补哪些字段。
-func (engine *nativeEngine) engineNeedsExtraMetadata(drama nativeDrama) bool {
-	if engine.downloader.providerNeedsExtraMetadata(drama) {
-		return true
+func (engine *nativeEngine) nativeNeedsExtraMetadata(drama LibraryDrama) bool {
+	if p, ok := engine.downloader.provider(drama.Source); ok {
+		enricher, ok := providerAs[MetadataEnricher](p)
+		return ok && enricher.NeedsExtraMetadata(drama)
 	}
-	return nativeNeedsExtraMetadata(drama)
+	return false
 }
 
-func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama nativeDrama) (nativeDrama, error) {
-	source, id, valid := splitProviderDramaID(drama.ID)
+func (engine *nativeEngine) nativeExtraMetadata(ctx context.Context, drama LibraryDrama) (LibraryDrama, error) {
+	source, id, valid := SplitProviderDramaID(drama.ID)
 	if !valid {
 		return drama, errors.New("剧集信息无效")
 	}
-	if !engine.engineNeedsExtraMetadata(drama) {
+	if !engine.nativeNeedsExtraMetadata(drama) {
 		return drama, nil
 	}
-	ctx, cancel := context.WithTimeout(context.WithValue(ctx, backgroundCatalogKey{}, true), 15*time.Second)
+	ctx, cancel := context.WithTimeout(context.WithValue(ctx, BackgroundCatalogKey{}, true), 15*time.Second)
 	defer cancel()
-	// 站源实现了 MetadataEnricher 就优先用它（上游契约），
-	// 内置源（红果 / 黄豆）继续走下面的专用分支。
-	if fresh, handled, err := engine.downloader.providerExtraMetadata(ctx, drama, id); handled {
-		if err != nil {
-			return drama, err
-		}
-		if fresh.ID == drama.ID {
-			drama = mergeNativeDrama(drama, fresh)
-		}
+	p, ok := engine.downloader.provider(source)
+	if !ok {
+		return drama, errors.New("请选择有效站源")
+	}
+	enricher, ok := providerAs[MetadataEnricher](p)
+	if !ok {
 		return drama, nil
 	}
-	var raw Drama
-	switch source {
-	case sourceHongguo:
-		if !hongguoNumericID.MatchString(id) {
-			return drama, errors.New("红果剧集 ID 无效")
-		}
-		body, err := engine.downloader.fetchProviderText(ctx, hongguoBaseURL+"/detail?series_id="+url.QueryEscape(id), hongguoBaseURL+"/")
-		if err != nil {
-			return drama, err
-		}
-		raw, err = parseHongguoSortDetail(body, id)
-		if err != nil {
-			return drama, err
-		}
-	default:
-		// 已外置的站源自己补齐元数据（黄豆的热度就是它在详情里补的）。
-		provider, ok := engine.downloader.sourceProvider(source)
-		if !ok {
-			return drama, nil
-		}
-		fresh, _, err := provider.Detail(ctx, id)
-		if err != nil {
-			return drama, err
-		}
-		raw = fresh
-	}
-	if raw.ID == drama.ID {
-		drama = mergeNativeDrama(drama, nativeNormalize(raw))
-	}
-	return drama, ctx.Err()
+	return enricher.ExtraMetadata(ctx, drama, id)
 }
 
-func (engine *nativeEngine) nativeFollowCheck(ctx context.Context, drama nativeDrama) (any, error) {
-	ctx, cancel := context.WithTimeout(context.WithValue(ctx, backgroundCatalogKey{}, true), 20*time.Second)
+func (engine *nativeEngine) nativeFollowCheck(ctx context.Context, drama LibraryDrama) (any, error) {
+	ctx, cancel := context.WithTimeout(context.WithValue(ctx, BackgroundCatalogKey{}, true), 20*time.Second)
 	defer cancel()
 	result, err := engine.nativeDetail(ctx, drama)
 	if err != nil {
@@ -84,7 +45,10 @@ func (engine *nativeEngine) nativeFollowCheck(ctx context.Context, drama nativeD
 	return map[string]any{"drama": result.(map[string]any)["drama"]}, nil
 }
 
-func (engine *nativeEngine) nativeMetadata(ctx context.Context, drama nativeDrama) (any, error) {
+func (engine *nativeEngine) nativeMetadata(ctx context.Context, drama LibraryDrama) (any, error) {
+	if !engine.nativeNeedsExtraMetadata(drama) {
+		return map[string]any{"drama": drama, "warning": ""}, nil
+	}
 	fresh, err := engine.nativeExtraMetadata(ctx, drama)
 	if err != nil {
 		return nil, err

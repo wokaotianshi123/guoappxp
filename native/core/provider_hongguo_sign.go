@@ -1,5 +1,7 @@
 package core
 
+// 红果设备号生成。移植自 guoappxp 的 provider_hongguo_sign.go。
+
 import (
 	"crypto/rand"
 	"encoding/binary"

@@ -83,67 +83,28 @@ func newNativeCoverCache(directory string, downloader *Downloader) *nativeCoverC
 	return cache
 }
 
-// nativeDoubanCoverReferer 给豆瓣图床的封面补 Referer。
-//
-// 爱看机器人（ikanbot）与部分聚合源的海报直接用豆瓣 CDN 的地址
-// （img1/img3/img9.doubanio.com/view/photo/m_ratio_poster/...）。豆瓣图床按 Referer
-// 防盗链：不带 Referer 或 Referer 不是豆瓣页面时会返回 HTTP 403，或者 302 到一张
-// 统一的默认图（下载下来内容不对，被判为「站源未返回有效海报」）。
-// 封面请求会先过这里，命中豆瓣域名时统一使用豆瓣电影站的 Referer。
-func nativeDoubanCoverReferer(parsed *url.URL) (string, bool) {
-	host := strings.ToLower(parsed.Hostname())
-	if strings.HasSuffix(host, ".doubanio.com") || host == "doubanio.com" ||
-		strings.HasSuffix(host, ".douban.com") || host == "douban.com" {
-		return "https://movie.douban.com/", true
-	}
-	return "", false
-}
-
 func nativeCoverReferer(downloader *Downloader, source, address string) string {
-	// 站源自己声明了封面 Referer 就优先用它（上游 CoverRefererProvider 契约），
-	// 例如图床按来源域防盗链的源。
-	if referer := downloader.providerCoverReferer(source, address); referer != "" {
-		return referer
-	}
-	if parsed, err := url.Parse(address); err == nil {
-		if referer, ok := nativeDoubanCoverReferer(parsed); ok {
-			return referer
+	if p, ok := downloader.provider(source); ok {
+		if referer, ok := providerAs[CoverRefererProvider](p); ok {
+			return referer.CoverReferer(address)
 		}
-	}
-	if source == sourceCloudFront {
-		if parsed, err := url.Parse(address); err == nil && (strings.HasSuffix(strings.ToLower(parsed.Hostname()), ".zdmhyg.cn") || strings.EqualFold(parsed.Hostname(), "pic.tuafjz.cn")) {
-			return downloader.providerBaseURL(sourceHuangguoAI) + "/"
-		}
-	}
-	if source == sourceHuangdou {
-		// 域名池里任一域名都要用自己作为封面 referer，否则换线后封面会被拒绝。
-		if parsed, err := url.Parse(address); err == nil && isHuangdouHost(parsed.Hostname()) {
-			return parsed.Scheme + "://" + parsed.Host + "/home"
-		}
-		downloader.providerMu.Lock()
-		host := downloader.providerHosts[source]
-		downloader.providerMu.Unlock()
-		if host == "" {
-			host = downloader.providerBaseURL(source)
-		}
-		return host + "/home"
 	}
 	return downloader.providerBaseURL(source) + "/"
 }
 
-func validNativeCoverURL(address *url.URL) bool {
+func ValidNativeCoverURL(address *url.URL) bool {
 	return address != nil && (address.Scheme == "https" || address.Scheme == "http") && address.Hostname() != "" && address.User == nil
 }
 
-func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama nativeDrama, force bool) (string, error) {
-	drama.Cover = repairLegacyCoverURL(drama)
+func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama LibraryDrama, force bool) (string, error) {
+	drama.Cover = cache.downloader.repairCover(drama)
 	address, err := url.Parse(drama.Cover)
-	if err != nil || !validNativeCoverURL(address) {
+	if err != nil || !ValidNativeCoverURL(address) {
 		return "", errors.New("海报地址无效")
 	}
 	source := canonicalProviderSource(drama.Source)
 	if source == "" {
-		source = sourceFromDramaID(drama.ID)
+		source = SourceFromDramaID(drama.ID)
 	}
 	referer := nativeCoverReferer(cache.downloader, source, drama.Cover)
 	digest := sha256.Sum256([]byte(source + "\x00" + drama.Cover + "\x00" + referer))
@@ -187,7 +148,7 @@ func (cache *nativeCoverCache) loadAddress(ctx context.Context, drama nativeDram
 	}
 }
 
-func (cache *nativeCoverCache) fetch(key string, drama nativeDrama, referer, fallback string, call *nativeCoverCall) {
+func (cache *nativeCoverCache) fetch(key string, drama LibraryDrama, referer, fallback string, call *nativeCoverCall) {
 	ctx, cancel := context.WithTimeout(context.Background(), 25*time.Second)
 	defer cancel()
 	var data []byte
@@ -227,59 +188,24 @@ func (cache *nativeCoverCache) fetch(key string, drama nativeDrama, referer, fal
 }
 
 func (cache *nativeCoverCache) download(ctx context.Context, address, referer string) ([]byte, error) {
-	data, err := cache.downloadOnce(ctx, address, referer, nil)
-	if err != nil {
-		return nil, err
-	}
-	decoded := nativeDecodeCover(data)
-	if nativeIsCoverImage(decoded) {
-		return decoded, nil
-	}
-	// 豆瓣这类图床除了按 Referer 防盗链，还会按 TLS 指纹做风控：标准 Go 传输（即使
-	// Referer 正确）拿到的不是图片而是一段反爬脚本。这时换浏览器指纹传输再取一次，
-	// Chrome 指纹通常就能拿到真实 JPEG；仍然拿不到才报「无效海报」。
-	// 只对 https 重试：本地 / http 图床不涉及这种 CDN 风控，没必要多发一次请求。
-	if browser := cache.downloader.browserTransport; browser != nil &&
-		strings.HasPrefix(strings.ToLower(address), "https://") {
-		if retried, retryErr := cache.downloadOnce(ctx, address, referer, browser.browserRoundTrip); retryErr == nil {
-			if decoded = nativeDecodeCover(retried); nativeIsCoverImage(decoded) {
-				return decoded, nil
-			}
-		}
-	}
-	return nil, errors.New("站源未返回有效海报")
-}
-
-// fetchCover 用给定的传输发一次海报请求；roundTrip 为 nil 时走核心默认客户端。
-func (cache *nativeCoverCache) downloadOnce(
-	ctx context.Context,
-	address string,
-	referer string,
-	roundTrip func(*http.Request) (*http.Response, error),
-) ([]byte, error) {
 	request, err := http.NewRequestWithContext(context.WithValue(ctx, nativeCoverNetworkKey{}, true), http.MethodGet, address, nil)
 	if err != nil {
 		return nil, err
 	}
-	request.Header.Set("User-Agent", userAgent)
+	request.Header.Set("User-Agent", UserAgent)
 	request.Header.Set("Referer", referer)
 	request.Header.Set("Accept", "image/webp,image/jpeg,image/png,image/gif,*/*;q=0.5")
 	request.Header.Set("Sec-Fetch-Mode", "no-cors")
 	request.Header.Set("Sec-Fetch-Dest", "image")
-	var response *http.Response
-	if roundTrip != nil {
-		response, err = roundTrip(request)
-	} else {
-		client := *cache.downloader.client
-		client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
-			if len(via) >= 5 || !validNativeCoverURL(request.URL) {
-				return errors.New("海报重定向地址无效")
-			}
-			request.Header.Set("Referer", referer)
-			return nil
+	client := *cache.downloader.client
+	client.CheckRedirect = func(request *http.Request, via []*http.Request) error {
+		if len(via) >= 5 || !ValidNativeCoverURL(request.URL) {
+			return errors.New("海报重定向地址无效")
 		}
-		response, err = client.Do(request)
+		request.Header.Set("Referer", referer)
+		return nil
 	}
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -297,6 +223,10 @@ func (cache *nativeCoverCache) downloadOnce(
 	if len(data) > nativeCoverMaxBytes {
 		return nil, errors.New("海报文件过大")
 	}
+	data = nativeDecodeCover(data)
+	if !nativeIsCoverImage(data) {
+		return nil, errors.New("站源未返回有效海报")
+	}
 	return data, nil
 }
 
@@ -304,7 +234,6 @@ func nativeDecodeCover(data []byte) []byte {
 	if nativeIsCoverImage(data) {
 		return data
 	}
-	// 部分站源（如笔盒）把封面存成 .txt：内容是异或过的 data:image/...;base64 文本。
 	if image, ok := nativeDecodeTextCover(data); ok {
 		return image
 	}
@@ -319,7 +248,7 @@ func nativeDecodeCover(data []byte) []byte {
 			copy(plain, encrypted)
 			cipher.NewCBCDecrypter(block, []byte("97b60394abc2fbe1")).CryptBlocks(plain, plain)
 			plain = plain[:len(encrypted)]
-			if unpadded, err := pkcs7Unpad(plain, aes.BlockSize); err == nil {
+			if unpadded, err := Pkcs7Unpad(plain, aes.BlockSize); err == nil {
 				plain = unpadded
 			}
 			if nativeIsCoverImage(plain) {
@@ -395,38 +324,6 @@ func nativeIsCoverImage(data []byte) bool {
 		}
 	}
 	return false
-}
-
-// refresh 按磁盘上的实际文件重建索引。「清理缓存」删掉封面文件后调用，
-// 否则内存里仍记着已删除条目的尺寸，下次取封面会拿到不存在的路径。
-// 仍然存在的封面保留原来的 usedAt，清理不会把冷热顺序彻底打乱。
-func (cache *nativeCoverCache) refresh() {
-	cache.mu.Lock()
-	defer cache.mu.Unlock()
-	entries := map[string]nativeCoverEntry{}
-	var size int64
-	files, _ := os.ReadDir(cache.directory)
-	for _, file := range files {
-		key, valid := strings.CutSuffix(file.Name(), ".img")
-		if !valid || len(key) != 64 || file.IsDir() {
-			continue
-		}
-		if _, err := hex.DecodeString(key); err != nil {
-			continue
-		}
-		info, err := file.Info()
-		if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > nativeCoverMaxBytes {
-			continue
-		}
-		usedAt := info.ModTime()
-		if old, ok := cache.entries[key]; ok {
-			usedAt = old.usedAt
-		}
-		entries[key] = nativeCoverEntry{size: info.Size(), updatedAt: info.ModTime(), usedAt: usedAt}
-		size += info.Size()
-	}
-	cache.entries = entries
-	cache.size = size
 }
 
 func (cache *nativeCoverCache) prune(keep string) {

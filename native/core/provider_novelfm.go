@@ -217,11 +217,11 @@ func novelfmQueryValue(query, key string) string {
 	return values.Get(key)
 }
 
-func (downloader *Downloader) resolveNovelfmAudio(ctx context.Context, bookID, itemID string) (providerMedia, error) {
+func (downloader *Downloader) resolveNovelfmAudio(ctx context.Context, bookID, itemID string) (ProviderMedia, error) {
 	bookID = strings.TrimSpace(bookID)
 	itemID = strings.TrimSpace(itemID)
 	if bookID == "" || itemID == "" {
-		return providerMedia{}, errors.New("听书章节无效")
+		return ProviderMedia{}, errors.New("听书章节无效")
 	}
 	query := "os=android&aid=3040&app_name=novel_fm&ssmix=a&manifest_version_code=632&channel=54157680a&device_platform=android&device_brand=Redmi&language=zh&os_api=35&vip_state=0&host_abi=arm64-v8a&category_style=1&need_personal_recommend=1"
 	raw := "https://api5-sinfonlineb.novelfm.com/novelfm/playerapi/video_model/mget/v1?" + query
@@ -229,18 +229,18 @@ func (downloader *Downloader) resolveNovelfmAudio(ctx context.Context, bookID, i
 	var nonce [4]byte
 	var randomValue [4]byte
 	if _, err := rand.Read(nonce[:]); err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	if _, err := rand.Read(randomValue[:]); err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	headers, err := novelfmSignRequest(raw, body, time.Now().UnixMilli(), nonce[:], binary.BigEndian.Uint32(randomValue[:]))
 	if err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	request, err := http.NewRequestWithContext(ctx, http.MethodPost, raw, strings.NewReader(body))
 	if err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	request.Header.Set("Content-Type", "application/json; charset=utf-8")
 	request.Header.Set("User-Agent", "com.dragon.read")
@@ -253,28 +253,28 @@ func (downloader *Downloader) resolveNovelfmAudio(ctx context.Context, bookID, i
 	}
 	response, err := client.Do(request)
 	if err != nil {
-		return providerMedia{}, errors.New("无法连接番茄畅听")
+		return ProviderMedia{}, errors.New("无法连接番茄畅听")
 	}
 	defer response.Body.Close()
 	payload, err := io.ReadAll(io.LimitReader(response.Body, 1<<20))
 	if err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	if len(bytesTrim(payload)) == 0 {
-		return providerMedia{}, errors.New("番茄畅听没有返回音频")
+		return ProviderMedia{}, errors.New("番茄畅听没有返回音频")
 	}
 	var parsed map[string]any
 	if err := json.Unmarshal(payload, &parsed); err != nil {
-		return providerMedia{}, errors.New("番茄畅听播放信息无法识别")
+		return ProviderMedia{}, errors.New("番茄畅听播放信息无法识别")
 	}
 	if code, _ := parsed["code"].(float64); code != 0 {
-		return providerMedia{}, errors.New("番茄畅听没有返回音频")
+		return ProviderMedia{}, errors.New("番茄畅听没有返回音频")
 	}
 	address, key, duration, err := novelfmSelectAudio(parsed)
 	if err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
-	return providerMedia{
+	return ProviderMedia{
 		URL:      address,
 		Referer:  "https://novelfm.changdunovel.com/",
 		CENCKey:  key,

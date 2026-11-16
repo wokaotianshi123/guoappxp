@@ -30,7 +30,7 @@ func webProviderInteger(value any, maximum int) (int, bool) {
 	return number, err == nil && number >= 0 && number <= maximum
 }
 
-func providerHTMLAttr(node *html.Node, name string) string {
+func ProviderHTMLAttr(node *html.Node, name string) string {
 	if node != nil {
 		for _, attribute := range node.Attr {
 			if attribute.Key == name {
@@ -41,8 +41,8 @@ func providerHTMLAttr(node *html.Node, name string) string {
 	return ""
 }
 
-func providerHTMLClass(node *html.Node, name string) bool {
-	for _, value := range strings.Fields(providerHTMLAttr(node, "class")) {
+func ProviderHTMLClass(node *html.Node, name string) bool {
+	for _, value := range strings.Fields(ProviderHTMLAttr(node, "class")) {
 		if value == name {
 			return true
 		}
@@ -50,7 +50,7 @@ func providerHTMLClass(node *html.Node, name string) bool {
 	return false
 }
 
-func providerHTMLNodes(root *html.Node, match func(*html.Node) bool) []*html.Node {
+func ProviderHTMLNodes(root *html.Node, match func(*html.Node) bool) []*html.Node {
 	var found []*html.Node
 	if root == nil {
 		return found
@@ -69,10 +69,10 @@ func providerHTMLNodes(root *html.Node, match func(*html.Node) bool) []*html.Nod
 	return found
 }
 
-func providerHTMLFirstClass(root *html.Node, names ...string) *html.Node {
+func ProviderHTMLFirstClass(root *html.Node, names ...string) *html.Node {
 	for _, name := range names {
-		matches := providerHTMLNodes(root, func(node *html.Node) bool {
-			return providerHTMLClass(node, name)
+		matches := ProviderHTMLNodes(root, func(node *html.Node) bool {
+			return ProviderHTMLClass(node, name)
 		})
 		if len(matches) > 0 {
 			return matches[0]
@@ -81,9 +81,9 @@ func providerHTMLFirstClass(root *html.Node, names ...string) *html.Node {
 	return nil
 }
 
-func providerHTMLText(root *html.Node) string {
+func ProviderHTMLText(root *html.Node) string {
 	var text strings.Builder
-	for _, node := range providerHTMLNodes(root, func(node *html.Node) bool {
+	for _, node := range ProviderHTMLNodes(root, func(node *html.Node) bool {
 		return node.Type == html.TextNode
 	}) {
 		if node.Parent != nil && (node.Parent.Data == "script" || node.Parent.Data == "style") {
@@ -115,10 +115,10 @@ func (d *Downloader) fetchProviderPage(ctx context.Context, address, referer, ag
 	return document, address, err
 }
 
-func (d *Downloader) prepareWebProviderMedia(ctx context.Context, media providerMedia, sourceName string) (providerMedia, error) {
+func (d *Downloader) prepareWebProviderMedia(ctx context.Context, media ProviderMedia, sourceName string) (ProviderMedia, error) {
 	address, err := url.Parse(media.URL)
-	if err != nil || !isProviderHTTPMediaURL(media.URL) || address.User != nil {
-		return providerMedia{}, fmt.Errorf("%s未返回有效播放地址，请刷新详情后重试", sourceName)
+	if err != nil || !IsProviderHTTPMediaURL(media.URL) || address.User != nil {
+		return ProviderMedia{}, fmt.Errorf("%s未返回有效播放地址，请刷新详情后重试", sourceName)
 	}
 	if strings.HasSuffix(strings.ToLower(address.Path), ".m3u8") {
 		if media.Credentials != nil {
@@ -126,10 +126,10 @@ func (d *Downloader) prepareWebProviderMedia(ctx context.Context, media provider
 		}
 		media.Playlist, media.URL, err = d.fetchMediaPlaylist(ctx, media.URL, media.Referer)
 		if err != nil {
-			return providerMedia{}, fmt.Errorf("获取%s播放列表失败：%w", sourceName, err)
+			return ProviderMedia{}, fmt.Errorf("获取%s播放列表失败：%w", sourceName, err)
 		}
 		if !strings.HasPrefix(strings.TrimSpace(strings.TrimPrefix(media.Playlist, "\ufeff")), "#EXTM3U") {
-			return providerMedia{}, fmt.Errorf("%s播放列表无效，请重新解析播放", sourceName)
+			return ProviderMedia{}, fmt.Errorf("%s播放列表无效，请重新解析播放", sourceName)
 		}
 		if duration := m3u8Duration(media.Playlist); duration > 0 {
 			media.Duration = duration

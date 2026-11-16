@@ -8,7 +8,7 @@ import sys
 import zipfile
 from pathlib import Path
 
-from app_build import BuildVariant, add_variant_argument
+from app_build import app
 
 root = Path(__file__).resolve().parents[1]
 parser = argparse.ArgumentParser()
@@ -16,9 +16,7 @@ parser.add_argument('--platform', choices=['android', 'windows', 'macos'], requi
 parser.add_argument('--abi', action='append', choices=['arm64-v8a', 'armeabi-v7a', 'x86_64'])
 parser.add_argument('--identity', default='',
                     help='macOS 签名身份；默认 ad-hoc 签名（-），有 Developer ID 时传证书名')
-add_variant_argument(parser)
 options = parser.parse_args()
-variant = BuildVariant(options.all_sources)
 match = re.search(r'^version:\s*([\w.+-]+)\s*$', (root / 'pubspec.yaml').read_text(encoding='utf-8'), re.MULTILINE)
 if not match:
     raise SystemExit('pubspec.yaml 缺少合法版本号。')
@@ -28,21 +26,8 @@ output.mkdir(parents=True, exist_ok=True)
 artifacts = []
 
 
-def fanqie_engine_binary(platform_name):
-    """取构建好的番茄内容引擎；没有产物时返回 None。
-
-    CI 里由 `scripts/build_fanqie_engine.py` 编好后放到 build/fanqie/<平台>/，
-    打包时随包分发。Dart 侧在主程序同级目录找它，所以放对位置即可。
-    """
-    directory = root / 'build' / 'fanqie' / platform_name
-    if not directory.is_dir():
-        return None
-    names = ['fanqie_engine.exe', 'fanqie_engine']
-    for name in names:
-        candidate = directory / name
-        if candidate.is_file():
-            return candidate
-    return None
+def run(arguments, cwd=None):
+    subprocess.run([str(item) for item in arguments], cwd=cwd, check=True)
 
 
 def macho_architectures(path):
@@ -57,13 +42,9 @@ def verify_macos_application(application):
     executable = application / 'Contents' / 'MacOS' / info['CFBundleExecutable']
     if not executable.is_file() or not os.access(executable, os.X_OK):
         raise SystemExit('macOS 包缺少可执行文件。')
-    # 必须同时带上 arm64 与 x86_64：Apple 芯片原生跑，Intel 机器靠 Rosetta 之外
-    # 的第二片原生跑，做成通用包才不用分两个 dmg。
     architectures = macho_architectures(executable)
     if 'arm64' not in architectures or 'x86_64' not in architectures:
         raise SystemExit('macOS 包应同时包含 arm64 和 x86_64：' + architectures)
-    # Go 核心是以静态库链进主程序的，符号没进去的话 Dart 侧 DynamicLibrary.process()
-    # 会直接抛找不到符号；这里先验一遍，免得包出一个一打开就闪退的 app。
     symbols = subprocess.run(['nm', '-gU', str(executable)], capture_output=True, text=True).stdout
     for symbol in ['_DuanjuRequest', '_DuanjuFree']:
         if symbol not in symbols:
@@ -75,21 +56,13 @@ def verify_macos_application(application):
 
 
 def sign_macos_application(application, identity):
-    # 没有 Developer ID 时用 ad-hoc 签名（-）：未公证的 app 首次打开需要用户
-    # 手动去掉隔离属性，但至少能通过 Gatekeeper 的签名完整性检查。
     flags = ['codesign', '--force', '--sign', identity or '-']
     if identity and identity != '-':
         flags += ['--options', 'runtime', '--timestamp']
     for framework in sorted((application / 'Contents' / 'Frameworks').glob('*')):
         run(flags + [framework])
-    # Contents/MacOS 里的辅助可执行（番茄引擎）必须先单独签名：Apple 芯片上
-    # 未签名的 Mach-O 会被内核直接拒绝执行，而外层 app 的签名不会覆盖它。
-    info = plistlib.loads((application / 'Contents' / 'Info.plist').read_bytes())
-    main_executable = info.get('CFBundleExecutable', '')
-    for helper in sorted((application / 'Contents' / 'MacOS').iterdir()):
-        if helper.is_file() and helper.name != main_executable:
-            run(flags + [helper])
-    run(flags + [application])
+    entitlements = root / 'macos' / 'Runner' / 'Release.entitlements'
+    run(flags + ['--entitlements', entitlements, application])
 
 
 def draw_dmg_background(path, display):
@@ -157,34 +130,25 @@ def build_macos_dmg(display, staging, staged, target):
 
 
 def package_macos(application):
-    display = '真果鉴' if variant.all_sources else '红果鉴'
+    display = app.display_name
     staging = root / 'build' / 'macos-dmg'
     if staging.exists():
         shutil.rmtree(staging)
     staging.mkdir(parents=True)
     staged = staging / f'{display}.app'
     shutil.copytree(application, staged, symlinks=True)
-    # 番茄内容引擎放进 Contents/MacOS，与主程序同级；签名在下面统一做。
-    fanqie_engine = fanqie_engine_binary('macos')
-    if fanqie_engine is not None:
-        destination = staged / 'Contents' / 'MacOS' / 'fanqie_engine'
-        shutil.copy2(fanqie_engine, destination)
-        os.chmod(destination, 0o755)
-    else:
-        print('未找到 macOS 版番茄引擎，本次包内不含引擎（番茄源仍会显示）。')
     plist_path = staged / 'Contents' / 'Info.plist'
     info = plistlib.loads(plist_path.read_bytes())
     info['CFBundleDisplayName'] = display
     info['CFBundleName'] = display
-    info['CFBundleIdentifier'] = variant.bundle_identifier
+    info['CFBundleIdentifier'] = app.bundle_identifier
     plist_path.write_bytes(plistlib.dumps(info))
     sign_macos_application(staged, options.identity)
     verify_macos_application(staged)
-    target = output / f'{variant.slug}-{version}-macos-universal.dmg'
+    target = output / f'{app.slug}-{version}-macos-universal.dmg'
     if target.exists():
         target.unlink()
     build_macos_dmg(display, staging, staged, target)
-    # 挂起来验证一遍：用户拿到 dmg 只会看到这两个图标，缺了就等于安装不了。
     mount = root / 'build' / 'macos-dmg-mount'
     if mount.exists():
         shutil.rmtree(mount)
@@ -202,6 +166,50 @@ def package_macos(application):
     return target
 
 
+def windows_product_name(path):
+    import ctypes
+    version = ctypes.windll.version
+    size = version.GetFileVersionInfoSizeW(str(path), None)
+    if not size:
+        return ''
+    data = ctypes.create_string_buffer(size)
+    version.GetFileVersionInfoW(str(path), 0, size, data)
+    value = ctypes.c_wchar_p()
+    length = ctypes.c_uint()
+    version.VerQueryValueW(data, r'\StringFileInfo\040904e4\ProductName', ctypes.byref(value), ctypes.byref(length))
+    return value.value or ''
+
+
+def find_inno_compiler():
+    candidates = [shutil.which('iscc')]
+    for variable, folder in (('LOCALAPPDATA', 'Programs'), ('ProgramFiles(x86)', ''), ('ProgramFiles', '')):
+        if os.environ.get(variable):
+            candidates.append(str(Path(os.environ[variable]) / folder / 'Inno Setup 6' / 'ISCC.exe'))
+    for candidate in candidates:
+        if candidate and Path(candidate).is_file():
+            return candidate
+    raise SystemExit('找不到 Inno Setup 6 的 ISCC.exe，请先安装：winget install JRSoftware.InnoSetup')
+
+
+def package_windows_installer(bundle, bundle_executable):
+    base_name = f'{app.slug}-{version}-windows-x64-setup'
+    run([find_inno_compiler(), '/Q',
+         f'/DAppId={app.bundle_identifier}',
+         f'/DAppName={app.display_name}',
+         f'/DAppVersion={version}',
+         f'/DNumericVersion={version.replace("+", ".")}',
+         f'/DSlug={app.slug}',
+         f'/DBundleExecutable={bundle_executable}',
+         f'/DSourceDir={bundle}',
+         f'/DOutputDir={output}',
+         f'/DOutputBaseName={base_name}',
+         root / 'windows' / 'installer' / 'setup.iss'])
+    target = output / f'{base_name}.exe'
+    if not target.is_file():
+        raise SystemExit('Windows 安装包没有生成：' + str(target))
+    return target
+
+
 if options.platform == 'android':
     for abi in options.abi or ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
         source = root / 'build' / 'app' / 'outputs' / 'flutter-apk' / f'app-{abi}-release.apk'
@@ -214,33 +222,33 @@ if options.platform == 'android':
             missing = set(required) - names
             if missing:
                 raise SystemExit('APK 缺少原生库：' + ', '.join(sorted(missing)))
-        target = output / f'{variant.slug}-{version}-{abi}.apk'
+        target = output / f'{app.slug}-{version}-{abi}.apk'
         shutil.copy2(source, target)
         artifacts.append(target)
 elif options.platform == 'windows':
     bundle = root / 'build' / 'windows' / 'x64' / 'runner' / 'Release'
-    # 番茄内容引擎要和主程序同级，Dart 侧才找得到；缺产物时番茄源仍显示，
-    # 只是播放会提示引擎未就绪，因此这里不做硬性要求。
-    fanqie_engine = fanqie_engine_binary('windows')
-    if fanqie_engine is not None:
-        shutil.copy2(fanqie_engine, bundle / 'fanqie_engine.exe')
-    else:
-        print('未找到 Windows 版番茄引擎，本次包内不含引擎（番茄源仍会显示）。')
-    required = ['zhenguojian.exe', 'duanju_core.dll', 'flutter_windows.dll', 'libffmpegkit.dll',
+    bundle_executable = 'guoapp.exe'
+    required = [bundle_executable, 'duanju_core.dll', 'flutter_windows.dll', 'libffmpegkit.dll',
                 'libmpv-2.dll', 'msvcp140.dll', 'vcruntime140.dll',
                 'data/icudtl.dat', 'data/app.so']
     missing = [name for name in required if not (bundle / name).is_file()]
     if missing:
         raise SystemExit('Windows 安装包缺少文件：' + ', '.join(missing))
-    target = output / f'{variant.slug}-{version}-windows-x64.zip'
+    built = windows_product_name(bundle / bundle_executable)
+    if built != app.bundle_identifier:
+        raise SystemExit(f'构建产物是 {built or "未知版本"}，与要打包的 {app.bundle_identifier} 不符，'
+                         '请先用 build_windows.py 以相同参数重新构建。')
+    target = output / f'{app.slug}-{version}-windows-x64.zip'
     with zipfile.ZipFile(target, 'w', zipfile.ZIP_DEFLATED) as archive:
         for source in sorted(bundle.rglob('*')):
             if source.is_file():
                 relative = source.relative_to(bundle).as_posix()
-                if relative == 'zhenguojian.exe':
-                    relative = variant.slug + '.exe'
+                if relative == bundle_executable:
+                    relative = app.slug + '.exe'
                 archive.write(source, relative)
+        archive.writestr('userdata/', '')
     artifacts.append(target)
+    artifacts.append(package_windows_installer(bundle, bundle_executable))
 else:
     application = root / 'build' / 'macos' / 'Build' / 'Products' / 'Release' / 'duanju_app.app'
     if not application.is_dir():

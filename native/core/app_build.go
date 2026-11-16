@@ -1,139 +1,29 @@
 package core
 
-import (
-	"errors"
-	"strings"
-)
-
-var buildAllSources = "false"
+import "errors"
 
 var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
-// buildFlavorSpec 是站源模块在源码里声明的版本裁剪（上游契约）。
-//
-// guoappxp 原来靠 `-X buildAllSources=true` 在链接期决定「全站源 / 精简版」，
-// 粒度是整个二进制的开与关。上游改成由站源模块自己用 core.RegisterFlavor
-// 声明「我属于哪个版本、包含哪些源」，于是同一个站源仓库可以同时给出红果鉴
-// 与真果鉴两套裁剪，不必再靠构建参数。
-//
-// 两者共存：有 flavor 注册时以它为准，没注册时回落到 buildAllSources。
-type buildFlavorSpec struct {
-	name    string
-	sources []string
-}
-
-var activeFlavor buildFlavorSpec
-
-// RegisterFlavor 由站源模块在 init 里调用，声明该模块属于哪个版本、包含哪些源。
-// 同一个二进制里出现两个不同的 flavor 直接 panic：版本归属必须唯一。
-func RegisterFlavor(name string, sources []string) {
-	if activeFlavor.name != "" && activeFlavor.name != name {
-		panic("core.RegisterFlavor: conflicting flavors " + activeFlavor.name + " and " + name)
-	}
-	activeFlavor = buildFlavorSpec{name: name, sources: append(activeFlavor.sources, sources...)}
-}
-
-// BuildFlavor 返回当前二进制声明的版本名（未声明时为空）。
-func BuildFlavor() string { return activeFlavor.name }
-
-// 已下线的站源：站点长期不可达、采集接口关闭，或体验明显不达标，
-// 从产品里整体移除。ID 常量与归一化映射仍保留，让旧收藏、播放记录里的这些
-// ID 能被正确识别（不至于变成「未知源」而丢失历史数据），但它们一律判定为
-// 不可用，列表、授权、聚合搜索、目录、取流都不会再带上它们。
-var removedProviderSources = map[string]bool{
-	sourceHeitao:  true,
-	sourceGuanguo: true,
-	sourceFaguo:   true,
-	sourceWuguo:   true,
-	// 芽果 / 猫果 / 河果 / 星果 / 牛果：接口频繁失效或内容质量差，整体下线。
-	sourceYaguo:   true,
-	sourceMaoguo:  true,
-	sourceHeguo:   true,
-	sourceXingguo: true,
-	sourceNiuguo:  true,
-}
-
-// 示例 / 测试站源：上游仓库里的 sources_example 是「站源怎么写」的活文档，
-// 编译期可以编进来验证契约，但它不是产品内容，绝不能出现在站源下拉框、
-// 聚合搜索或任何默认列表里。
-//
-// 判定用 ID + 描述符双重条件：ID 命中，或描述符自称示例（Description 含
-// 「示例」「假数据」/ AllowEmptyCatalog 且无 BaseURL）。上游的 example 源
-// 描述符写的是「假数据示例站源，不访问网络」，三种特征都命中。
-var demoProviderSources = map[string]bool{
-	"example": true,
-}
-
-func isDemoProviderSource(descriptor SourceDescriptor) bool {
-	id := canonicalProviderSource(descriptor.ID)
-	if demoProviderSources[id] {
-		return true
-	}
-	text := descriptor.Name + descriptor.Description
-	if strings.Contains(text, "示例") || strings.Contains(text, "假数据") {
-		return true
-	}
-	// 没有站点地址却声明允许空目录，是「纯本地假数据」的典型特征。
-	return descriptor.AllowEmptyCatalog && strings.TrimSpace(descriptor.BaseURL) == ""
-}
-
 func nativeSourceAvailable(source string) bool {
-	source = canonicalProviderSource(source)
-	// 站源模块（模块页装上的站源）不受编译期版本裁剪门控：它本来就不在源清单里，
-	// 用户装上就应该能用，红果鉴与真果鉴一致。模块与本体的同名源各占一个 ID
-	// （模块改名成 mod-<标识>），因此这里的提前放行不会让本体源变得可见。
-	if isModuleProviderSource(source) {
-		return true
-	}
-	// 已下线的站源一律不可用，优先于内置源与全站源门控。
-	if removedProviderSources[source] {
-		return false
-	}
-	// 示例源只用于编译期验证契约，任何版本都不进产品列表。
-	if descriptor, ok := sourceDescriptorOf(source); ok && isDemoProviderSource(descriptor) {
-		return false
-	}
-	// 站源模块用 RegisterFlavor 声明了版本归属时以它为准（上游契约）：
-	// 不在该版本清单里的源即使编进了二进制也不可见。
-	if len(activeFlavor.sources) > 0 {
-		if source == sourceHongguo || source == sourceFanqie {
-			return true
-		}
-		for _, allowed := range activeFlavor.sources {
-			if canonicalProviderSource(allowed) == source {
-				return true
-			}
-		}
-		return false
-	}
-	// 红果与番茄是 core 内置源，红果鉴 / 真果鉴都保留。番茄短剧实现已回迁到
-	// core（见 provider_fanqie.go / source_fanqie_builtin.go），不依赖外置站源
-	// 模块，因此不再随 buildAllSources 门控。注意与「番茄听书」区分——听书走
-	// audiobookFetch/Text/Media 独立 action，不经本函数，两种版本都保留。
-	if source == sourceHongguo || source == sourceFanqie {
-		return true
-	}
-	if isCustomMaccmsSource(source) {
-		return isHuangguoProviderSource(source)
-	}
-	return buildAllSources == "true" && isHuangguoProviderSource(source)
+	_, ok := registeredDescriptor(canonicalProviderSource(source))
+	return ok
 }
 
-func nativeDramaAvailable(drama nativeDrama) bool {
-	source, _, valid := splitProviderDramaID(drama.ID)
+func nativeDramaAvailable(drama LibraryDrama) bool {
+	source, _, valid := SplitProviderDramaID(drama.ID)
 	return valid && nativeSourceAvailable(source) &&
 		(drama.Source == "" || canonicalProviderSource(drama.Source) == source)
 }
 
-func nativeChapterAvailable(drama nativeDrama, chapter Chapter) bool {
+func nativeChapterAvailable(drama LibraryDrama, chapter Chapter) bool {
 	if !nativeDramaAvailable(drama) {
 		return false
 	}
-	source, _, _ := splitProviderDramaID(drama.ID)
+	source, _, _ := SplitProviderDramaID(drama.ID)
 	if chapter.Source != "" && canonicalProviderSource(chapter.Source) != source {
 		return false
 	}
-	if chapterSource, _, valid := splitProviderDramaID(chapter.ID); valid && chapterSource != source {
+	if chapterSource, _, valid := SplitProviderDramaID(chapter.ID); valid && chapterSource != source {
 		return false
 	}
 	return true
@@ -143,10 +33,20 @@ func nativeDownloadAvailable(job nativeDownloadJob) bool {
 	return nativeChapterAvailable(job.Drama, job.Chapter)
 }
 
+func nativeActionSource(input nativeInput) string {
+	if input.Source != "" {
+		return canonicalProviderSource(input.Source)
+	}
+	if input.Action == "soraniAccount" {
+		return "sorani"
+	}
+	return ""
+}
+
 func nativeAuthorizeInput(input nativeInput) error {
 	switch input.Action {
-	case "recommendations", "cachedRecommendations", "suggestions", "danmaku":
-		if !nativeSourceAvailable(sourceHongguo) {
+	case "recommendations", "cachedRecommendations", "suggestions", "soraniAccount", "sourceAccount":
+		if !nativeSourceAvailable(nativeActionSource(input)) {
 			return errNativeBuildSource
 		}
 	case "rankings":
@@ -154,15 +54,15 @@ func nativeAuthorizeInput(input nativeInput) error {
 		if !found || !nativeSourceAvailable(board.Source) {
 			return errNativeBuildSource
 		}
-	case "soraniAccount":
-		if !nativeSourceAvailable(sourceSorani) {
-			return errNativeBuildSource
-		}
-	case "catalog", "cached", "categories", "sourceStatus":
+	case "catalog", "cached", "categories":
 		if !nativeSourceAvailable(input.Source) {
 			return errNativeBuildSource
 		}
-	case "cover", "prepareCover", "detail", "metadata", "followCheck", "resolve", "preload", "enqueueDownloads", "localPlayback":
+	case "cast":
+		if input.Command == "play" && !nativeChapterAvailable(input.Drama, input.Chapter) {
+			return errNativeBuildSource
+		}
+	case "cover", "prepareCover", "detail", "seasons", "metadata", "followCheck", "resolve", "preload", "enqueueDownloads", "localPlayback":
 		if !nativeDramaAvailable(input.Drama) {
 			return errNativeBuildSource
 		}
@@ -171,13 +71,4 @@ func nativeAuthorizeInput(input nativeInput) error {
 		}
 	}
 	return nil
-}
-
-// sourceDescriptorOf 取某个站源注册的描述符，未注册返回 false。
-func sourceDescriptorOf(source string) (SourceDescriptor, bool) {
-	source = canonicalProviderSource(source)
-	sourceRegistry.RLock()
-	defer sourceRegistry.RUnlock()
-	descriptor, registered := sourceRegistry.descriptors[source]
-	return descriptor, registered
 }

@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 
 import '../app_scope.dart';
+import '../theme/motion.dart';
 import 'bar_button.dart';
 import 'choice_panel.dart';
 import 'focus_ring.dart';
@@ -30,7 +31,10 @@ class CategoryTabs<T> extends StatefulWidget {
 class _CategoryTabsState<T> extends State<CategoryTabs<T>> {
   final _scroll = ScrollController();
   final _keys = <T, GlobalKey>{};
+  final _row = GlobalKey();
   bool _overflows = false;
+  Rect? _indicator;
+  bool _sliding = false;
 
   @override
   void didUpdateWidget(covariant CategoryTabs<T> oldWidget) {
@@ -57,6 +61,25 @@ class _CategoryTabsState<T> extends State<CategoryTabs<T>> {
     );
   }
 
+  void _measure(double inset) {
+    if (!mounted) return;
+    final tab = _keys[widget.selected]?.currentContext?.findRenderObject();
+    final row = _row.currentContext?.findRenderObject();
+    if (tab is! RenderBox || row is! RenderBox || !tab.attached) return;
+    final origin = tab.localToGlobal(Offset.zero, ancestor: row);
+    final rect = Rect.fromLTWH(
+      origin.dx + inset,
+      0,
+      tab.size.width - inset * 2,
+      0,
+    );
+    if (rect == _indicator) return;
+    setState(() {
+      _sliding = _indicator != null;
+      _indicator = rect;
+    });
+  }
+
   bool _metricsChanged(ScrollMetricsNotification notification) {
     final overflows = notification.metrics.maxScrollExtent > 0;
     if (overflows != _overflows) setState(() => _overflows = overflows);
@@ -76,6 +99,8 @@ class _CategoryTabsState<T> extends State<CategoryTabs<T>> {
       (value, _) => !widget.options.any((option) => option.value == value),
     );
     final television = form == FormFactor.television;
+    WidgetsBinding.instance.addPostFrameCallback((_) => _measure(padding));
+    final indicator = _indicator;
     final showAll = switch (widget.onShowAll) {
       final onShowAll? when _overflows || widget.alwaysShowAll => Padding(
         padding: EdgeInsets.only(right: television ? 10 : 0),
@@ -102,28 +127,53 @@ class _CategoryTabsState<T> extends State<CategoryTabs<T>> {
               children: [
                 NotificationListener<ScrollMetricsNotification>(
                   onNotification: _metricsChanged,
-                  // 用 SingleChildScrollView 一次性布局全部 tab（只有几十个）：
-                  // ListView 即使给全 children 也只创建视口内的 Element，
-                  // 从「全部分类」面板跳到很靠后的分类时 GlobalKey 没有
-                  // context，ensureVisible 会失效，右侧分类就跟随不过来。
                   child: SingleChildScrollView(
                     controller: _scroll,
                     scrollDirection: Axis.horizontal,
                     padding: EdgeInsets.only(
                       left: form == FormFactor.phone ? 4 : 0,
                     ),
-                    child: Row(
-                      mainAxisSize: MainAxisSize.min,
+                    child: Stack(
+                      key: _row,
                       children: [
-                        for (final option in widget.options)
-                          KeyedSubtree(
-                            key: _keys.putIfAbsent(option.value, GlobalKey.new),
-                            child: _Tab(
-                              label: option.label,
-                              selected: option.value == widget.selected,
-                              fontSize: fontSize,
-                              padding: padding,
-                              onTap: () => widget.onSelected(option.value),
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.stretch,
+                          children: [
+                            for (final option in widget.options)
+                              KeyedSubtree(
+                                key: _keys.putIfAbsent(
+                                  option.value,
+                                  GlobalKey.new,
+                                ),
+                                child: _Tab(
+                                  label: option.label,
+                                  selected: option.value == widget.selected,
+                                  fontSize: fontSize,
+                                  padding: padding,
+                                  onTap: () => widget.onSelected(option.value),
+                                ),
+                              ),
+                          ],
+                        ),
+                        if (indicator != null)
+                          AnimatedPositioned(
+                            duration: _sliding
+                                ? Motion.of(context, Motion.medium)
+                                : Duration.zero,
+                            curve: Motion.standard,
+                            left: indicator.left,
+                            width: indicator.width,
+                            bottom: 0,
+                            height: 3,
+                            child: IgnorePointer(
+                              child: DecoratedBox(
+                                decoration: BoxDecoration(
+                                  color: colors.primary,
+                                  borderRadius: const BorderRadius.vertical(
+                                    top: Radius.circular(3),
+                                  ),
+                                ),
+                              ),
                             ),
                           ),
                       ],
@@ -187,35 +237,15 @@ class _Tab extends StatelessWidget {
           borderRadius: BorderRadius.circular(8),
           child: Padding(
             padding: EdgeInsets.symmetric(horizontal: padding),
-            child: Stack(
-              alignment: Alignment.center,
-              children: [
-                Text(
-                  label,
-                  style: TextStyle(
-                    fontSize: fontSize,
-                    fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
-                    color: selected
-                        ? colors.onSurface
-                        : colors.onSurfaceVariant,
-                  ),
+            child: Center(
+              child: Text(
+                label,
+                style: TextStyle(
+                  fontSize: fontSize,
+                  fontWeight: selected ? FontWeight.w700 : FontWeight.w500,
+                  color: selected ? colors.onSurface : colors.onSurfaceVariant,
                 ),
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 0,
-                  height: 3,
-                  child: AnimatedContainer(
-                    duration: const Duration(milliseconds: 150),
-                    decoration: BoxDecoration(
-                      color: selected ? colors.primary : Colors.transparent,
-                      borderRadius: const BorderRadius.vertical(
-                        top: Radius.circular(3),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ),
         ),

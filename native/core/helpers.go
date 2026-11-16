@@ -1,6 +1,10 @@
 package core
 
 import (
+	"bytes"
+	"crypto/rand"
+	"encoding/hex"
+	"errors"
 	"net/url"
 
 	"regexp"
@@ -9,12 +13,11 @@ import (
 )
 
 var (
-	badNameChars = regexp.MustCompile(`[\\/\?%\*:|"<>\x00-\x1f]+`)
-	spaceChars   = regexp.MustCompile(`\s+`)
-	rePublicURL  = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s"'<>]+`)
+	spaceChars  = regexp.MustCompile(`\s+`)
+	rePublicURL = regexp.MustCompile(`(?i)(?:https?|socks5h?)://[^\s"'<>]+`)
 )
 
-func publicError(err error) error {
+func PublicError(err error) error {
 	if err == nil {
 		return nil
 	}
@@ -48,11 +51,40 @@ func redactErrorString(s string) string {
 	})
 }
 
-func truncate(s string, n int) string {
+func Truncate(s string, n int) string {
 	s = strings.TrimSpace(s)
 	r := []rune(s)
 	if len(r) <= n {
 		return s
 	}
 	return string(r[:n]) + "..."
+}
+
+func Pkcs7Unpad(src []byte, blockSize int) ([]byte, error) {
+	if len(src) == 0 || len(src)%blockSize != 0 {
+		return nil, errors.New("invalid pkcs7 length")
+	}
+	pad := int(src[len(src)-1])
+	if pad == 0 || pad > blockSize || pad > len(src) {
+		return nil, errors.New("invalid pkcs7 padding")
+	}
+	for _, v := range src[len(src)-pad:] {
+		if int(v) != pad {
+			return nil, errors.New("invalid pkcs7 padding bytes")
+		}
+	}
+	return src[:len(src)-pad], nil
+}
+
+func Pkcs7Pad(src []byte, blockSize int) []byte {
+	pad := blockSize - len(src)%blockSize
+	return append(src, bytes.Repeat([]byte{byte(pad)}, pad)...)
+}
+
+func RandomHex(n int) string {
+	b := make([]byte, n)
+	if _, err := rand.Read(b); err != nil {
+		return ""
+	}
+	return hex.EncodeToString(b)
 }

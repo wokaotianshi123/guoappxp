@@ -1,6 +1,6 @@
 package core
 
-// m3u8 广告分片过滤（去广告）。
+// m3u8 广告分片过滤（去广告）。移植自 guoappxp。
 //
 // 只处理媒体分片清单（media playlist，含 #EXTINF）；master 多码率清单
 // 原样放行，由上层逐变体各自处理。判定思路：

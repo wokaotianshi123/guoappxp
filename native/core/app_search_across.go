@@ -36,7 +36,7 @@ var errSearchUnsupported = errors.New("站源暂不支持在线搜索")
 type nativeSearchAcrossResult struct {
 	Search   string            `json:"search"`
 	Query    string            `json:"query"`
-	Items    []nativeDrama     `json:"items"`
+	Items    []LibraryDrama     `json:"items"`
 	Sources  []string          `json:"sources"`
 	Pending  []string          `json:"pending,omitempty"`
 	Failures map[string]string `json:"failures,omitempty"`
@@ -48,37 +48,21 @@ type nativeSearchAcrossResult struct {
 
 // nativeSourceSupportsSearch 判断站源是否提供在线搜索接口。
 // 这里只依据站源自身能力，不再把「已加载的本地资源」当作搜索来源。
+//
+// guoappxpx 的站源一律经 Provider 注册表提供（本体不内置任何站源，站源以
+// 模块或自定义源形式登记），因此这里只做「是否已注册」这一道判断：真正没实现
+// Searcher 的源由 providerSearch 返回 errSearchUnsupported，单源搜索给出明确
+// 提示，跨源聚合静默跳过。
 func nativeSourceSupportsSearch(source string) bool {
-	switch canonicalProviderSource(source) {
-	case sourceHongguo, sourceHuangju, sourceYeguo, sourceJinguoDuanju, sourceJinguo,
-		sourceBeabox, sourceDSD, sourceSorani,
-		sourceGuipian, sourceHanxiaoquan, sourceA123, sourceIkanbot, sourceFanqie,
-		sourceXChina, sourceTheporny, sourceHuangguoAI:
-		return true
-	}
-	if isDuanjuProviderSource(source) {
-		return duanjuSupportsSearch(source)
-	}
-	// 外置源模块里注册过的站源一律放行到派发层：真正没实现 Searcher 的源
-	// 由 providerSearch 返回 errSearchUnsupported，单源搜索给出明确提示，
-	// 跨源聚合静默跳过。这样新接入的站源不必再回来补这份白名单。
-	return registeredProviderSource(source)
+	return registeredProviderSource(canonicalProviderSource(source)) ||
+		isCustomMaccmsSource(canonicalProviderSource(source))
 }
 
 // nativeSearchSourceLabel 返回站源的展示名，供提示与排序使用。
 func nativeSearchSourceLabel(source string) string {
 	source = canonicalProviderSource(source)
-	if isDuanjuProviderSource(source) {
-		return duanjuSourceName(source)
-	}
-	if source == sourceFanqie {
-		return "番茄"
-	}
-	if source == sourceXChina {
-		return "XChina"
-	}
-	if source == sourceTheporny {
-		return "Theporny"
+	if descriptor, ok := registeredDescriptor(source); ok && descriptor.Name != "" {
+		return descriptor.Name
 	}
 	return source
 }
@@ -88,7 +72,7 @@ func nativeSearchSourceLabel(source string) string {
 // 由调用方决定是提示用户（单源）还是静默跳过（跨源）。
 func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, query string, page int) (nativeCatalogResult, error) {
 	source = canonicalProviderSource(source)
-	result := nativeCatalogResult{Items: []nativeDrama{}, Page: page}
+	result := nativeCatalogResult{Items: []LibraryDrama{}, Page: page}
 	query = strings.TrimSpace(query)
 	if query == "" {
 		return result, nil
@@ -105,60 +89,10 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 	var err error
 	if provider, ok := d.sourceProvider(source); ok {
 		items, more, err = providerSearch(ctx, provider, page, query)
+	} else if isCustomMaccmsSource(source) {
+		items, err = d.searchMaccms(ctx, source, query)
 	} else {
-		switch source {
-		case sourceHongguo:
-			// 红果的搜索接口是「首屏 + 翻页」两段式，首屏还能给出「结果被截断」的提示。
-			var entry hongguoSearchEntry
-			if page == 1 {
-				entry, err = d.searchHongguoDramas(ctx, query)
-			} else if keyword, keywordErr := hongguoSearchKeyword(query); keywordErr != nil {
-				err = keywordErr
-			} else {
-				entry, err = d.fetchHongguoSearchPage(ctx, keyword, page)
-			}
-			if err != nil {
-				return result, err
-			}
-			for _, drama := range entry.Dramas {
-				result.Items = append(result.Items, nativeNormalize(drama))
-			}
-			result.Warning, result.HasMore = entry.Warning, entry.HasMore
-			return result, nil
-		case sourceGuipian:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = providerSearch(ctx, provider, page, query)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceA123:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = providerSearch(ctx, provider, page, query)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceIkanbot:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = providerSearch(ctx, provider, page, query)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceXChina:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = providerSearch(ctx, provider, page, query)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceHuangguoAI:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, more, err = providerSearch(ctx, provider, page, query)
-			} else {
-				err = errSourceNotCompiled
-			}
-		default:
-			// 短剧家族与自定义 MacCMS 源共用同一套搜索接口（isDuanjuProviderSource 已含自定义源）。
-			items, err = d.searchDuanju(ctx, source, query)
-		}
+		err = errNativeBuildSource
 	}
 	if err != nil {
 		return result, err
@@ -167,7 +101,7 @@ func (engine *nativeEngine) nativeSearchSource(ctx context.Context, source, quer
 		if drama.ID == "" {
 			continue
 		}
-		result.Items = append(result.Items, nativeNormalize(drama))
+		result.Items = append(result.Items, NativeNormalize(drama))
 	}
 	result.HasMore = more
 	return result, nil
@@ -180,13 +114,13 @@ type nativeSearchSession struct {
 	query    string
 	mu       sync.Mutex
 	order    []string
-	items    map[string][]nativeDrama
+	items    map[string][]LibraryDrama
 	done     map[string]bool
 	failures map[string]string
 	cancel   context.CancelFunc
 	started  time.Time
 
-	merged    []nativeDrama
+	merged    []LibraryDrama
 	mergeDone int
 }
 
@@ -200,7 +134,7 @@ func nativeSearchID() string {
 }
 
 // finish 落地一个站源的结果（成功或失败），同一个站源只认第一次。
-func (session *nativeSearchSession) finish(source string, items []nativeDrama, err error) {
+func (session *nativeSearchSession) finish(source string, items []LibraryDrama, err error) {
 	session.mu.Lock()
 	defer session.mu.Unlock()
 	if session.done[source] {
@@ -219,7 +153,7 @@ func (session *nativeSearchSession) finish(source string, items []nativeDrama, e
 		session.failures[source] = "搜索超时"
 		return
 	}
-	session.failures[source] = publicError(err).Error()
+	session.failures[source] = err.Error()
 }
 
 // snapshot 生成当前的聚合快照。合并只做增量：已算过的不再重算，
@@ -252,7 +186,7 @@ func (session *nativeSearchSession) snapshot() nativeSearchAcrossResult {
 			Total:   len(session.order), Done: done, Finished: finished,
 		}
 	}
-	var all []nativeDrama
+	var all []LibraryDrama
 	for _, source := range session.order {
 		all = append(all, session.items[source]...)
 	}
@@ -287,7 +221,7 @@ func nativeSearchTargets(raw []string) []string {
 		if source == "" || seen[source] {
 			continue
 		}
-		if !isHuangguoProviderSource(source) || !nativeSourceAvailable(source) {
+		if !nativeSourceAvailable(source) {
 			continue
 		}
 		seen[source] = true
@@ -326,7 +260,7 @@ func (engine *nativeEngine) nativeSearchStart(input nativeInput) (nativeSearchAc
 		id:       nativeSearchID(),
 		query:    query,
 		order:    sources,
-		items:    map[string][]nativeDrama{},
+		items:    map[string][]LibraryDrama{},
 		done:     map[string]bool{},
 		failures: map[string]string{},
 		cancel:   cancel,
@@ -452,7 +386,7 @@ func firstSearchKey(failures map[string]string, label string) string {
 }
 
 // nativeSearchYear 从上线日期里取出年份，取不到返回空串。
-func nativeSearchYear(drama nativeDrama) string {
+func nativeSearchYear(drama LibraryDrama) string {
 	date := drama.OnlineDate
 	for index := 0; index+4 <= len(date); index++ {
 		year := date[index : index+4]
@@ -475,14 +409,14 @@ func nativeSearchYear(drama nativeDrama) string {
 
 // nativeSearchKey 按「归一标题 + 年份」生成分组键。
 // 标题归一复用 hongguoSearchText：NFKC 折叠、去掉空白与标点、统一小写。
-func nativeSearchKey(drama nativeDrama) string {
-	return hongguoSearchText(drama.Title) + "|" + nativeSearchYear(drama)
+func nativeSearchKey(drama LibraryDrama) string {
+	return NativeSearchText(drama.Title) + "|" + nativeSearchYear(drama)
 }
 
 // nativeSearchCanMerge 判断两部剧是否可视为同一部（集数维度）。
 // 集数缺失或相等直接合并；都有集数时，差异超过 25% 视为不同版本，避免把
 // 「12 集短剧」和「80 集长剧」错误合成一条。
-func nativeSearchCanMerge(base, other nativeDrama) bool {
+func nativeSearchCanMerge(base, other LibraryDrama) bool {
 	if base.Episodes == 0 || other.Episodes == 0 || base.Episodes == other.Episodes {
 		return true
 	}
@@ -498,7 +432,7 @@ func nativeSearchCanMerge(base, other nativeDrama) bool {
 }
 
 // nativeSearchScore 评估条目完整度，用于挑选每组的展示主条目。
-func nativeSearchScore(drama nativeDrama) int {
+func nativeSearchScore(drama LibraryDrama) int {
 	score := 0
 	if drama.Cover != "" {
 		score += 4
@@ -523,10 +457,10 @@ func nativeSearchScore(drama nativeDrama) int {
 //
 // sorted 为 false 时保持「首次出现」的顺序，用于流式搜索：已有条目不会因为新
 // 站源陆续返回而整屏重排；全部搜完后（sorted=true）再按完整度排序。
-func nativeSearchMerge(items []nativeDrama, sorted bool) []nativeDrama {
+func nativeSearchMerge(items []LibraryDrama, sorted bool) []LibraryDrama {
 	type group struct {
-		primary nativeDrama
-		peers   []nativeDrama
+		primary LibraryDrama
+		peers   []LibraryDrama
 		score   int
 	}
 	groups := map[string][]*group{}
@@ -562,13 +496,13 @@ func nativeSearchMerge(items []nativeDrama, sorted bool) []nativeDrama {
 			target.peers = append(target.peers, item)
 		}
 	}
-	merged := make([]nativeDrama, 0, len(order))
+	merged := make([]LibraryDrama, 0, len(order))
 	for _, key := range order {
 		for _, entry := range groups[key] {
 			primary := entry.primary
 			seenID := map[string]bool{primary.ID: true}
 			seenSource := map[string]bool{primary.Source: true}
-			peers := make([]nativeDrama, 0, len(entry.peers))
+			peers := make([]LibraryDrama, 0, len(entry.peers))
 			for _, peer := range entry.peers {
 				// 同一站源只保留一个副本，避免同一部剧被重复罗列。
 				if seenID[peer.ID] || seenSource[peer.Source] {

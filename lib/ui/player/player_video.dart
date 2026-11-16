@@ -10,16 +10,6 @@ import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import 'playback_handle.dart';
 
-/// 播放页的视频画面。
-///
-/// 除了套一层 [Video]，在 Windows 上还会按「画面实际显示的大小」重建渲染
-/// 缓冲：media_kit 默认永远按视频原始分辨率（如 1080×1920）渲染，再由 GPU
-/// 缩到窗口大小，窗口越小浪费越大。这里把显示尺寸乘上设备像素比，换算成
-/// 需要的输出像素数，并且不超过原始分辨率——小窗和普通窗口播放时显卡占用
-/// 明显更低，最大化 / 全屏时画面通常已经不小于原始分辨率，占用基本不变。
-///
-/// 尺寸变化不会立刻重建（拖动窗口时会每帧变一次），而是等 300ms 静下来再
-/// 应用一次，避免边拖边重建把画面拖卡。
 class PlayerVideo extends StatelessWidget {
   const PlayerVideo({
     super.key,
@@ -27,12 +17,8 @@ class PlayerVideo extends StatelessWidget {
     required this.player,
     this.fit = VideoFit.auto,
   });
-
   final PlaybackHandle handle;
   final Player player;
-
-  /// 画面比例：按比例算出画面实际显示的大小，再交给 [OverflowBox] 定位、
-  /// [ClipRect] 裁切，弹幕区域也用同一个比例，保证跟着画面走。
   final VideoFit fit;
 
   @override
@@ -126,9 +112,6 @@ class _OutputSizeState extends State<_OutputSize> {
   Widget build(BuildContext context) => widget.child;
 }
 
-/// 每个 [VideoController] 只维护一份输出尺寸：同一个 controller 可能同时被
-/// 播放页和小窗引用（例如画中画接管），取其中最大的那个显示尺寸即可，别互相
-/// 覆盖成更小的尺寸导致画面发糊。
 class _VideoOutput {
   _VideoOutput(this.controller) {
     _subscription = controller.player.stream.videoParams.listen(

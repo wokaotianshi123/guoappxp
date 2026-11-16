@@ -1,18 +1,11 @@
 import java.util.Properties
-import java.util.Base64
 
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-val dartDefines = providers.gradleProperty("dart-defines").orNull.orEmpty()
-    .split(",").filter { it.isNotEmpty() }
-    .associate {
-        val decoded = String(Base64.getDecoder().decode(it), Charsets.UTF_8)
-        decoded.substringBefore("=") to decoded.substringAfter("=", "")
-    }
-val allSources = dartDefines["ALL_SOURCES"] == "true"
+val appPackageName = System.getenv("PACKAGE_NAME")?.trim()?.takeIf { it.isNotEmpty() } ?: "com.guoapp.app"
 
 val releaseKey = rootProject.file("key.properties")
 val releaseProperties = Properties()
@@ -39,13 +32,13 @@ android {
     }
 
     defaultConfig {
-        applicationId = if (allSources) "com.guoapp.all" else "com.guoapp.phoenix"
+        applicationId = appPackageName
         minSdk = 24
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        manifestPlaceholders["appLabel"] = if (allSources) "真果鉴" else "红果鉴"
-        manifestPlaceholders["appBanner"] = if (allSources) "@drawable/tv_banner_all_sources" else "@drawable/tv_banner"
+        manifestPlaceholders["appLabel"] = "小果影视"
+        manifestPlaceholders["appBanner"] = "@drawable/tv_banner"
     }
 
     signingConfigs {

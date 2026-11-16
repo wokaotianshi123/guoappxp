@@ -15,6 +15,7 @@ import (
 	"net/url"
 	"path"
 	"regexp"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -31,7 +32,7 @@ type nativeStreamAsset struct {
 }
 
 type nativeStreamSession struct {
-	credentials  *providerMediaCredentials
+	credentials  *MediaCredentials
 	mu           sync.Mutex
 	assets       map[string]nativeStreamAsset
 	referer      string
@@ -40,6 +41,9 @@ type nativeStreamSession struct {
 	cancel       context.CancelFunc
 	lastUsed     time.Time
 	diagnosticID string
+	cencKey      []byte
+	cencMu       sync.Mutex
+	cenc         *cencLayout
 	adBlock      bool
 }
 
@@ -49,6 +53,8 @@ type nativeStreamServer struct {
 	address    string
 	sessions   map[string]*nativeStreamSession
 	server     *http.Server
+	lan        *http.Server
+	lanPort    int
 
 	// 投屏用：同一个 handler 再挂一份到 0.0.0.0，让局域网里的电视 / 投影仪
 	// 按本机内网地址拉流。只在用户真的投屏时打开，停止投屏就关掉。
@@ -66,6 +72,46 @@ type audiobookStreamEntry struct {
 	address string
 	headers map[string]string
 	used    time.Time
+}
+
+func (stream *nativeStreamServer) lanOrigin(device string) (string, error) {
+	if _, _, err := net.SplitHostPort(device); err != nil {
+		device = net.JoinHostPort(device, "80")
+	}
+	probe, err := net.Dial("udp4", device)
+	if err != nil {
+		return "", fmt.Errorf("无法确定本机在局域网中的地址：%w", err)
+	}
+	host := probe.LocalAddr().(*net.UDPAddr).IP.String()
+	_ = probe.Close()
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.lan == nil {
+		listener, err := net.Listen("tcp4", ":0")
+		if err != nil {
+			return "", fmt.Errorf("无法开启局域网投屏服务：%w", err)
+		}
+		stream.lan = &http.Server{Handler: stream.server.Handler, ReadHeaderTimeout: 5 * time.Second, IdleTimeout: 30 * time.Second, MaxHeaderBytes: 16384}
+		stream.lanPort = listener.Addr().(*net.TCPAddr).Port
+		go func(server *http.Server) { _ = server.Serve(listener) }(stream.lan)
+	}
+	return "http://" + net.JoinHostPort(host, strconv.Itoa(stream.lanPort)), nil
+}
+
+func (stream *nativeStreamServer) lanClose() {
+	stream.mu.Lock()
+	defer stream.mu.Unlock()
+	if stream.lan != nil {
+		_ = stream.lan.Close()
+		stream.lan = nil
+	}
+}
+
+func (stream *nativeStreamServer) lanPlaylist(request *http.Request, body string) string {
+	if origin := "http://" + request.Host; origin != stream.address {
+		return strings.ReplaceAll(body, stream.address+"/", origin+"/")
+	}
+	return body
 }
 
 func (stream *nativeStreamServer) nativeRequest(request *http.Request) (*http.Response, error) {
@@ -116,7 +162,7 @@ func newNativeStreamServer(d *Downloader) (*nativeStreamServer, error) {
 	return stream, nil
 }
 
-func (stream *nativeStreamServer) nativeOpen(media providerMedia, adBlock bool) (string, string) {
+func (stream *nativeStreamServer) nativeOpen(media ProviderMedia, adBlock bool) (string, string) {
 	tokenBytes := make([]byte, 24)
 	if _, err := rand.Read(tokenBytes); err != nil {
 		panic(err)
@@ -176,13 +222,6 @@ func (stream *nativeStreamServer) nativeRelease(token string) {
 }
 
 func (stream *nativeStreamServer) nativeAsset(token string, session *nativeStreamSession, asset nativeStreamAsset) string {
-	return stream.nativeAssetAt(stream.address, token, session, asset)
-}
-
-// nativeAssetAt 用调用方给的基址生成资源地址。本机播放走 127.0.0.1，
-// 投屏时必须换成「手机内网 IP + 投屏端口」，否则电视拿到的是它自己的
-// localhost；同一个会话因此在两个监听上共用资源表，只有前缀不同。
-func (stream *nativeStreamServer) nativeAssetAt(base, token string, session *nativeStreamSession, asset nativeStreamAsset) string {
 	digest := sha256.Sum256([]byte(asset.address + "\x00" + asset.contentType))
 	extension := ".ts"
 	if parsed, err := url.Parse(asset.address); err == nil {
@@ -205,16 +244,10 @@ func (stream *nativeStreamServer) nativeAssetAt(base, token string, session *nat
 		session.assets[id] = asset
 	}
 	session.mu.Unlock()
-	return base + "/" + token + "/" + id
+	return stream.address + "/" + token + "/" + id
 }
 
 func (stream *nativeStreamServer) nativeRewrite(token string, session *nativeStreamSession, body, base string) (string, error) {
-	return stream.nativeRewriteAt(stream.address, token, session, body, base)
-}
-
-// nativeRewriteAt 的 publicBase 决定播放列表里写回的绝对地址前缀：本机播放是
-// 127.0.0.1，投屏请求进来时用请求的 Host（内网 IP），两种客户端各拿各的。
-func (stream *nativeStreamServer) nativeRewriteAt(publicBase, token string, session *nativeStreamSession, body, base string) (string, error) {
 	var output []string
 	nextPlaylist := false
 	for _, line := range strings.Split(strings.ReplaceAll(body, "\r\n", "\n"), "\n") {
@@ -232,7 +265,7 @@ func (stream *nativeStreamServer) nativeRewriteAt(publicBase, token string, sess
 				return ""
 			}
 			address := parsed.ResolveReference(relative).String()
-			if !isProviderHTTPMediaURL(address) {
+			if !IsProviderHTTPMediaURL(address) {
 				return ""
 			}
 			kind := "segment"
@@ -249,7 +282,7 @@ func (stream *nativeStreamServer) nativeRewriteAt(publicBase, token string, sess
 				asset.data = append([]byte{}, session.key...)
 				asset.contentType = "application/octet-stream"
 			}
-			return stream.nativeAssetAt(publicBase, token, session, asset)
+			return stream.nativeAsset(token, session, asset)
 		}
 		if text != "" && !strings.HasPrefix(text, "#") {
 			contentType := ""
@@ -328,12 +361,6 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	stop := context.AfterFunc(session.ctx, cancel)
 	defer stop()
 	writer.Header().Set("Cache-Control", "no-store")
-	// 播放列表里写回的绝对地址跟着请求来源走：本机播放是 127.0.0.1，投屏时
-	// 电视按内网地址请求，只有用请求 Host 才能让两边都拉到同一份资源。
-	publicBase := stream.address
-	if host := request.Host; host != "" {
-		publicBase = "http://" + host
-	}
 	if len(asset.data) > 0 && asset.total > int64(len(asset.data)) {
 		if stream.nativeServePrefix(ctx, writer, request, session, asset) {
 			return
@@ -342,7 +369,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	}
 	if len(asset.data) > 0 {
 		if strings.Contains(asset.contentType, "mpegurl") {
-			body, err := stream.nativeRewriteAt(publicBase, parts[0], session, nativeAdCleaned(session, string(asset.data), asset.address), asset.address)
+			body, err := stream.nativeRewrite(parts[0], session, nativeAdCleaned(session, string(asset.data), asset.address), asset.address)
 			if err != nil {
 				stream.nativeLog(info, "playlist_rewrite", asset.address, "kind="+nativePlaylistKind(string(asset.data))+" error="+nativeStreamError(err), 0, "")
 				http.Error(writer, err.Error(), http.StatusBadGateway)
@@ -350,7 +377,7 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 			}
 			writer.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
 			if request.Method == http.MethodGet {
-				_, _ = io.WriteString(writer, body)
+				_, _ = io.WriteString(writer, stream.lanPlaylist(request, body))
 			}
 		} else {
 			writer.Header().Set("Content-Type", asset.contentType)
@@ -361,12 +388,16 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 		}
 		return
 	}
+	if len(session.cencKey) > 0 && asset.kind == "media" {
+		stream.nativeServeDecrypted(ctx, writer, request, session, asset)
+		return
+	}
 	upstream, err := http.NewRequestWithContext(ctx, request.Method, asset.address, nil)
 	if err != nil {
 		http.Error(writer, "媒体地址无效", http.StatusBadGateway)
 		return
 	}
-	upstream.Header.Set("User-Agent", userAgent)
+	upstream.Header.Set("User-Agent", UserAgent)
 	upstream.Header.Set("Referer", session.referer)
 	for _, name := range []string{"Range", "If-Range"} {
 		if value := request.Header.Get(name); value != "" {
@@ -421,14 +452,14 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 			http.Error(writer, "播放列表无效", http.StatusBadGateway)
 			return
 		}
-		rewritten, err := stream.nativeRewriteAt(publicBase, parts[0], session, text, finalURL.String())
+		rewritten, err := stream.nativeRewrite(parts[0], session, text, finalURL.String())
 		if err != nil {
 			stream.nativeLog(info, "playlist_rewrite", finalURL.String(), "kind="+nativePlaylistKind(text)+" error="+nativeStreamError(err), 0, contentType)
 			http.Error(writer, err.Error(), http.StatusBadGateway)
 			return
 		}
 		writer.Header().Set("Content-Type", "application/vnd.apple.mpegurl")
-		_, _ = io.WriteString(writer, rewritten)
+		_, _ = io.WriteString(writer, stream.lanPlaylist(request, rewritten))
 		return
 	}
 	for _, name := range []string{"Content-Type", "Content-Length", "Content-Range", "Accept-Ranges", "ETag", "Last-Modified"} {
@@ -442,14 +473,8 @@ func (stream *nativeStreamServer) nativeServe(writer http.ResponseWriter, reques
 	}
 }
 
-// nativeOpenAudiobook 把一章在线音频登记成本地明文流，返回带 .m4a 扩展名的地址。
-//
-// 红果 / 番茄的音频地址常是不带扩展名的 CDN 路径，libmpv 在 Windows 上按
-// 扩展名探测不到 mov 容器，CENC 的 decryption_key 就不会落到 mov demuxer，
-// 结果是「时长和进度都有、音频 sample 仍是加密的」——完全静音。短剧之所以
-// 正常，正是因为它播的是本机流服务器给出的带 .mp4 扩展名地址。这里让听书
-// 走同一条链路，并把上游要求的 Referer / User-Agent 交给 Go 侧统一注入，
-// 不再依赖播放器转发 httpHeaders（各平台实现不一致）。
+// nativeOpenAudiobook 给听书音频登记一条本地明文代理，返回带 .m4a 扩展名的
+// 本机地址。移植自 guoappxp。
 func (stream *nativeStreamServer) nativeOpenAudiobook(plan map[string]any) string {
 	address := strings.TrimSpace(mapString(plan, "url"))
 	if address == "" {
@@ -509,7 +534,7 @@ func (stream *nativeStreamServer) nativeServeAudiobook(writer http.ResponseWrite
 		http.Error(writer, "音频地址无效", http.StatusBadGateway)
 		return
 	}
-	upstream.Header.Set("User-Agent", userAgent)
+	upstream.Header.Set("User-Agent", UserAgent)
 	for name, value := range entry.headers {
 		upstream.Header.Set(name, value)
 	}
@@ -518,10 +543,9 @@ func (stream *nativeStreamServer) nativeServeAudiobook(writer http.ResponseWrite
 			upstream.Header.Set(name, value)
 		}
 	}
-	// 这里刻意不走 stream.nativeRequest：那条媒体请求管线会用
-	// mediaRequestHeaders 把 User-Agent 强制改成通用浏览器 UA，红果 / 番茄
-	// 听书 CDN 校验的却是 com.dragon.read，覆盖后拿到的就不是可播放音频。
-	// 听书只需要原样转发，保留登记时自带的请求头即可。
+	// 这里刻意不走 stream.nativeRequest：那条媒体请求管线会把 User-Agent
+	// 强制改成通用浏览器 UA，而红果 / 番茄听书 CDN 校验的是 com.dragon.read，
+	// 覆盖后拿到的就不是可播放音频。听书只需要原样转发。
 	var response *http.Response
 	if stream.downloader.client != nil {
 		client := *stream.downloader.client

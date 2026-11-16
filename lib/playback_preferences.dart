@@ -2,9 +2,9 @@ import 'dart:math' as math;
 import 'dart:ui' show Size;
 
 import 'catalog_sort.dart';
-import 'video_enhancement_preferences.dart';
 
-const playbackSpeeds = [.5, .75, 1.0, 1.25, 1.5, 2.0, 3.0];
+const playbackSpeeds = [.5, .75, 1.0, 1.1, 1.25, 1.5, 2.0, 3.0];
+const boostSpeeds = [1.5, 2.0, 2.5, 3.0, 4.0];
 const danmakuColors = [
   0xFFFFFFFF,
   0xFFFFE066,
@@ -26,7 +26,6 @@ enum DanmakuCoverage {
   final String label;
 }
 
-/// 画面比例：4:3 / 16:9 里的 4 和 16 指长边，竖屏视频按 3:4、9:16 显示。
 enum VideoFit {
   auto('自动'),
   stretch('拉伸'),
@@ -71,12 +70,16 @@ const danmakuStrokeMax = 6.0;
 const danmakuShadowMin = 0.0;
 const danmakuShadowMax = 12.0;
 
+const danmakuSpeedMin = .5;
+const danmakuSpeedMax = 2.0;
+
 const danmakuWordLength = 40;
 const danmakuWordLimit = 60;
 
 class PlaybackPreferences {
   const PlaybackPreferences({
     this.speed = 1,
+    this.boostSpeed = 2,
     this.quality = 0,
     this.autoAdvance = true,
     this.danmaku = true,
@@ -87,14 +90,23 @@ class PlaybackPreferences {
     this.danmakuStroke = 0,
     this.danmakuShadow = 3,
     this.danmakuCoverage = DanmakuCoverage.half,
+    this.danmakuSpeed = 1,
     this.danmakuWords = const [],
     this.preload = true,
-    this.adBlock = true,
-    this.enhancement = const VideoEnhancementPreferences(),
     this.televisionDecoder = TelevisionDecoder.optimized,
+    this.preopen,
+    this.doubleTapSeek = true,
+    this.swipeLevels = true,
     this.swipeEpisodes = false,
     this.progressLine = true,
+    this.showClock = true,
+    this.showNetworkSpeed = true,
+    this.autoHideControls = true,
+    this.hideSystemBars = true,
+    this.portraitStyleForWide = false,
+    this.autoPictureInPicture = false,
     this.videoFit = VideoFit.auto,
+    this.adBlock = true,
   });
 
   final double speed;
@@ -108,22 +120,29 @@ class PlaybackPreferences {
   final double danmakuStroke;
   final double danmakuShadow;
   final DanmakuCoverage danmakuCoverage;
+  final double danmakuSpeed;
+  final double boostSpeed;
+
+  String get boostLabel =>
+      '${boostSpeed % 1 == 0 ? boostSpeed.toInt() : boostSpeed} 倍速';
   final List<String> danmakuWords;
   final bool preload;
-
-  /// 解析时是否尝试跳过源站片头广告；关闭后直接播放原始视频流。
-  final bool adBlock;
-  final VideoEnhancementPreferences enhancement;
   final TelevisionDecoder televisionDecoder;
-
-  /// 手机 / 平板横屏全屏时上下滑动切集；需先关闭「滑动调节亮度 / 音量」。
+  final bool? preopen;
+  final bool doubleTapSeek;
+  final bool swipeLevels;
   final bool swipeEpisodes;
-
-  /// 横屏播放时底部是否显示一条随进度走的细进度线。
   final bool progressLine;
-
-  /// 画面比例，切换后全局记住。
+  final bool showClock;
+  final bool showNetworkSpeed;
+  final bool autoHideControls;
+  final bool hideSystemBars;
+  final bool portraitStyleForWide;
+  final bool autoPictureInPicture;
   final VideoFit videoFit;
+  final bool adBlock;
+
+  bool preopens({required bool television}) => preopen ?? !television;
 
   PlaybackPreferences copyWith({
     double? speed,
@@ -137,14 +156,24 @@ class PlaybackPreferences {
     double? danmakuStroke,
     double? danmakuShadow,
     DanmakuCoverage? danmakuCoverage,
+    double? danmakuSpeed,
+    double? boostSpeed,
     List<String>? danmakuWords,
     bool? preload,
-    bool? adBlock,
-    VideoEnhancementPreferences? enhancement,
     TelevisionDecoder? televisionDecoder,
+    bool? preopen,
+    bool? doubleTapSeek,
+    bool? swipeLevels,
     bool? swipeEpisodes,
     bool? progressLine,
+    bool? showClock,
+    bool? showNetworkSpeed,
+    bool? autoHideControls,
+    bool? hideSystemBars,
+    bool? portraitStyleForWide,
+    bool? autoPictureInPicture,
     VideoFit? videoFit,
+    bool? adBlock,
   }) => PlaybackPreferences(
     speed: speed ?? this.speed,
     quality: quality ?? this.quality,
@@ -157,14 +186,24 @@ class PlaybackPreferences {
     danmakuStroke: danmakuStroke ?? this.danmakuStroke,
     danmakuShadow: danmakuShadow ?? this.danmakuShadow,
     danmakuCoverage: danmakuCoverage ?? this.danmakuCoverage,
+    danmakuSpeed: danmakuSpeed ?? this.danmakuSpeed,
+    boostSpeed: boostSpeed ?? this.boostSpeed,
     danmakuWords: danmakuWords ?? this.danmakuWords,
     preload: preload ?? this.preload,
-    adBlock: adBlock ?? this.adBlock,
-    enhancement: enhancement ?? this.enhancement,
     televisionDecoder: televisionDecoder ?? this.televisionDecoder,
+    preopen: preopen ?? this.preopen,
+    doubleTapSeek: doubleTapSeek ?? this.doubleTapSeek,
+    swipeLevels: swipeLevels ?? this.swipeLevels,
     swipeEpisodes: swipeEpisodes ?? this.swipeEpisodes,
     progressLine: progressLine ?? this.progressLine,
+    showClock: showClock ?? this.showClock,
+    showNetworkSpeed: showNetworkSpeed ?? this.showNetworkSpeed,
+    autoHideControls: autoHideControls ?? this.autoHideControls,
+    hideSystemBars: hideSystemBars ?? this.hideSystemBars,
+    portraitStyleForWide: portraitStyleForWide ?? this.portraitStyleForWide,
+    autoPictureInPicture: autoPictureInPicture ?? this.autoPictureInPicture,
     videoFit: videoFit ?? this.videoFit,
+    adBlock: adBlock ?? this.adBlock,
   );
 
   Map<String, dynamic> toJson() => {
@@ -179,37 +218,47 @@ class PlaybackPreferences {
     'danmakuStroke': danmakuStroke,
     'danmakuShadow': danmakuShadow,
     'danmakuCoverage': danmakuCoverage.name,
+    'danmakuSpeed': danmakuSpeed,
+    'boostSpeed': boostSpeed,
     'danmakuWords': danmakuWords,
     'preload': preload,
-    'adBlock': adBlock,
-    'enhancement': enhancement.toJson(),
     'televisionDecoder': televisionDecoder.name,
+    if (preopen != null) 'preopen': preopen,
+    'doubleTapSeek': doubleTapSeek,
+    'swipeLevels': swipeLevels,
     'swipeEpisodes': swipeEpisodes,
     'progressLine': progressLine,
+    'showClock': showClock,
+    'showNetworkSpeed': showNetworkSpeed,
+    'autoHideControls': autoHideControls,
+    'hideSystemBars': hideSystemBars,
+    'portraitStyleForWide': portraitStyleForWide,
+    'autoPictureInPicture': autoPictureInPicture,
     'videoFit': videoFit.name,
+    'adBlock': adBlock,
   };
 
   factory PlaybackPreferences.fromJson(Map<String, dynamic> value) {
     final speed = (value['speed'] as num? ?? 1).toDouble();
     final quality = value['quality'] as int? ?? 0;
+    final boostSpeed = (value['boostSpeed'] as num? ?? 2).toDouble();
     final autoAdvance = value['autoAdvance'] as bool? ?? true;
     final danmaku = value['danmaku'] as bool? ?? true;
     final preload = value['preload'] as bool? ?? true;
-    final adBlock = value['adBlock'] as bool? ?? true;
+    final danmakuScale = (value['danmakuScale'] as num? ?? 1).toDouble();
+    final danmakuColor = value['danmakuColor'] as int? ?? 0xFFFFFFFF;
     if (!playbackSpeeds.contains(speed) || quality < 0 || quality > 4320) {
       throw const FormatException('播放偏好无效');
     }
     return PlaybackPreferences(
       speed: speed,
+      boostSpeed: boostSpeeds.contains(boostSpeed) ? boostSpeed : 2,
       quality: quality,
       autoAdvance: autoAdvance,
       danmaku: danmaku,
-      danmakuScale: (value['danmakuScale'] as num? ?? 1).toDouble().clamp(
-        danmakuScaleMin,
-        danmakuScaleMax,
-      ),
-      danmakuColor: danmakuColors.contains(value['danmakuColor'])
-          ? value['danmakuColor'] as int
+      danmakuScale: danmakuScale.clamp(danmakuScaleMin, danmakuScaleMax),
+      danmakuColor: danmakuColors.contains(danmakuColor)
+          ? danmakuColor
           : 0xFFFFFFFF,
       danmakuOpacity: (value['danmakuOpacity'] as num? ?? 1).toDouble().clamp(
         0.1,
@@ -227,17 +276,28 @@ class PlaybackPreferences {
       danmakuCoverage:
           DanmakuCoverage.values.asNameMap()[value['danmakuCoverage']] ??
           DanmakuCoverage.half,
+      danmakuSpeed: (value['danmakuSpeed'] as num? ?? 1).toDouble().clamp(
+        danmakuSpeedMin,
+        danmakuSpeedMax,
+      ),
       danmakuWords: normalizeDanmakuWords(value['danmakuWords']),
       preload: preload,
-      adBlock: adBlock,
-      enhancement: VideoEnhancementPreferences.fromJson(value['enhancement']),
       televisionDecoder:
           TelevisionDecoder.values.asNameMap()[value['televisionDecoder']] ??
           TelevisionDecoder.optimized,
+      preopen: value['preopen'] as bool?,
+      doubleTapSeek: value['doubleTapSeek'] as bool? ?? true,
+      swipeLevels: value['swipeLevels'] as bool? ?? true,
       swipeEpisodes: value['swipeEpisodes'] as bool? ?? false,
       progressLine: value['progressLine'] as bool? ?? true,
-      videoFit:
-          VideoFit.values.asNameMap()[value['videoFit']] ?? VideoFit.auto,
+      showClock: value['showClock'] as bool? ?? true,
+      showNetworkSpeed: value['showNetworkSpeed'] as bool? ?? true,
+      autoHideControls: value['autoHideControls'] as bool? ?? true,
+      hideSystemBars: value['hideSystemBars'] as bool? ?? true,
+      portraitStyleForWide: value['portraitStyleForWide'] as bool? ?? false,
+      autoPictureInPicture: value['autoPictureInPicture'] as bool? ?? false,
+      videoFit: VideoFit.values.asNameMap()[value['videoFit']] ?? VideoFit.auto,
+      adBlock: value['adBlock'] as bool? ?? true,
     );
   }
 }

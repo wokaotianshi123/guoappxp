@@ -10,9 +10,11 @@ import '../core_bridge.dart';
 import '../local_store.dart';
 import '../theme_color.dart';
 import 'app_scope.dart';
+import 'cover_blur.dart';
 import 'device_registration.dart';
 import 'shell/app_shell.dart';
 import 'theme/app_theme.dart';
+import 'theme/motion.dart';
 import 'theme/system_color.dart';
 import 'users/unlock_page.dart';
 import 'widgets/focus_ring.dart';
@@ -44,7 +46,8 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
   int? _profileEpoch;
   var _television = false;
   var _phone = false;
-  (Color, bool)? _themeKey;
+  (Color, bool, bool)? _themeKey;
+  CoverBlur? _coverBlur;
   late (ThemeData, ThemeData) _themes;
 
   @override
@@ -53,8 +56,7 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
     WidgetsBinding.instance.addObserver(this);
     FocusManager.instance
       ..addEarlyKeyEventHandler(_blockKeyboardFocus)
-      ..addEarlyKeyEventHandler(_leaveTextField)
-      ..addListener(_focusChanged);
+      ..addEarlyKeyEventHandler(_leaveTextField);
     _loadSystemColor();
   }
 
@@ -62,31 +64,10 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
   void dispose() {
     FocusManager.instance
       ..removeEarlyKeyEventHandler(_blockKeyboardFocus)
-      ..removeEarlyKeyEventHandler(_leaveTextField)
-      ..removeListener(_focusChanged);
+      ..removeEarlyKeyEventHandler(_leaveTextField);
     WidgetsBinding.instance.removeObserver(this);
     super.dispose();
   }
-
-  /// 输入框获得焦点时，请 Windows runner 修一次输入法上下文。
-  ///
-  /// Flutter 3.47.x 的 Windows 嵌入层在窗口失焦再回来后，子窗口的 IMM32→TSF
-  /// 会话会过期：键盘消息照常到达，但中文候选框再也不出现，表现为「只能输入
-  /// 字母」，要退出应用重开才恢复（flutter/flutter#190042）。runner 已经在窗口
-  /// 重新获得焦点时修一次，这里补上「输入框拿到焦点」这个时机——窗口一直有焦点、
-  /// 只是应用内换了输入框时，会话同样可能已经失效。
-  ///
-  /// 放在应用级而不是逐个输入框里，是因为裸 TextField 散落在听书、自定义源、
-  /// 用户编辑、密码弹窗等多处，逐个挂容易漏。
-  void _focusChanged() {
-    if (focusedTextField() == null) return;
-    final focus = FocusManager.instance.primaryFocus;
-    if (identical(focus, _lastImeFocus)) return;
-    _lastImeFocus = focus;
-    AppDevice.repairIme();
-  }
-
-  FocusNode? _lastImeFocus;
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
@@ -143,14 +124,6 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
         : KeyEventResult.ignored;
   }
 
-  /// 桌面端的 Esc：先交给最近的 DismissIntent（关闭弹窗 / 退出全屏等），
-  /// 没人接管才退一层页面。
-  ///
-  /// 这里只处理 Esc，**不要**再处理 [LogicalKeyboardKey.goBack]：
-  /// Android 的返回键 / 三键导航 / 侧滑手势在发 goBack 按键事件的同时，
-  /// 系统还会走一遍 popRoute（PopScope → Navigator.maybePop），两路一起
-  /// 处理就会一次退两级——搜索结果进详情后按返回直接回到首页、设置分组页
-  /// 返回越过设置根页都是这个原因。
   KeyEventResult _escape(KeyEvent event) {
     if (event is! KeyDownEvent ||
         event.logicalKey != LogicalKeyboardKey.escape) {
@@ -208,16 +181,28 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
       unawaited(AppDevice.setTelevisionMode(television));
     }
     _television = television;
+    if (store != null) {
+      _coverBlur ??= store.blurCoversButton
+          ? CoverBlur.values.byName(store.blurCoversLaunch)
+          : CoverBlur.off;
+    }
+    final coverBlur = _coverBlur ?? CoverBlur.off;
     final systemColor = (store?.followSystemColor ?? true)
         ? _systemColor
         : null;
     final seed =
         systemColor ?? Color((store?.themeColor ?? ThemeColor.orange).seed);
-    if ((seed, television) != _themeKey) {
-      _themeKey = (seed, television);
+    final pureBlack = store?.pureBlack ?? false;
+    if ((seed, television, pureBlack) != _themeKey) {
+      _themeKey = (seed, television, pureBlack);
       _themes = (
         AppTheme.build(seed, Brightness.light, television: television),
-        AppTheme.build(seed, Brightness.dark, television: television),
+        AppTheme.build(
+          seed,
+          Brightness.dark,
+          television: television,
+          pureBlack: pureBlack,
+        ),
       );
     }
     WidgetsBinding.instance.addPostFrameCallback(
@@ -256,30 +241,42 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
               formFactor: formFactor,
               systemColorAvailable: _systemColor != null,
               version: widget.version,
-              child: Builder(
-                builder: (context) {
-                  final phone =
-                      AppScope.formFactorOf(context) == FormFactor.phone;
-                  if (phone != _phone) {
-                    _phone = phone;
-                    unawaited(AppDevice.setPhoneMode(phone));
-                  }
-                  return FocusOutlineMotion(
-                    child: FocusOutlineLayer(
-                      child: FocusTraversalGroup(
-                        policy: ReadingOrderTraversalPolicy(
-                          requestFocusCallback: revealFocus,
+              child: CoverBlurScope(
+                mode: coverBlur,
+                enabled: !television && (store?.blurCoversButton ?? false),
+                everywhere: store?.blurAllCovers ?? false,
+                onToggle: () => setState(
+                  () => _coverBlur = coverBlur == CoverBlur.off
+                      ? CoverBlur.all
+                      : CoverBlur.off,
+                ),
+                child: Builder(
+                  builder: (context) {
+                    final phone =
+                        AppScope.formFactorOf(context) == FormFactor.phone;
+                    if (phone != _phone) {
+                      _phone = phone;
+                      unawaited(AppDevice.setPhoneMode(phone));
+                    }
+                    return FocusOutlineMotion(
+                      child: FocusOutlineLayer(
+                        child: FocusTraversalGroup(
+                          policy: ReadingOrderTraversalPolicy(
+                            requestFocusCallback: revealFocus,
+                          ),
+                          child: child!,
                         ),
-                        child: child!,
                       ),
-                    ),
-                  );
-                },
+                    );
+                  },
+                ),
               ),
             ),
           ),
         ),
       ),
+      themeAnimationDuration: Motion.long,
+      themeAnimationCurve: Motion.standard,
       home: switch (store) {
         null => _BootScreen(
           error: widget.bootstrapError,

@@ -1,12 +1,5 @@
 package core
 
-// JS 模块站源的执行层：把模块导出的函数映射成 Provider 接口的实现。
-//
-// 移植自 guoappxpx。与上游的差别只有三处：
-//   - 站源标识用 module.id()（冲突改名后可能带 mod- 前缀）；
-//   - 文本请求不带镜像列表（guoappxp 的 TextRequest 没有 Mirrors 字段）；
-//   - 日志落到运行时的诊断日志（host 是 xpxHost 包装，不是 Downloader 本身）。
-
 import (
 	"context"
 	"encoding/json"
@@ -15,7 +8,6 @@ import (
 	"maps"
 	"net/url"
 	"reflect"
-	"strings"
 	"sync"
 	"time"
 
@@ -200,8 +192,6 @@ func (module *jsModule) validCategory(category string) bool {
 
 func (p *jsProvider) Descriptor() SourceDescriptor { return p.module.descriptor() }
 
-// ProvidesCapability 是 CapabilityLimiter 的实现：模块清单没声明过的能力，
-// 运行时不会去调它的 JS 函数，避免出现「导出里没有该函数」的报错。
 func (p *jsProvider) ProvidesCapability(capability reflect.Type) bool {
 	return p.module.capabilities[capability]
 }
@@ -371,7 +361,7 @@ func (p *jsProvider) newInstance() (*jsInstance, error) {
 }
 
 func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
-	id := p.module.id()
+	id := p.module.manifest.ID
 	host := instance.vm.NewObject()
 	members := map[string]any{
 		"source":    id,
@@ -425,14 +415,14 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 			return moduleMedia(prepared), err
 		},
 		"loadState": func(name string) (string, error) {
-			data, err := p.host.LoadState(moduleStateName(id, name))
+			data, err := p.host.LoadState(moduleStatePrefix + id + "-" + name)
 			return string(data), err
 		},
 		"saveState": func(name, value string) error {
-			return p.host.SaveState(moduleStateName(id, name), []byte(value))
+			return p.host.SaveState(moduleStatePrefix+id+"-"+name, []byte(value))
 		},
 		"log": func(message string) {
-			if downloader := moduleDownloader(p.host); downloader != nil {
+			if downloader, ok := p.host.(*Downloader); ok {
 				downloader.recordDiagnostic(diagnosticEvent{Time: time.Now(), Level: "info", Event: "module", Source: id, Message: message})
 			}
 		},
@@ -442,22 +432,6 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 		_ = host.Set(name, member)
 	}
 	return host
-}
-
-// moduleStateName 拼站源状态文件名。前缀本身不带冒号，这里只是沿用同一套
-// 文件名清洗（冒号在 Windows 文件名里非法），防止将来换前缀时踩坑。
-// 而冒号在 Windows 文件名里非法，因此写盘前把它换成连字符。
-func moduleStateName(id, name string) string {
-	return moduleStatePrefix + strings.ReplaceAll(id, ":", "-") + "-" + name
-}
-
-// moduleDownloader 从站源 Host 取回运行时 Downloader，供模块日志落盘。
-// 出包路径上的 Host 是 xpxHost 包装（见 source_host_xpx.go），不是 Downloader 本身。
-func moduleDownloader(host Host) *Downloader {
-	if value, ok := host.(*xpxHost); ok {
-		return value.d
-	}
-	return nil
 }
 
 func (instance *jsInstance) fail(err error, oversized bool) {
@@ -512,10 +486,14 @@ func (p *jsProvider) fetchText(ctx context.Context, request jsTextRequest) (jsTe
 	if err := p.allowedAddress(request.URL); err != nil {
 		return jsTextResponse{}, err
 	}
-	// guoappxp 的 TextRequest 没有镜像字段，模块声明的备选地址在这里被忽略；
-	// 需要镜像时由模块自己在 JS 里轮换后逐次调用 fetchText。
+	var mirrors []string
+	for _, mirror := range request.Mirrors {
+		if p.allowedAddress(mirror) == nil {
+			mirrors = append(mirrors, mirror)
+		}
+	}
 	response, err := p.host.FetchText(ctx, TextRequest{URL: request.URL, Referer: request.Referer, UserAgent: request.UserAgent,
-		Cookie: request.Cookie, NoCache: request.NoCache, Body: moduleBody(request.Body)})
+		Cookie: request.Cookie, NoCache: request.NoCache, Body: moduleBody(request.Body), Mirrors: mirrors})
 	return jsTextResponse{Body: response.Body, URL: response.URL}, err
 }
 

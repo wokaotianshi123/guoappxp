@@ -4,21 +4,23 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:media_kit/media_kit.dart';
+import 'package:path/path.dart' as path;
+import 'package:path_provider/path_provider.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'package:window_manager/window_manager.dart';
 
 import 'app_device.dart';
 import 'core_bridge.dart';
 import 'diary_service.dart';
+import 'local_files.dart';
 import 'local_store.dart';
+import 'picture_in_picture.dart';
 import 'portable_data.dart';
-import 'source_modules.dart';
 import 'ui/app.dart';
 import 'ui/theme/app_theme.dart';
+import 'window_frame.dart';
 import 'window_on_top.dart';
-
-/// 桌面端窗口的最小尺寸：再小的话播放器控制条和线路弹层会挤在一起。
-const desktopMinimumSize = Size(960, 640);
+import 'windows_data_migration.dart';
 
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
@@ -27,13 +29,12 @@ Future<void> main() async {
     SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
   }
   if (Platform.isWindows) {
-    // 便携版（程序旁有 userdata 文件夹）要赶在读取设置、创建缓存之前生效。
     enablePortableData();
+    if (portableDataPath == null) await migrateWindowsData();
     await windowManager.ensureInitialized();
+    await rememberWindowFrame();
   }
   if (Platform.isMacOS) {
-    // macOS 的窗口默认由 MainFlutterWindow 从 nib 里带出来，但 window_manager
-    // 需要在首帧前初始化好，否则最小尺寸和「启动即显示」都不生效。
     await windowManager.ensureInitialized();
     try {
       await windowManager.waitUntilReadyToShow(
@@ -42,14 +43,14 @@ Future<void> main() async {
           minimumSize: desktopMinimumSize,
           center: true,
         ),
-        () async => windowManager.show(),
+        () async {
+          await rememberWindowFrame();
+          await windowManager.show();
+        },
       );
     } catch (_) {}
   }
-  // 窗口置顶只支持桌面端，且必须等 windowManager 初始化完才能生效。
-  if (Platform.isWindows || Platform.isMacOS) {
-    await restoreWindowOnTop();
-  }
+  if (Platform.isWindows || Platform.isMacOS) await restoreWindowOnTop();
   MediaKit.ensureInitialized();
   final device = await AppDevice.detect();
   final rendering = Platform.isAndroid
@@ -92,6 +93,7 @@ class _AppBootstrapState extends State<AppBootstrap>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
+    DiaryService.add('[App] 生命周期：${state.name}');
     if (state == AppLifecycleState.resumed && Platform.isAndroid) {
       unawaited(_refreshDevice());
     }
@@ -122,38 +124,19 @@ class _AppBootstrapState extends State<AppBootstrap>
       final preferences = await SharedPreferences.getInstance();
       await _refreshDevice();
       await repository.initialize();
+      final support = await getApplicationSupportDirectory();
+      final local = await LocalStore.open(
+        preferences,
+        LocalFiles(Directory(path.join(support.path, 'store'))),
+      );
       if (!mounted) return;
       setState(() {
-        final local = store = LocalStore(preferences);
+        store = local;
         repository.access = local;
       });
-      unawaited(_loadCustomSources());
-      unawaited(_loadModuleSources());
     } catch (failure) {
       if (mounted) setState(() => error = failure);
     }
-  }
-
-  /// 启动时把原生核心的自定义源同步到本地缓存，让源栏、搜索、追剧、观看记录
-  /// 在首帧之后就能按真实名称显示自定义源；核心不可用时静默忽略。
-  Future<void> _loadCustomSources() async {
-    final local = store;
-    if (local == null) return;
-    try {
-      await local.syncCustomSources(await repository.customSources());
-    } catch (_) {}
-  }
-
-  /// 同上，把已装模块提供的站源同步到本地：模块源要和内置源一样在源栏、
-  /// 搜索与源显示列表里可用。
-  Future<void> _loadModuleSources() async {
-    final local = store;
-    if (local == null) return;
-    try {
-      await local.syncModuleSources(
-        moduleSourceSites(await repository.modules()),
-      );
-    } catch (_) {}
   }
 
   @override

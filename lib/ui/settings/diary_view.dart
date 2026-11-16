@@ -5,10 +5,7 @@ import '../../diary_service.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/status_view.dart';
 
-final _failure = RegExp(
-  'err|fail|exception|panic|fatal|异常|失败',
-  caseSensitive: false,
-);
+final _failure = RegExp('err|fail|exception|异常|失败', caseSensitive: false);
 
 class DiaryView extends StatefulWidget {
   const DiaryView({super.key});

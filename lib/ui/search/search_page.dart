@@ -3,8 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../app_build.dart';
-import '../../catalog_sort.dart';
 import '../../core_bridge.dart';
 import '../../drama_feed.dart';
 import '../../local_store.dart';
@@ -13,9 +11,11 @@ import '../../source_catalog.dart';
 import '../app_scope.dart';
 import '../detail/detail_page.dart';
 import '../shell/app_shell.dart';
+import '../theme/motion.dart';
 import '../widgets/drama_grid.dart';
 import '../widgets/follow_button.dart';
 import '../widgets/focus_ring.dart';
+import '../widgets/motion/motion_widgets.dart';
 import '../widgets/search_field.dart';
 import '../widgets/status_view.dart';
 
@@ -42,15 +42,9 @@ class _SearchPageState extends State<SearchPage> {
   DramaFeed? _results;
   String _submitted = '';
   List<String> _suggestions = const [];
-
-  /// 本地标题候选：输入 `BDZC` 也能列出「霸道总裁」。
-  ///
-  /// 站源搜索接口只认原文，桌面端又没有字母键盘，纯字母串发过去必然空手而归。
-  /// 所以在输入过程中先从追剧、观看记录、最近搜索这几处本地索引里按原文 /
-  /// 拼音首字母找一遍，点一条就等于用完整标题去搜。
-  List<String> _localMatches = const [];
   Timer? _debounce;
   int _suggestion = 0;
+  final _shownSuggestions = <Object>{};
   bool _ready = false;
 
   /// 「全部源」：并发搜索所有已开启的站源。偏好存在本机，下次打开沿用。
@@ -90,15 +84,9 @@ class _SearchPageState extends State<SearchPage> {
     super.dispose();
   }
 
-  /// 「全部源」开关：只要这次构建本来就是为了跨源、或者当前能搜的站源多于
-  /// 一个，就显示出来。
-  ///
-  /// 原先写死 `ALL_SOURCES && 站源数 > 1`：红果鉴导入自定义源之后明明有多个源、
-  /// 也能跨源搜，开关却一直不出现；真果鉴要是用户只开了一个源，开关也会消失，
-  /// 看上去就像「跨源搜索没了」。跨源搜索本身按实际站源列表发起，不需要这个常量
-  /// 来决定能不能显示。
-  bool get _allSourceToggle =>
-      allSourcesEnabled || widget.store.sources.length > 1;
+  /// 「全部源」开关：当前能搜的站源多于一个时才显示——只有一个源时
+  /// 跨源搜索与普通搜索没有区别，留着开关只会让人困惑。
+  bool get _allSourceToggle => widget.store.sources.length > 1;
 
   void _forget(String query) {
     unawaited(HapticFeedback.selectionClick());
@@ -126,7 +114,6 @@ class _SearchPageState extends State<SearchPage> {
     setState(() {
       _submitted = query;
       _suggestions = const [];
-      _localMatches = const [];
     });
   }
 
@@ -141,7 +128,6 @@ class _SearchPageState extends State<SearchPage> {
     setState(() {
       _submitted = query;
       _suggestions = const [];
-      _localMatches = const [];
       _crossError = '';
       _pollFailures = 0;
       _cross = SearchProgress(
@@ -151,7 +137,7 @@ class _SearchPageState extends State<SearchPage> {
       );
     });
     if (sources.isEmpty) {
-      setState(() => _crossError = '没有已开启的站源，请先在「站源管理」里开启');
+      setState(() => _crossError = '没有已开启的站源，请先在「站源」里开启');
       return;
     }
     unawaited(() async {
@@ -228,78 +214,18 @@ class _SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     final query = text.trim();
     final generation = ++_suggestion;
-    final local = _localTitles(query);
     if (!widget.source.searchSuggestions || query.isEmpty) {
-      setState(() {
-        _suggestions = const [];
-        _localMatches = local;
-      });
+      setState(() => _suggestions = const []);
       return;
     }
-    setState(() => _localMatches = local);
     _debounce = Timer(const Duration(milliseconds: 250), () async {
       try {
-        final items = await _repository.suggestions(query);
+        final items = await _repository.suggestions(widget.source.id, query);
         if (mounted && generation == _suggestion) {
           setState(() => _suggestions = items);
         }
       } catch (_) {}
     });
-  }
-
-  /// 在本地认识的标题里按原文 / 拼音首字母找匹配，最多 8 条。
-  ///
-  /// 顺序按「最近看过的 → 追剧 → 搜过的关键词」，同一标题只留一条。
-  List<String> _localTitles(String query) {
-    final term = query.trim();
-    if (term.isEmpty) return const [];
-    final titles = <String>[];
-    void add(String title) {
-      if (titles.length >= 8 || titles.contains(title)) return;
-      if (matchesTitle(title, term)) titles.add(title);
-    }
-
-    for (final entry in widget.store.history) {
-      if (titles.length >= 8) break;
-      add(entry.drama.title);
-    }
-    for (final drama in widget.store.favorites) {
-      if (titles.length >= 8) break;
-      add(drama.title);
-    }
-    for (final entry in widget.store.recentSearches) {
-      if (titles.length >= 8) break;
-      add(entry);
-    }
-    return titles;
-  }
-
-  Widget _candidateHeader(BuildContext context, String label) {
-    final theme = Theme.of(context);
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 4),
-      child: Text(
-        label,
-        style: theme.textTheme.labelMedium?.copyWith(
-          color: theme.colorScheme.onSurfaceVariant,
-        ),
-      ),
-    );
-  }
-
-  /// 字母键盘的实时候选：本地拼音匹配在前，站源建议在后。
-  Future<List<String>> _letterMatches(String query) async {
-    final local = _localTitles(query);
-    final term = query.trim();
-    if (term.isEmpty || _allSources || !widget.source.searchSuggestions) {
-      return local;
-    }
-    try {
-      final remote = await _repository.suggestions(term);
-      return {...local, ...remote}.take(12).toList();
-    } catch (_) {
-      return local;
-    }
   }
 
   void _open(Drama drama) => openPage<void>(
@@ -308,29 +234,20 @@ class _SearchPageState extends State<SearchPage> {
   );
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
-    // 站源列表是异步加载的（自定义源、用户权限都会变）：不跟着 store 重建的话，
-    // 进页面那一刻只有内置源，`全部源` 开关就会被算成「不值得显示」并且一直不刷新。
-    listenable: widget.store,
-    builder: (context, _) => _page(context),
-  );
-
-  Widget _page(BuildContext context) {
-    final television = AppScope.of(context).television;
+  Widget build(BuildContext context) {
     final field = SearchField(
-      hint: _allSources ? '搜索全部站源' : '在 ${widget.source.name} 中搜索',
+      hint: '在 ${widget.source.name} 中搜索',
       controller: _controller,
       focusNode: _focus,
       autofocus: widget.query.isEmpty,
       onChanged: _changed,
       onSubmitted: _submit,
       letterKeyboard: widget.store.televisionKeyboard,
-      // 字母键盘敲的是拼音首字母，站源的搜索建议只认原文，直接拿 `bdzc` 去问
-      // 基本返回空。所以先过一遍本地标题（追剧 / 观看记录 / 最近搜索），再把
-      // 站源建议接在后面；「全部源」模式下建议只覆盖单一站源，反而误导，跳过。
-      matches: _letterMatches,
+      matches: widget.source.searchSuggestions
+          ? (query) => _repository.suggestions(widget.source.id, query)
+          : null,
     );
-    if (television) {
+    if (AppScope.of(context).television) {
       return Scaffold(
         body: Column(
           children: [
@@ -344,7 +261,7 @@ class _SearchPageState extends State<SearchPage> {
               child: field,
             ),
             if (_allSourceToggle) _allSourceBar(context, televisionInset),
-            Expanded(child: _body(context)),
+            Expanded(child: FadeSwitcher(child: _body(context))),
           ],
         ),
       );
@@ -360,7 +277,108 @@ class _SearchPageState extends State<SearchPage> {
         child: Column(
           children: [
             if (_allSourceToggle) _allSourceBar(context, null),
-            Expanded(child: _body(context)),
+            Expanded(child: FadeSwitcher(child: _body(context))),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _body(BuildContext context) {
+    final television = AppScope.of(context).television;
+    if (_allSources) return _crossBody(context);
+    if (_suggestions.isNotEmpty && _controller.text.trim() != _submitted) {
+      return ListView(
+        key: const ValueKey('suggest'),
+        padding: television
+            ? const EdgeInsets.fromLTRB(televisionInset, 8, televisionInset, 27)
+            : const EdgeInsets.symmetric(vertical: 8),
+        children: [
+          for (final (index, item) in _suggestions.indexed)
+            EnterOnce(
+              key: ValueKey(index),
+              id: item,
+              played: _shownSuggestions,
+              index: index,
+              child: TileFocus(
+                builder: (focusNode) => ListTile(
+                  focusNode: focusNode,
+                  leading: const Icon(Icons.search_rounded),
+                  title: Text(item),
+                  onTap: () => _submit(item),
+                ),
+              ),
+            ),
+        ],
+      );
+    }
+    final results = _results;
+    if (results == null) {
+      return KeyedSubtree(
+        key: const ValueKey('recent'),
+        child: _recent(context),
+      );
+    }
+    if (results.items.isEmpty) {
+      if (results.loading) {
+        return const StatusView.loading(
+          key: ValueKey('loading'),
+          title: '正在搜索',
+        );
+      }
+      if (results.error.isNotEmpty) {
+        return StatusView(
+          key: const ValueKey('error'),
+          title: '搜索失败',
+          message: results.error,
+          icon: Icons.cloud_off_rounded,
+          action: '重试',
+          onAction: () => results.reload(),
+        );
+      }
+      return StatusView(
+        key: const ValueKey('empty'),
+        title: '没有找到「$_submitted」',
+        message: '换个关键词试试',
+        icon: Icons.search_off_rounded,
+      );
+    }
+    final inset = television
+        ? televisionInset
+        : AppScope.formFactorOf(context) == FormFactor.phone
+        ? 16.0
+        : 24.0;
+    return LayoutBuilder(
+      key: ValueKey(('results', _submitted)),
+      builder: (context, constraints) => AutoLoadMore(
+        feed: results,
+        child: CustomScrollView(
+          slivers: [
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                inset,
+                television ? 16 : 8,
+                inset,
+                0,
+              ),
+              sliver: DramaSliverGrid(
+                width: constraints.maxWidth - inset * 2,
+                items: results.items,
+                autofocus: television,
+                heroScope: 'drama',
+                onOpen: _open,
+                onMore: (drama) => quickFollow(context, widget.store, drama),
+              ),
+            ),
+            SliverPadding(
+              padding: EdgeInsets.fromLTRB(
+                inset,
+                8,
+                inset,
+                television ? 27 : 16,
+              ),
+              sliver: SliverToBoxAdapter(child: FeedFooter(feed: results)),
+            ),
           ],
         ),
       ),
@@ -395,111 +413,15 @@ class _SearchPageState extends State<SearchPage> {
           const SizedBox(width: 10),
           Expanded(
             child: Text(
-              _allSources ? '同时搜索所有已开启的站源，结果边搜边出' : '只搜索 ${widget.source.name}',
+              _allSources
+                  ? '同时搜索所有已开启的站源，结果边搜边出'
+                  : '只搜索 ${widget.source.name}',
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: caption,
             ),
           ),
         ],
-      ),
-    );
-  }
-
-  Widget _body(BuildContext context) {
-    final television = AppScope.of(context).television;
-    // 输入框里的词还没提交过，就先给候选：本地拼音匹配排前面，站源建议接在后面。
-    final typing = _controller.text.trim() != _submitted;
-    if (typing && (_localMatches.isNotEmpty || _suggestions.isNotEmpty)) {
-      final padding = television
-          ? const EdgeInsets.fromLTRB(televisionInset, 8, televisionInset, 27)
-          : const EdgeInsets.symmetric(vertical: 8);
-      return ListView(
-        padding: padding,
-        children: [
-          if (_localMatches.isNotEmpty) ...[
-            _candidateHeader(context, '本地匹配（原文 / 拼音首字母）'),
-            for (final item in _localMatches)
-              TileFocus(
-                builder: (focusNode) => ListTile(
-                  focusNode: focusNode,
-                  leading: const Icon(Icons.auto_awesome_rounded, size: 20),
-                  title: Text(item),
-                  onTap: () => _submit(item),
-                ),
-              ),
-          ],
-          if (_suggestions.isNotEmpty) ...[
-            if (_localMatches.isNotEmpty) _candidateHeader(context, '站源建议'),
-            for (final item in _suggestions)
-              TileFocus(
-                builder: (focusNode) => ListTile(
-                  focusNode: focusNode,
-                  leading: const Icon(Icons.search_rounded, size: 20),
-                  title: Text(item),
-                  onTap: () => _submit(item),
-                ),
-              ),
-          ],
-        ],
-      );
-    }
-    if (_allSources) return _crossBody(context);
-    final results = _results;
-    if (results == null) return _recent(context);
-    if (results.items.isEmpty) {
-      if (results.loading) return const StatusView.loading(title: '正在搜索');
-      if (results.error.isNotEmpty) {
-        return StatusView(
-          title: '搜索失败',
-          message: results.error,
-          icon: Icons.cloud_off_rounded,
-          action: '重试',
-          onAction: () => results.reload(),
-        );
-      }
-      return StatusView(
-        title: '没有找到「$_submitted」',
-        message: '换个关键词试试',
-        icon: Icons.search_off_rounded,
-      );
-    }
-    final inset = television
-        ? televisionInset
-        : AppScope.formFactorOf(context) == FormFactor.phone
-        ? 16.0
-        : 24.0;
-    return LayoutBuilder(
-      builder: (context, constraints) => AutoLoadMore(
-        feed: results,
-        child: CustomScrollView(
-          slivers: [
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(
-                inset,
-                television ? 16 : 8,
-                inset,
-                0,
-              ),
-              sliver: DramaSliverGrid(
-                width: constraints.maxWidth - inset * 2,
-                items: results.items,
-                autofocus: television,
-                onOpen: _open,
-                onMore: (drama) => quickFollow(context, widget.store, drama),
-              ),
-            ),
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(
-                inset,
-                8,
-                inset,
-                television ? 27 : 16,
-              ),
-              sliver: SliverToBoxAdapter(child: FeedFooter(feed: results)),
-            ),
-          ],
-        ),
       ),
     );
   }
@@ -688,43 +610,53 @@ class _SearchPageState extends State<SearchPage> {
     listenable: widget.store,
     builder: (context, _) {
       final recent = widget.store.recentSearches;
-      final scope = _allSources ? '全部站源' : widget.source.name;
-      if (recent.isEmpty) {
-        return StatusView(
-          title: '在 $scope 中搜索',
-          message: '输入剧名或关键词',
-          icon: Icons.search_rounded,
-        );
-      }
-      final theme = Theme.of(context);
-      return ListView(
-        padding: AppScope.of(context).television
-            ? const EdgeInsets.fromLTRB(televisionInset, 8, televisionInset, 27)
-            : const EdgeInsets.fromLTRB(16, 8, 16, 24),
-        children: [
-          Row(
-            children: [
-              Expanded(
-                child: Text(
-                  '最近搜索',
-                  style: theme.textTheme.titleSmall?.copyWith(
-                    fontWeight: FontWeight.w700,
-                  ),
+      return FadeSwitcher(child: _recentContent(context, recent));
+    },
+  );
+
+  Widget _recentContent(BuildContext context, List<String> recent) {
+    if (recent.isEmpty) {
+      return StatusView(
+        key: const ValueKey('empty'),
+        title: '在 ${widget.source.name} 中搜索',
+        message: '输入剧名或关键词',
+        icon: Icons.search_rounded,
+      );
+    }
+    final theme = Theme.of(context);
+    return ListView(
+      key: const ValueKey('recent'),
+      padding: AppScope.of(context).television
+          ? const EdgeInsets.fromLTRB(televisionInset, 8, televisionInset, 27)
+          : const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        Row(
+          children: [
+            Expanded(
+              child: Text(
+                '最近搜索',
+                style: theme.textTheme.titleSmall?.copyWith(
+                  fontWeight: FontWeight.w700,
                 ),
               ),
-              FocusRing(
-                radius: 999,
-                child: TextButton(
-                  onPressed: () => widget.store
-                      .clearRecentSearches()
-                      .catchError((Object _) {}),
-                  child: const Text('清空'),
+            ),
+            FocusRing(
+              radius: 999,
+              child: TextButton(
+                onPressed: () => widget.store.clearRecentSearches().catchError(
+                  (Object _) {},
                 ),
+                child: const Text('清空'),
               ),
-            ],
-          ),
-          const SizedBox(height: 8),
-          Wrap(
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        AnimatedSize(
+          duration: Motion.of(context, Motion.medium),
+          curve: Motion.enter,
+          alignment: Alignment.topLeft,
+          child: Wrap(
             spacing: 8,
             runSpacing: 8,
             children: [
@@ -732,7 +664,6 @@ class _SearchPageState extends State<SearchPage> {
                 FocusRing(
                   radius: 8,
                   child: GestureDetector(
-                    // 长按（桌面上右键）只删这一条，不用清空整个列表。
                     onLongPress: () => _forget(query),
                     onSecondaryTap: () => _forget(query),
                     child: ActionChip(
@@ -744,8 +675,8 @@ class _SearchPageState extends State<SearchPage> {
                 ),
             ],
           ),
-        ],
-      );
-    },
-  );
+        ),
+      ],
+    );
+  }
 }

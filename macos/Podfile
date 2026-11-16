@@ -37,23 +37,6 @@ target 'Runner' do
   end
 end
 
-# 同 ios/Podfile：ffmpeg_kit_flutter_new 的 macOS 框架靠 prepare_command 下载，
-# 而 prepare_command 在「pod 已装好」时会被跳过，框架缺失就会在编译期报
-# 'ffmpegkit/FFmpegKitConfig.h' file not found。pre_install 必定在生成工程前执行。
-pre_install do |installer|
-  plugin = File.join(File.dirname(File.realpath(__FILE__)), '.symlinks', 'plugins',
-                     'ffmpeg_kit_flutter_new_min_gpl')
-  setup = File.join(plugin, 'scripts', 'setup_macos.sh')
-  frameworks = File.join(plugin, 'macos', 'Frameworks', 'ffmpegkit.framework')
-  if File.exist?(setup) && !File.exist?(frameworks)
-    Pod::UI.puts '  > ffmpeg_kit_flutter_new 的 macOS 框架不在，先下载'
-    environment = { 'FFMPEG_KIT_MACOS_URL' => ENV['FFMPEG_KIT_MACOS_URL'] }.compact
-    unless system(environment, 'bash', setup, :chdir => File.join(plugin, 'macos'))
-      raise 'ffmpeg_kit_flutter_new 的 macOS 框架下载失败；网络受限时用 FFMPEG_KIT_MACOS_URL 指定镜像后重试'
-    end
-  end
-end
-
 post_install do |installer|
   installer.pods_project.targets.each do |target|
     flutter_additional_macos_build_settings(target)

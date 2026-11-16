@@ -23,8 +23,8 @@ enum _Axis { none, horizontal, vertical }
 class LiveGestureController extends ChangeNotifier {
   LiveGestureController({required this.playback}) {
     unawaited(
-      AppDevice.getBrightness().then((value) {
-        if (!_disposed) {
+      AppDevice.brightness().then((value) {
+        if (!_disposed && value != null) {
           _brightness = value;
           notifyListeners();
         }

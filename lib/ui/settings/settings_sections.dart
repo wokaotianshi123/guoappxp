@@ -6,6 +6,7 @@ import 'package:url_launcher/url_launcher.dart';
 
 import '../../app_build.dart';
 import '../../app_device.dart';
+import '../../core_bridge.dart';
 import '../../download_preferences.dart';
 import '../../local_store.dart';
 import '../../playback_preferences.dart';
@@ -14,15 +15,15 @@ import '../../resource_settings_editor.dart';
 import '../../window_on_top.dart';
 import '../app_scope.dart';
 import '../player/danmaku_settings.dart';
+import '../update_prompt.dart';
 import '../users/users_view.dart';
 import '../widgets/focus_ring.dart';
+import '../widgets/form_text_field.dart';
 import '../widgets/group_card.dart';
 import 'appearance_settings.dart';
 import 'backup_actions.dart';
 import 'diary_view.dart';
-import 'modules_view.dart';
 import 'settings_rows.dart';
-import 'sources_view.dart';
 import 'storage_view.dart';
 
 enum SettingsGroup {
@@ -31,7 +32,6 @@ enum SettingsGroup {
   danmaku('弹幕', Icons.subtitles_outlined),
   download('下载', Icons.download_rounded),
   storage('存储', Icons.folder_outlined),
-  sources('站源', Icons.dns_outlined),
   proxy('代理', Icons.language_rounded),
   users('用户', Icons.manage_accounts_outlined),
   about('关于', Icons.info_outline_rounded),
@@ -48,7 +48,6 @@ const adminOnly = '需要管理员';
 const _noDownload = '当前用户没有下载权限';
 const _proxyModes = {'auto': '自动', 'direct': '直连', 'manual': '手动代理'};
 const _counts = {1: '1', 2: '2', 3: '3', 4: '4', 5: '5', 6: '6'};
-const _intervals = [0, 100, 250, 500, 1000, 2000, 3000, 5000];
 const _decoders = {
   TelevisionDecoder.optimized: '默认',
   TelevisionDecoder.hardware: '硬解（兼容）',
@@ -56,12 +55,12 @@ const _decoders = {
 };
 const _links = [
   [
-    ('GitHub · 重建版', 'https://github.com/Xanerix/guoapp'),
+    ('GitHub · 重建版', String.fromEnvironment('PROJECT_URL')),
     ('GitHub · 原作者', 'https://github.com/fish2018'),
   ],
   [
-    ('Telegram · 交流群组', 'https://t.me/+c9YKHp7FjSk0MjI1'),
-    ('Telegram · 更新频道', 'https://t.me/+F9NnQSsMfOU3OTdl'),
+    ('Telegram · 交流群组', String.fromEnvironment('TELEGRAM_GROUP_URL')),
+    ('Telegram · 更新频道', String.fromEnvironment('TELEGRAM_CHANNEL_URL')),
   ],
 ];
 
@@ -93,8 +92,7 @@ class SettingsSection extends StatelessWidget {
               SettingsGroup.playback => _playback(context),
               SettingsGroup.danmaku => _danmaku(context),
               SettingsGroup.download => _download(context),
-              SettingsGroup.storage => _storage(context),
-              SettingsGroup.sources => _sources(context),
+              SettingsGroup.storage => _storage(),
               SettingsGroup.proxy => _proxy(context),
               SettingsGroup.users => [UsersView(store: store, open: open)],
               SettingsGroup.about => _about(context),
@@ -146,6 +144,7 @@ class SettingsSection extends StatelessWidget {
 
   List<Widget> _playback(BuildContext context) {
     final preferences = store.playbackPreferences;
+    final television = AppScope.of(context).television;
     void savePreferences(PlaybackPreferences next) =>
         saveSetting(context, () => store.setPlaybackPreferences(next));
     return [
@@ -153,11 +152,19 @@ class SettingsSection extends StatelessWidget {
         children: [
           ValueTile<double>(
             title: '默认倍速',
-            subtitle: '播放时调整倍速也会更新这里',
+            subtitle: '与播放器内设置同步',
             options: {for (final speed in playbackSpeeds) speed: '${speed}x'},
             value: preferences.speed,
             onChanged: (speed) =>
                 savePreferences(preferences.copyWith(speed: speed)),
+          ),
+          ValueTile<double>(
+            title: '长按倍速',
+            subtitle: '按住画面或方向键时临时使用的倍速',
+            options: {for (final speed in boostSpeeds) speed: '${speed}x'},
+            value: preferences.boostSpeed,
+            onChanged: (speed) =>
+                savePreferences(preferences.copyWith(boostSpeed: speed)),
           ),
           ValueTile<int>(
             title: '默认清晰度',
@@ -173,13 +180,6 @@ class SettingsSection extends StatelessWidget {
             onChanged: (quality) =>
                 savePreferences(preferences.copyWith(quality: quality)),
           ),
-          SwitchTile(
-            title: '去广告',
-            subtitle: '解析播放地址时尝试跳过源站片头广告；关闭后直接播放原始视频流',
-            value: preferences.adBlock,
-            onChanged: (value) =>
-                savePreferences(preferences.copyWith(adBlock: value)),
-          ),
         ],
       ),
       SettingsCard(
@@ -193,19 +193,78 @@ class SettingsSection extends StatelessWidget {
               preferences.copyWith(televisionDecoder: decoder),
             ),
           ),
+          SwitchTile(
+            title: '去广告',
+            subtitle: '剔除播放列表里插播的广告分片；整段贴片无法与正片区分，不做处理',
+            value: preferences.adBlock,
+            onChanged: (value) =>
+                savePreferences(preferences.copyWith(adBlock: value)),
+          ),
           if (Platform.isAndroid) const _RenderingTile(),
+          SwitchTile(
+            title: '预开下一集',
+            subtitle: '提前打开下一集的播放器，切集无需等待',
+            value: preferences.preopens(television: television),
+            onChanged: (value) =>
+                savePreferences(preferences.copyWith(preopen: value)),
+          ),
         ],
       ),
-      if ((Platform.isAndroid || Platform.isIOS) &&
-          AppScope.formFactorOf(context) != FormFactor.television)
+      if ((Platform.isAndroid || Platform.isIOS) && !television)
         SettingsCard(
           children: [
             SwitchTile(
+              title: '双击快退/快进',
+              subtitle: '左侧双击快退，右侧双击快进，关闭时均为暂停',
+              value: preferences.doubleTapSeek,
+              onChanged: (value) =>
+                  savePreferences(preferences.copyWith(doubleTapSeek: value)),
+            ),
+            SwitchTile(
+              title: '滑动调节亮度/音量',
+              subtitle: '左侧上下滑动调整亮度，右侧上下滑动调整音量',
+              value: preferences.swipeLevels,
+              onChanged: (value) =>
+                  savePreferences(preferences.copyWith(swipeLevels: value)),
+            ),
+            SwitchTile(
               title: '上下滑动切换剧集',
-              subtitle: '横屏全屏时上滑播放下一集，下滑播放上一集',
+              subtitle: preferences.swipeLevels
+                  ? '需先关闭滑动调节亮度/音量'
+                  : '横屏全屏时上滑播放下一集，下滑播放上一集',
               value: preferences.swipeEpisodes,
+              onChanged: preferences.swipeLevels
+                  ? null
+                  : (value) => savePreferences(
+                      preferences.copyWith(swipeEpisodes: value),
+                    ),
+            ),
+            SwitchTile(
+              title: '竖屏自动隐藏播控',
+              subtitle: '竖屏播放几秒后隐藏标题、进度条和选集，单击暂停时重新显示',
+              value: preferences.autoHideControls,
               onChanged: (value) => savePreferences(
-                preferences.copyWith(swipeEpisodes: value),
+                preferences.copyWith(autoHideControls: value),
+              ),
+            ),
+            SwitchTile(
+              title: '状态栏跟随播控隐藏',
+              subtitle: preferences.autoHideControls
+                  ? '播控隐藏时一起收起系统状态栏和导航栏'
+                  : '需先打开竖屏自动隐藏播控',
+              value: preferences.hideSystemBars,
+              onChanged: preferences.autoHideControls
+                  ? (value) => savePreferences(
+                      preferences.copyWith(hideSystemBars: value),
+                    )
+                  : null,
+            ),
+            SwitchTile(
+              title: '横屏视频也使用竖屏样式',
+              subtitle: '竖屏观看横屏视频时画面居中，上下滑动切集，点选集右边的按钮进入全屏',
+              value: preferences.portraitStyleForWide,
+              onChanged: (value) => savePreferences(
+                preferences.copyWith(portraitStyleForWide: value),
               ),
             ),
             SwitchTile(
@@ -214,6 +273,37 @@ class SettingsSection extends StatelessWidget {
               value: preferences.progressLine,
               onChanged: (value) =>
                   savePreferences(preferences.copyWith(progressLine: value)),
+            ),
+          ],
+        ),
+      SettingsCard(
+        children: [
+          SwitchTile(
+            title: '全屏显示时间',
+            subtitle: '全屏播放时在画面顶部显示当前时间',
+            value: preferences.showClock,
+            onChanged: (value) =>
+                savePreferences(preferences.copyWith(showClock: value)),
+          ),
+          SwitchTile(
+            title: '全屏显示网速',
+            subtitle: '全屏播放时在画面顶部显示当前下载速度',
+            value: preferences.showNetworkSpeed,
+            onChanged: (value) =>
+                savePreferences(preferences.copyWith(showNetworkSpeed: value)),
+          ),
+        ],
+      ),
+      if (Platform.isAndroid && !television)
+        SettingsCard(
+          children: [
+            SwitchTile(
+              title: '离开应用时自动小窗',
+              subtitle: '播放中回到桌面时自动进入画中画',
+              value: preferences.autoPictureInPicture,
+              onChanged: (value) => savePreferences(
+                preferences.copyWith(autoPictureInPicture: value),
+              ),
             ),
           ],
         ),
@@ -298,74 +388,59 @@ class SettingsSection extends StatelessWidget {
           ),
         ],
       ),
+      if (Platform.isAndroid)
+        SettingsCard(
+          children: [
+            SwitchTile(
+              title: '下载完成后自动导出',
+              subtitle: canDownload
+                  ? '导出到 Movies/剧名/，相册和文件管理器可见，卸载后保留'
+                  : _noDownload,
+              value: store.autoExport,
+              onChanged: canDownload
+                  ? (value) => _setAutoExport(context, value)
+                  : null,
+            ),
+            SwitchTile(
+              title: '自动导出后删除 App 内副本',
+              subtitle: canDownload ? '删除后 App 内不能再离线播放' : _noDownload,
+              value: store.deleteAfterAutoExport,
+              onChanged: canDownload
+                  ? (value) => saveSetting(
+                      context,
+                      () => store.setDeleteAfterAutoExport(value),
+                    )
+                  : null,
+            ),
+            SwitchTile(
+              title: '手动导出后删除 App 内副本',
+              subtitle: canDownload ? '在已下载剧页「编辑」里点「导出」后删除' : _noDownload,
+              value: store.deleteAfterManualExport,
+              onChanged: canDownload
+                  ? (value) => saveSetting(
+                      context,
+                      () => store.setDeleteAfterManualExport(value),
+                    )
+                  : null,
+            ),
+          ],
+        ),
       if (Platform.isIOS) const _Note('iOS 下载和媒体处理需要保持应用在前台；切到后台会暂停，回到前台后可继续。'),
     ];
   }
 
-  /// 存储：下载目录与用量、清理缓存、删除全部数据。
-  /// 「目录与空间」原来挂在下载分组里，和「同时下载数量」这类偏好混在一起；
-  /// 它本质是磁盘管理，单独成组更符合用户找它的路径。
-  List<Widget> _storage(BuildContext context) => [
+  Future<void> _setAutoExport(BuildContext context, bool value) =>
+      saveSetting(context, () async {
+        if (value && !await AppDevice.requestVideoExport()) {
+          throw AppFailure('未获得存储权限，无法自动导出');
+        }
+        await store.setAutoExport(value);
+      });
+
+  List<Widget> _storage() => [
     if (!store.canDownload) const _Note(_noDownload),
     StorageView(store: store),
   ];
-
-  List<Widget> _sources(BuildContext context) {
-    final settings = editor.settings;
-    final editable = settings != null && !editor.saving;
-    return [
-      SettingsCard(
-        children: [
-          SettingsTile(
-            icon: Icons.dns_outlined,
-            title: '站源管理',
-            subtitle: allSourcesEnabled ? '开关内置源、管理自定义源' : '开关站源、管理自定义源',
-            onTap: () => open('站源管理', (_) => SourcesView(store: store)),
-          ),
-          if (allSourcesEnabled)
-            SettingsTile(
-              icon: Icons.manage_accounts_outlined,
-              title: '站源账号',
-              subtitle: '登录需要账号的站源',
-              onTap: () => open('站源账号', (_) => const SourceAccountsView()),
-            ),
-        ],
-      ),
-      SettingsCard(
-        children: [
-          SettingsTile(
-            icon: Icons.extension_outlined,
-            title: '模块',
-            subtitle: '安装、更新和卸载站源模块',
-            onTap: () => open('模块', (_) => ModulesView(store: store)),
-          ),
-        ],
-      ),
-      SettingsCard(
-        children: [
-          ?_editorError(),
-          ValueTile<int>(
-            title: '目录请求间隔',
-            subtitle: store.profile.admin ? '同一站源两次请求之间的最短间隔' : adminOnly,
-            options: {
-              for (final interval in {
-                ..._intervals,
-                ?settings?.catalogIntervalMs,
-              }.toList()..sort())
-                interval: '$interval 毫秒',
-            },
-            value: settings?.catalogIntervalMs,
-            onChanged: editable
-                ? (value) => _saveResource(
-                    context,
-                    settings.copyWith(catalogIntervalMs: value),
-                  )
-                : null,
-          ),
-        ],
-      ),
-    ];
-  }
 
   List<Widget> _proxy(BuildContext context) {
     final admin = store.profile.admin;
@@ -436,19 +511,36 @@ class SettingsSection extends StatelessWidget {
             title: appName,
             value: version.isEmpty ? '版本未知' : '版本 $version',
           ),
+          const _UpdateCheckTile(),
+          SwitchTile(
+            title: '启动时检查更新',
+            subtitle: '有新版本时每次启动都会提示，可在提示里忽略此版本',
+            value: store.checkUpdates,
+            onChanged: (value) =>
+                saveSetting(context, () => store.setCheckUpdates(value)),
+          ),
+          SwitchTile(
+            title: '匿名使用统计',
+            subtitle: '启动时发送随机编号、版本号、平台和所属版本，用于统计使用人数',
+            value: store.shareUsage,
+            onChanged: (value) =>
+                saveSetting(context, () => store.setShareUsage(value)),
+          ),
         ],
       ),
       for (final links in _links)
-        SettingsCard(
-          children: [
-            for (final (title, url) in links)
-              SettingsTile(
-                title: title,
-                subtitle: url.replaceFirst('https://', ''),
-                onTap: () => _openLink(context, url),
-              ),
-          ],
-        ),
+        if (links.any((link) => link.$2.isNotEmpty))
+          SettingsCard(
+            children: [
+              for (final (title, url) in links)
+                if (url.isNotEmpty)
+                  SettingsTile(
+                    title: title,
+                    subtitle: url.replaceFirst('https://', ''),
+                    onTap: () => _openLink(context, url),
+                  ),
+            ],
+          ),
     ];
   }
 
@@ -471,13 +563,41 @@ class SettingsSection extends StatelessWidget {
       children: [
         SettingsTile(
           title: '播放调试日记',
-          subtitle: '查看并复制应用运行、播放器事件与原生核心崩溃日志',
+          subtitle: '查看并复制应用运行与播放器的详细事件日志',
           onTap: () => open('播放调试日记', (_) => const DiaryView()),
         ),
       ],
     ),
     _BackupCard(store: store),
   ];
+}
+
+class _UpdateCheckTile extends StatefulWidget {
+  const _UpdateCheckTile();
+
+  @override
+  State<_UpdateCheckTile> createState() => _UpdateCheckTileState();
+}
+
+class _UpdateCheckTileState extends State<_UpdateCheckTile> {
+  var _busy = false;
+
+  Future<void> _check() async {
+    setState(() => _busy = true);
+    try {
+      await checkUpdateManually(context);
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) => SettingsTile(
+    title: '检查更新',
+    value: _busy ? '检查中' : null,
+    enabled: !_busy,
+    onTap: _check,
+  );
 }
 
 class _BackupCard extends StatefulWidget {
@@ -515,13 +635,15 @@ class _BackupCardState extends State<_BackupCard> {
       children: [
         SettingsTile(
           title: '导出备份',
-          subtitle: admin ? '包含本地用户、追剧、历史和设置，不含视频文件' : adminOnly,
+          subtitle: admin ? '包含本地用户、追剧、观看记录、设置、站源开关和已安装模块，不含视频文件' : adminOnly,
           enabled: admin && !_busy,
-          onTap: () => _run(() => exportBackupFile(widget.store)),
+          onTap: () => _run(() => exportBackupFile(context, widget.store)),
         ),
         SettingsTile(
           title: '恢复备份',
-          subtitle: admin ? '替换本机的用户、追剧、观看记录和偏好设置，已下载视频保留' : adminOnly,
+          subtitle: admin
+              ? '替换本机的用户、追剧、观看记录、设置和站源开关，已下载视频保留，完成后可安装备份里的模块'
+              : adminOnly,
           enabled: admin && !_busy,
           onTap: () => _run(() => restoreBackupFile(context, widget.store)),
         ),
@@ -616,7 +738,6 @@ class _ProxyDialog extends StatefulWidget {
 
 class _ProxyDialogState extends State<_ProxyDialog> {
   late final _address = TextEditingController(text: widget.initial);
-  var _visible = false;
 
   @override
   void dispose() {
@@ -634,26 +755,14 @@ class _ProxyDialogState extends State<_ProxyDialog> {
     title: const Text('代理地址'),
     content: SizedBox(
       width: 420,
-      child: TextField(
+      child: FormTextField(
         controller: _address,
         autofocus: true,
-        obscureText: !_visible,
-        enableSuggestions: false,
-        autocorrect: false,
-        keyboardType: TextInputType.url,
+        url: true,
         onSubmitted: (_) => _submit(),
-        decoration: InputDecoration(
+        decoration: const InputDecoration(
           hintText: 'http://127.0.0.1:7890',
           helperText: '支持 HTTP、HTTPS、SOCKS5',
-          suffixIcon: IconButton(
-            tooltip: _visible ? '隐藏代理地址' : '显示代理地址',
-            onPressed: () => setState(() => _visible = !_visible),
-            icon: Icon(
-              _visible
-                  ? Icons.visibility_off_outlined
-                  : Icons.visibility_outlined,
-            ),
-          ),
         ),
       ),
     ),

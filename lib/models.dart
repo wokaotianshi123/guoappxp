@@ -1,213 +1,86 @@
 import 'dart:convert';
 
-import 'app_build.dart';
+const hongguoSourceId = 'hongguo';
+
+bool validSourceId(String id) => RegExp(r'^[a-z0-9_-]{1,64}$').hasMatch(id);
 
 class SourceSite {
-  const SourceSite(this.id, this.name, this.description);
+  const SourceSite(
+    this.id,
+    this.name,
+    this.description, {
+    this.group = '',
+    this.groupLabel = '',
+    this.entryLabel = '',
+    this.available = true,
+    this.pagedSearch = false,
+    this.searchSuggestions = false,
+    this.recommends = false,
+    this.danmaku = false,
+    this.devices = false,
+    this.account = false,
+    this.metadata = false,
+    this.adult = false,
+    this.vipPrompt = true,
+  });
+  factory SourceSite.fromJson(Map<String, dynamic> json) => SourceSite(
+    json['id'] as String? ?? '',
+    json['name'] as String? ?? '',
+    json['description'] as String? ?? '',
+    group: json['group'] as String? ?? '',
+    groupLabel: json['groupName'] as String? ?? '',
+    entryLabel: json['entryName'] as String? ?? '',
+    available: json['available'] == true,
+    pagedSearch: json['search'] == true,
+    searchSuggestions: json['suggestions'] == true,
+    recommends: json['recommendations'] == true,
+    danmaku: json['danmaku'] == true,
+    devices: json['devices'] == true,
+    account: json['account'] == true,
+    metadata: json['metadata'] == true,
+    adult: json['adult'] == true,
+    vipPrompt: json['vipPrompt'] != false,
+  );
   final String id;
   final String name;
   final String description;
-  bool get onlineSearch => pagedSearch || duanjuOnlineSearch;
+  final String group;
+  final String groupLabel;
+  final String entryLabel;
+  final bool available;
+  final bool pagedSearch;
+  final bool searchSuggestions;
+  final bool recommends;
+  final bool danmaku;
+  final bool devices;
+  final bool account;
+  final bool metadata;
+  final bool adult;
+  final bool vipPrompt;
+  bool get onlineSearch => pagedSearch;
+  String get groupId => group.isEmpty ? id : group;
+  String get groupName => groupLabel.isEmpty ? name : groupLabel;
+  String get entryName => entryLabel.isEmpty ? name : entryLabel;
 
-  /// 短剧家族源都支持关键词在线搜索（与 Go 侧 duanjuSourceSpec.Searcher 对齐）。
-  bool get duanjuOnlineSearch => _duanjuIds.contains(id);
+  static List<SourceSite> _all = const [];
+  static List<SourceSite> _available = const [];
 
-  bool get pagedSearch =>
-      id == 'fanqie' ||
-      id == 'hongguo' ||
-      id == 'huangju' ||
-      id == 'yeguo' ||
-      id == 'jinguoduanju' ||
-      id == 'jinguo' ||
-      id == 'beabox' ||
-      id == 'huangguoai' ||
-      id == 'dsd' ||
-      id == 'sorani' ||
-      id == 'guipian' ||
-      id == 'hanxiaoquan' ||
-      id == 'ikanbot' ||
-      id == 'a123' ||
-      id == 'xchina' ||
-      id == 'theporny' ||
-      moduleSearchIds.contains(id) ||
-      duanjuPaged;
+  static void install(Iterable<SourceSite> sites) {
+    _all = List.unmodifiable(sites.where((site) => site.id.isNotEmpty));
+    _available = List.unmodifiable(_all.where((site) => site.available));
+  }
 
-  /// 短剧家族里支持翻页的源（与 Go 侧 duanjuSourceSpec.Paged 对齐）。
-  bool get duanjuPaged => _duanjuPagedIds.contains(id);
-
-  bool get searchSuggestions =>
-      id == 'hongguo' || moduleSuggestionIds.contains(id);
-  String get groupId => switch (id) {
-    'huangguo-video' || 'huangguoai' || 'cloudfront' => 'huangguo',
-    _ => id,
-  };
-  String get groupName => groupId == 'huangguo' ? '黄果' : name;
-  String get entryName => switch (id) {
-    'huangguo-video' => '视频',
-    'huangguoai' => 'AI',
-    'cloudfront' => '旧版',
-    _ => name,
-  };
-
-  static const hongguo = SourceSite('hongguo', '红果', '短剧 · 漫剧 · AI 剧');
-
-  /// 首页默认（主）站源。
-  ///
-  /// 番茄只是随包内置的第二个源，用户要在「全部站源」里手动切换才会用到它；
-  /// 不能靠「列表第一个」来定默认，否则以后往 `primaryValues` 前面加源时，
-  /// 首页开场会莫名其妙变成新源。
-  static const defaultSource = hongguo;
-
-  /// 番茄：内容来自番茄短剧，由本机内嵌的番茄内容引擎（127.0.0.1:18921）提供。
-  static const fanqie = SourceSite('fanqie', '番茄', '番茄短剧 · 漫剧 · 在线搜索');
-
-  static const dsd = SourceSite('dsd', '帝果', '分类视频 · 在线搜索');
-  static const sorani = SourceSite('sorani', '青空', '番剧 · 剧场动画 · 特摄');
-  static const guipian = SourceSite('guipian', '鬼片', '鬼片 · 电视剧 · 动漫');
-  static const hanxiaoquan = SourceSite(
-    'hanxiaoquan',
-    '韩小圈',
-    '韩剧 · 韩国电影 · 综艺动漫',
-  );
-  static const ikanbot = SourceSite('ikanbot', '爱看机器人', '电影 · 剧集 · 多线路搜索');
-  static const a123 = SourceSite('a123', 'A123', '电影 · 连续剧 · 综艺 · 动漫 · 多线路');
-
-  /// 短剧家族内置源（全剧视界可用），与 Go 侧 duanjuProviderCatalog 对齐。
-  /// 芽果 / 猫果 / 河果 / 星果 / 牛果已因接口失效与内容质量下线。
-  static const duanjuValues = [
-    SourceSite('fanguo', '饭果', '西饭短剧 · 搜索接口'),
-    SourceSite('huaguo', '花果', '花生短剧 · 网页目录'),
-    SourceSite('wangguo', '网果', '短剧网站 · 网页目录'),
-  ];
-
-  static const _duanjuIds = {
-    'fanguo',
-    'huaguo',
-    'wangguo',
-  };
-
-  static const _duanjuPagedIds = {
-    'huaguo',
-    'wangguo',
-  };
-
-  static const primaryValues = [
-    hongguo,
-    fanqie,
-    a123,
-    ikanbot,
-    hanxiaoquan,
-    guipian,
-    sorani,
-    ...duanjuValues,
-  ];
-
-  static const restrictedValues = [
-    SourceSite('huangdou', '黄豆', '精选短剧'),
-    SourceSite('huangju', '剧果', '热门 · 最新 · 分类短剧'),
-    SourceSite('yeguo', '野果', '分类短剧 · 在线搜索'),
-    dsd,
-    SourceSite('jinguoduanju', '禁果短剧', '推荐 · 分类短剧 · 在线搜索'),
-    SourceSite('jinguo', '禁果', '精选 · 最新 · 分类短剧 · 在线搜索'),
-    // 笔盒：站点域名常换，默认关闭，在站源管理里打开。
-    SourceSite('beabox', '笔盒', '分类视频 · 在线搜索'),
-    SourceSite('xchina', 'XChina', '分类视频 · 在线搜索'),
-    SourceSite('theporny', 'Theporny', '分类视频 · 在线搜索'),
-    SourceSite('huangguo-video', '黄果视频', '视频剧集'),
-    SourceSite('huangguoai', '黄果 AI', 'AI 短剧'),
-    SourceSite('cloudfront', '黄果旧版', '旧 API 剧库'),
-  ];
-  static const knownValues = [...primaryValues, ...restrictedValues];
-  static const allValues = [...primaryValues, ...restrictedValues];
-
-  /// 红果鉴（非全站源版）保留两个 core 内置短剧源：红果（默认）与番茄。
-  /// 番茄短剧实现已回迁到 native/core（provider_fanqie.go），不依赖外置站源
-  /// 模块，因此两种版本都能用；其余外置源仍跟随全站源门控。
-  /// 注意与「番茄听书」区分——听书是独立书源，走 audiobook_* action，
-  /// 不经此列表，两种版本都保留。
-  /// 真果鉴（`--dart-define=ALL_SOURCES=true`）才展开全部站源。
-  static const values = allSourcesEnabled ? knownValues : [hongguo, fanqie];
-
-  /// 当前会话已注册的自定义源 ID，供可用性判断与站源归一化使用。
-  static final Set<String> customIds = {};
-
-  /// 自定义源 ID → 显示名，让观看记录、追剧、下载等处的来源标签能显示真实名称。
-  static final Map<String, String> customNames = {};
-
-  /// 已安装站源模块提供的源 ID（与本体同名时是核心改过的 `mod-<标识>`）。
-  /// 模块源的启用状态、显示名称、来源标签都按这个表走，与内置源同一套逻辑。
-  static final Set<String> moduleIds = {};
-
-  /// 模块源 ID → 站源列表里的显示名（已带「（模块）」标注）。
-  static final Map<String, String> moduleNames = {};
-
-  /// 模块清单里声明了搜索 / 搜索联想的源，决定搜索页是否支持在线搜索与联想。
-  static final Set<String> moduleSearchIds = {};
-  static final Set<String> moduleSuggestionIds = {};
-
+  static List<SourceSite> get allValues => _all;
+  static List<SourceSite> get values => _available;
   static bool isCustomId(String id) => id.startsWith('custom:');
-  static bool isModuleId(String id) => moduleIds.contains(id);
-  static bool isAvailable(String id) =>
-      values.any((site) => site.id == id) ||
-      customIds.contains(id) ||
-      moduleIds.contains(id);
-  static bool isKnown(String id) =>
-      allValues.any((site) => site.id == id) ||
-      customIds.contains(id) ||
-      moduleIds.contains(id);
-  static bool isRestricted(String id) =>
-      restrictedValues.any((site) => site.id == id);
-  static String customName(String id) {
-    if (id.startsWith('custom:')) return customNames[id] ?? '自定义源';
-    return id;
-  }
-  static String moduleName(String id) => moduleNames[id] ?? '模块站源';
-
-  static SourceSite byId(String id) {
-    if (customIds.contains(id)) {
-      return SourceSite(id, customName(id), '自定义站源');
-    }
-    if (moduleIds.contains(id)) {
-      return SourceSite(id, moduleName(id), '站源模块');
-    }
-    return allValues.firstWhere((site) => site.id == id, orElse: () => hongguo);
-  }
-}
-
-class CustomSourceSite {
-  const CustomSourceSite({
-    required this.id,
-    required this.name,
-    required this.base,
-    this.rule = '',
-    this.kind = '',
-  });
-  final String id;
-  final String name;
-  final String base;
-  final String rule;
-
-  /// 源类型：web=网页源（走 HTML 抓取）/ json=JSON 源（直连 API）/ 空=自动识别。
-  final String kind;
-
-  factory CustomSourceSite.fromJson(Map<String, dynamic> json) =>
-      CustomSourceSite(
-        id: json['id'] as String? ?? '',
-        name: json['name'] as String? ?? '',
-        base: json['base'] as String? ?? '',
-        rule: json['rule'] as String? ?? '',
-        kind: (json['kind'] as String? ?? json['type'] as String? ?? ''),
-      );
-  Map<String, dynamic> toJson() => {
-    'id': id,
-    'name': name,
-    'base': base,
-    if (rule.isNotEmpty) 'rule': rule,
-    if (kind.isNotEmpty) 'kind': kind,
-  };
-  bool get isCustom => SourceSite.isCustomId(id);
-  bool get hasRule => rule.trim().isNotEmpty;
-  SourceSite get asSourceSite => SourceSite(id, name, base);
+  static bool isAvailable(String id) => _available.any((site) => site.id == id);
+  static bool isKnown(String id) => _all.any((site) => site.id == id);
+  static bool isAdult(String id) =>
+      _all.any((site) => site.id == id && site.adult);
+  static SourceSite byId(String id) => _all.firstWhere(
+    (site) => site.id == id,
+    orElse: () => SourceSite(id, id, '', available: false),
+  );
 }
 
 class SourceGroup {
@@ -258,10 +131,10 @@ class Drama {
     this.heat = '',
     this.views = '',
     this.onlineDate = '',
+    this.score = '',
     this.tags = const [],
     this.releaseStatus = '',
     this.badge = '',
-    this.score = '',
     this.peers = const [],
   }) : vipStatus = vip;
   final String id;
@@ -277,14 +150,12 @@ class Drama {
   final String heat;
   final String views;
   final String onlineDate;
+  final String score;
   final List<String> tags;
   final String releaseStatus;
-
-  /// 站点自己的海报角标（如「6集」「完整版」）；为空时回落到集数。
   final String badge;
-  final String score;
 
-  /// 跨源聚合搜索里同一部剧在其它站源的副本，供「全部源」结果展示与切换播放源。
+  /// 跨源聚合搜索里其它站源的同一部剧，供界面一键切换播放源。
   final List<Drama> peers;
   String get releaseLabel => switch (releaseStatus) {
     'finished' || 'completed' => '已完结',
@@ -311,10 +182,10 @@ class Drama {
     heat: json['heat']?.toString() ?? '',
     views: json['views']?.toString() ?? '',
     onlineDate: json['onlineDate'] as String? ?? '',
+    score: json['score'] as String? ?? '',
     tags: (json['tags'] as List? ?? const []).whereType<String>().toList(),
     releaseStatus: json['releaseStatus'] as String? ?? '',
     badge: json['badge'] as String? ?? '',
-    score: json['score'] as String? ?? '',
     peers: [
       for (final row in json['peers'] as List? ?? const [])
         Drama.fromJson(Map<String, dynamic>.from(row as Map)),
@@ -334,10 +205,10 @@ class Drama {
     'heat': heat,
     'views': views,
     'onlineDate': onlineDate,
+    'score': score,
     'tags': tags,
     'releaseStatus': releaseStatus,
     'badge': badge,
-    'score': score,
   };
 
   Drama merge(Drama fresh) {
@@ -372,13 +243,13 @@ class Drama {
       heat: fresh.heat.isEmpty ? heat : fresh.heat,
       views: fresh.views.isEmpty ? views : fresh.views,
       onlineDate: fresh.onlineDate.isEmpty ? onlineDate : fresh.onlineDate,
+      score: fresh.score.isEmpty ? score : fresh.score,
       tags: fresh.tags.isEmpty ? tags : fresh.tags,
       releaseStatus:
           fresh.releaseStatus.isEmpty || fresh.releaseStatus == 'unknown'
           ? releaseStatus
           : fresh.releaseStatus,
       badge: fresh.badge.isEmpty ? badge : fresh.badge,
-      score: fresh.score.isEmpty ? score : fresh.score,
     );
   }
 }
@@ -410,11 +281,8 @@ class DramaDetail {
   final Drama drama;
   final List<Episode> episodes;
   final String warning;
-
-  /// 同一系列的各季（按季号升序）；不足两季时为空，详情页不显示卡片条。
   final List<DramaSeason> seasons;
 
-  /// 本季播完后要接的下一季；没有下一季时为 null。
   DramaSeason? get nextSeason {
     final index = seasons.indexWhere((season) => season.drama.id == drama.id);
     return index < 0 || index + 1 >= seasons.length ? null : seasons[index + 1];
@@ -433,7 +301,6 @@ class DramaDetail {
   }
 }
 
-/// 系列剧里的一季：季号 + 该季自己的剧集信息。
 class DramaSeason {
   const DramaSeason({required this.number, required this.drama});
   final int number;
@@ -441,7 +308,6 @@ class DramaSeason {
 
   String get label => '第$number季';
 
-  /// 上线日期在未来、或还没有任何分集时算「待上线」。
   bool get upcoming {
     final date = DateTime.tryParse(drama.onlineDate);
     if (date == null) return drama.episodes == 0;
@@ -488,69 +354,9 @@ class CatalogPage {
   );
 }
 
-/// 跨源聚合搜索的进度快照。
-///
-/// 原生核心一边搜一边回：每条 [items] 是「截至目前所有已返回站源」的归一去重结果，
-/// [done] / [total] 表示完成进度，[pending] 是还没回来的站源。界面据此边搜边显示，
-/// 不必等最慢的站源。
-class SearchProgress {
-  const SearchProgress({
-    this.id = '',
-    this.query = '',
-    this.items = const [],
-    this.sources = const [],
-    this.pending = const [],
-    this.failures = const {},
-    this.warning = '',
-    this.total = 0,
-    this.done = 0,
-    this.finished = false,
-  });
-  final String id;
-  final String query;
-  final List<Drama> items;
-
-  /// 已成功返回的站源。
-  final List<String> sources;
-
-  /// 仍在搜索中的站源。
-  final List<String> pending;
-  final Map<String, String> failures;
-  final String warning;
-  final int total;
-  final int done;
-  final bool finished;
-
-  bool get running => !finished;
-
-  factory SearchProgress.fromJson(Map<String, dynamic> json) => SearchProgress(
-    id: json['search'] as String? ?? '',
-    query: json['query'] as String? ?? '',
-    items: [
-      for (final row in json['items'] as List? ?? const [])
-        Drama.fromJson(Map<String, dynamic>.from(row as Map)),
-    ],
-    sources: (json['sources'] as List? ?? const [])
-        .whereType<String>()
-        .toList(),
-    pending: (json['pending'] as List? ?? const [])
-        .whereType<String>()
-        .toList(),
-    failures: {
-      for (final entry in (json['failures'] as Map? ?? const {}).entries)
-        entry.key as String: '${entry.value}',
-    },
-    warning: json['warning'] as String? ?? '',
-    total: intValue(json['total']),
-    done: intValue(json['done']),
-    finished: json['finished'] == true,
-  );
-}
-
 class PlaybackPlan {
   const PlaybackPlan({
     required this.url,
-    this.directUrl = '',
     this.headers = const {},
     this.decryptionKey = '',
     this.quality = 0,
@@ -562,14 +368,13 @@ class PlaybackPlan {
     this.routeIndex = 0,
     this.routeCount = 1,
     this.local = false,
+    this.directUrl = '',
   });
   final String url;
 
-  /// 站源返回的原始播放地址，未经本机中转。投屏时优先用它，电视自己上网
-  /// 拉流，手机退出 App 也能继续播。空串表示这条线路只能经手机转发
-  /// （本地文件、需要本机解密或重建播放列表的加密线路）。
+  /// 站源给出的原始播放地址。非空时投屏直接把它交给电视，电视自己上网拉流，
+  /// 手机退出 App 也不影响播放；为空说明这条线路只能经手机转发。
   final String directUrl;
-
   final Map<String, String> headers;
   final String decryptionKey;
   final int quality;
@@ -699,6 +504,8 @@ class DownloadJob {
 }
 
 typedef DownloadConversion = ({String input, String key, String output});
+typedef CastDevice = ({String id, String name});
+typedef CastStatus = ({String state, double position, double duration});
 
 List<Map<String, dynamic>> readJsonList(String? value) {
   try {
@@ -709,4 +516,99 @@ List<Map<String, dynamic>> readJsonList(String? value) {
   } catch (_) {
     return [];
   }
+}
+
+/// 自定义源（MacCMS 站点 / XBPQ 规则源）。移植自 guoappxp。
+class CustomSourceSite {
+  const CustomSourceSite({
+    required this.id,
+    required this.name,
+    required this.base,
+    this.rule = '',
+    this.kind = '',
+  });
+  final String id;
+  final String name;
+  final String base;
+  final String rule;
+
+  /// 源类型：web=网页源（走 HTML 抓取）/ json=JSON 源（直连 API）/ 空=自动识别。
+  final String kind;
+
+  factory CustomSourceSite.fromJson(Map<String, dynamic> json) =>
+      CustomSourceSite(
+        id: json['id'] as String? ?? '',
+        name: json['name'] as String? ?? '',
+        base: json['base'] as String? ?? '',
+        rule: json['rule'] as String? ?? '',
+        kind: (json['kind'] as String? ?? json['type'] as String? ?? ''),
+      );
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'name': name,
+    'base': base,
+    if (rule.isNotEmpty) 'rule': rule,
+    if (kind.isNotEmpty) 'kind': kind,
+  };
+  bool get isCustom => SourceSite.isCustomId(id);
+  bool get hasRule => rule.trim().isNotEmpty;
+  SourceSite get asSourceSite => SourceSite(id, name, base);
+}
+
+/// 一轮跨源聚合搜索的增量快照。移植自 guoappxp。
+///
+/// 核心侧每个站源返回后都会更新快照，前端按 [id] 轮询即可看到结果陆续到位，
+/// 不必等所有站源搜完；[pending] 是仍在搜的站源，[failures] 记录失败原因。
+class SearchProgress {
+  const SearchProgress({
+    this.id = '',
+    this.query = '',
+    this.items = const [],
+    this.sources = const [],
+    this.pending = const [],
+    this.failures = const {},
+    this.warning = '',
+    this.total = 0,
+    this.done = 0,
+    this.finished = false,
+  });
+  final String id;
+  final String query;
+  final List<Drama> items;
+
+  /// 已成功返回的站源。
+  final List<String> sources;
+
+  /// 仍在搜索中的站源。
+  final List<String> pending;
+  final Map<String, String> failures;
+  final String warning;
+  final int total;
+  final int done;
+  final bool finished;
+
+  bool get running => !finished;
+
+  factory SearchProgress.fromJson(Map<String, dynamic> json) => SearchProgress(
+    id: json['search'] as String? ?? '',
+    query: json['query'] as String? ?? '',
+    items: [
+      for (final row in json['items'] as List? ?? const [])
+        Drama.fromJson(Map<String, dynamic>.from(row as Map)),
+    ],
+    sources: (json['sources'] as List? ?? const [])
+        .whereType<String>()
+        .toList(),
+    pending: (json['pending'] as List? ?? const [])
+        .whereType<String>()
+        .toList(),
+    failures: {
+      for (final entry in (json['failures'] as Map? ?? const {}).entries)
+        entry.key as String: '${entry.value}',
+    },
+    warning: json['warning'] as String? ?? '',
+    total: intValue(json['total']),
+    done: intValue(json['done']),
+    finished: json['finished'] == true,
+  );
 }

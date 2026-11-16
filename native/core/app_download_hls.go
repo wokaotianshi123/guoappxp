@@ -39,7 +39,6 @@ func nativeHLSSelect(lines []string, quality int) ([]string, int, bool) {
 		if resolution := strings.Split(attributes["RESOLUTION"], "x"); len(resolution) == 2 {
 			width, _ := strconv.Atoi(resolution[0])
 			height, _ = strconv.Atoi(resolution[1])
-			// 竖屏剧（如 720x1280）按画面短边算档位，别把 720P 标成 1280P。
 			if width > 0 && width < height {
 				height = width
 			}
@@ -104,7 +103,7 @@ func nativeDownloadAssetName(address, extension string) string {
 	return hex.EncodeToString(digest[:16]) + extension
 }
 
-func (manager *nativeDownloads) downloadBundle(ctx context.Context, media providerMedia, quality int) (nativeDownloadBundle, error) {
+func (manager *nativeDownloads) downloadBundle(ctx context.Context, media ProviderMedia, quality int) (nativeDownloadBundle, error) {
 	ctx = providerMediaContext(ctx, media.Credentials)
 	bundle := nativeDownloadBundle{quality: media.Quality, playlists: map[string][]byte{}}
 	visited := map[string]string{}
@@ -143,7 +142,7 @@ func (manager *nativeDownloads) downloadBundle(ctx context.Context, media provid
 			bundle.quality = height
 		}
 		if !master && !strings.Contains(body, "#EXT-X-ENDLIST") {
-			return "", errors.New("暂不支持下载直播或尚未结束的播放列表")
+			return "", errors.New("播放列表没有结束标记，可能是直播或尚未结束，暂不支持下载")
 		}
 		parsed, err := url.Parse(base)
 		if err != nil {
@@ -176,7 +175,7 @@ func (manager *nativeDownloads) downloadBundle(ctx context.Context, media provid
 				if err != nil || len(data) != 16 {
 					return "", errors.New("内嵌视频密钥无效")
 				}
-			} else if !isProviderHTTPMediaURL(resolved) {
+			} else if !IsProviderHTTPMediaURL(resolved) {
 				return "", errors.New("分片地址不支持下载")
 			}
 			extension := strings.ToLower(path.Ext(relative.Path))

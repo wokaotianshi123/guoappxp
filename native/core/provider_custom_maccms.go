@@ -1072,14 +1072,14 @@ func (engine *nativeEngine) removeCustomMaccmsSource(id string) error {
 // 目录/页面请求改走 Chrome 150 指纹传输，与内置 Browser 源一致，并复用源站 Set-Cookie
 // 下发的 cf_clearance，从而提升前缀加速源（cfkua.wokaotianshi.eu.org 这类）可用性。
 func (engine *nativeEngine) registerCustomBrowserHost(base string) {
-	if engine == nil || engine.downloader == nil || engine.downloader.browserTransport == nil {
+	// guoappxpx 的浏览器指纹传输按站源描述符静态匹配，没有运行期登记接口，
+	// 自定义源走标准客户端即可；这里保留调用点，便于将来接上登记能力。
+	if engine == nil || engine.downloader == nil {
 		return
 	}
-	parsed, err := url.Parse(base)
-	if err != nil || parsed.Host == "" {
+	if _, err := url.Parse(base); err != nil {
 		return
 	}
-	engine.downloader.browserTransport.registerHost(parsed.Hostname())
 }
 
 func (engine *nativeEngine) updateCustomMaccmsSource(id, name, base, rule, kind string) (customMaccmsSource, error) {

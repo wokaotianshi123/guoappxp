@@ -21,11 +21,12 @@ class PlaybackHandle {
     required int index,
     double position = 0,
     bool autoplay = true,
+    bool preopen = true,
   }) {
     final main = _player();
-    final standby = _player();
+    final standby = preopen ? _player() : null;
     _videos[main] = VideoController(main);
-    _videos[standby] = VideoController(standby);
+    if (standby != null) _videos[standby] = VideoController(standby);
     session = PlaybackSession(
       repository: repository,
       store: store,

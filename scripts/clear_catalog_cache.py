@@ -6,10 +6,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-APPS = {
-    "zhen": ("真果鉴", "zhenguojian.exe"),
-    "hong": ("红果鉴", "hongguojian.exe"),
-}
+from app_build import app
 
 
 def running(executable: str) -> bool:
@@ -33,25 +30,24 @@ def remove(path: Path) -> None:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description="清空 Windows 版剧库缓存，模拟首次加载")
-    parser.add_argument("--app", choices=APPS, default="zhen")
     parser.add_argument("--covers", action="store_true", help="同时清空海报缓存")
     args = parser.parse_args()
 
-    name, executable = APPS[args.app]
-    if running(executable):
-        print(f"{name} 正在运行，请先退出应用")
+    if running(app.slug + ".exe"):
+        print(f"{app.display_name} 正在运行，请先退出应用")
         return 1
-    directory = Path(os.environ["APPDATA"]) / name / name
+    directory = Path(os.environ["APPDATA"]) / app.bundle_identifier
     if not directory.is_dir():
         print(f"找不到数据目录 {directory}")
         return 1
 
-    remove(directory / "catalogs.json")
+    cache = Path(os.environ["LOCALAPPDATA"]) / app.bundle_identifier
+    remove(cache / "catalogs.json")
     remove(directory / "sources.json")
-    for temporary in directory.glob(".cache-write-*"):
+    for temporary in cache.glob(".cache-write-*"):
         remove(temporary)
     if args.covers:
-        remove(directory / "covers-v1")
+        remove(cache / "covers-v1")
     print("完成，追剧、收藏、设置和下载未改动")
     return 0
 

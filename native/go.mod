@@ -5,11 +5,7 @@ go 1.26.0
 require (
 	github.com/bogdanfinn/fhttp v0.6.9
 	github.com/bogdanfinn/tls-client v1.16.0
-	// goja 是站源模块（runtime: js）的 JS 引擎。纯 Go 实现，各平台（Android /
-	// Windows / macOS / iOS / 本地服务版）通用，不需要额外的原生依赖。
 	github.com/dop251/goja v0.0.0-20261027234916-5f913d1693d9
-	github.com/mozillazg/go-pinyin v0.21.0
-	github.com/nathanstitt/omnidoc v1.0.0
 	golang.org/x/net v0.55.0
 	golang.org/x/sys v0.47.0
 	golang.org/x/text v0.43.0
@@ -27,6 +23,8 @@ require (
 	github.com/go-sourcemap/sourcemap v2.1.3+incompatible // indirect
 	github.com/google/pprof v0.0.0-20230207041349-798e818bf904 // indirect
 	github.com/klauspost/compress v1.18.2 // indirect
+	github.com/mozillazg/go-pinyin v0.21.0 // indirect
+	github.com/nathanstitt/omnidoc v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	golang.org/x/crypto v0.51.0 // indirect

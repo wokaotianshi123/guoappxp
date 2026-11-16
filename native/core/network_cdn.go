@@ -36,8 +36,6 @@ func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response,
 		if err == nil || !blockedHostLookup(request, err) {
 			return response, err
 		}
-		// 路由或系统「去广告」规则把域名解析到 0.0.0.0、或系统 DNS 直接报
-		// 域名不存在时，用 DoH 查到的真实地址重连；设置了代理则不动。
 		if transport.base.Proxy != nil {
 			if proxyURL, proxyErr := transport.base.Proxy(request); proxyErr != nil || proxyURL != nil {
 				return nil, err
@@ -81,6 +79,7 @@ func (transport *cdnTransport) RoundTrip(request *http.Request) (*http.Response,
 }
 
 func (transport *cdnTransport) roundTripResolved(request *http.Request, proxyURL *url.URL, routeKey string, subnets []string, tried map[string]bool, lastErr error) (*http.Response, error) {
+	attempted := false
 	for _, subnet := range subnets {
 		entry, lookupErr := transport.resolver.lookupEntry(request.Context(), request.URL.Hostname(), subnet)
 		if lookupErr != nil {
@@ -94,6 +93,7 @@ func (transport *cdnTransport) roundTripResolved(request *http.Request, proxyURL
 				continue
 			}
 			tried[address] = true
+			attempted = true
 			response, err := transport.roundTripAddress(request, proxyURL, routeKey, address)
 			if err == nil {
 				transport.mu.Lock()
@@ -107,7 +107,10 @@ func (transport *cdnTransport) roundTripResolved(request *http.Request, proxyURL
 			lastErr = err
 		}
 	}
-	return nil, fmt.Errorf("资源 %s 连接失败（已尝试备用 DNS 地址）: %w", request.URL.Hostname(), publicError(lastErr))
+	if !attempted {
+		return nil, fmt.Errorf("资源 %s 连接失败（备用 DNS 没有查到可再尝试的地址）: %w", request.URL.Hostname(), PublicError(lastErr))
+	}
+	return nil, fmt.Errorf("资源 %s 连接失败（已尝试备用 DNS 地址）: %w", request.URL.Hostname(), PublicError(lastErr))
 }
 
 func (transport *cdnTransport) roundTripAddress(request *http.Request, proxyURL *url.URL, routeKey, address string) (*http.Response, error) {
@@ -211,8 +214,6 @@ func (transport *cdnTransport) CloseIdleConnections() {
 	transport.preferred = map[string]cdnRoute{}
 }
 
-// blockedHostLookup 判断请求失败是否属于「域名被解析到 0.0.0.0 / 回环，
-// 或系统 DNS 直接报域名不存在」，这两种情况可以用 DoH 拿到的真实地址重试。
 func blockedHostLookup(request *http.Request, err error) bool {
 	host := request.URL.Hostname()
 	if net.ParseIP(host) != nil || strings.EqualFold(host, "localhost") {

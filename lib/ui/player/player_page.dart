@@ -1,9 +1,7 @@
 import 'dart:async';
 
-import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:window_manager/window_manager.dart';
 
 import '../../local_store.dart';
 import '../../models.dart';
@@ -14,8 +12,10 @@ import '../theme/app_theme.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/follow_button.dart';
 import 'episode_grid.dart';
+import 'mini_player.dart';
 import 'playback_handle.dart';
 import 'player_surface.dart';
+import 'window_fullscreen.dart';
 
 const _panelWidth = 360.0;
 
@@ -25,10 +25,14 @@ class PlayerPage extends StatefulWidget {
     required this.store,
     required this.handle,
     this.padFullscreen,
+    this.onWindowFullscreen,
+    this.onMiniWindow,
   });
   final LocalStore store;
   final PlaybackHandle handle;
   final ValueNotifier<bool>? padFullscreen;
+  final ValueChanged<bool>? onWindowFullscreen;
+  final VoidCallback? onMiniWindow;
 
   @override
   State<PlayerPage> createState() => _PlayerPageState();
@@ -63,17 +67,16 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
     _hintTimer?.cancel();
     _hint.dispose();
     _focus.dispose();
-    if (_windowFullscreen) unawaited(_setFullScreen(false));
+    if (_windowFullscreen) {
+      widget.onWindowFullscreen?.call(false);
+      unawaited(_setFullScreen(false));
+    }
     super.dispose();
   }
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    _playback.setForeground(
-      state == AppLifecycleState.resumed ||
-          defaultTargetPlatform == TargetPlatform.windows &&
-              state == AppLifecycleState.inactive,
-    );
+    _playback.setForeground(playerVisible(state));
   }
 
   bool get _canDownload =>
@@ -82,16 +85,17 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
 
   bool get _roomy => MediaQuery.sizeOf(context).width - 32 >= 840;
 
-  Future<void> _setFullScreen(bool value) =>
-      windowManager.setFullScreen(value).catchError((Object _) {});
+  Future<void> _setFullScreen(bool value) => setWindowFullScreen(value);
 
   Future<void> _toggleFullscreen() async {
+    if (_playback.locked) return _say('已锁定，点屏幕显示锁图标');
     if (widget.padFullscreen case final pad?) {
       pad.value = !pad.value;
       _focus.requestFocus();
       return;
     }
     final next = !_windowFullscreen;
+    widget.onWindowFullscreen?.call(next);
     setState(() => _windowFullscreen = next);
     _focus.requestFocus();
     await _setFullScreen(next);
@@ -106,7 +110,9 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
   bool get _filled => _fullscreen || _wide && !_selecting;
 
   void _back() {
-    if (_fullscreen) {
+    if (_playback.locked) {
+      _say('已锁定，点屏幕显示锁图标');
+    } else if (_fullscreen) {
       unawaited(_toggleFullscreen());
     } else if (_selecting) {
       _endSelection();
@@ -185,10 +191,12 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
         keyboard.isShiftPressed) {
       return KeyEventResult.ignored;
     }
-    // 只处理 Esc：Android 返回键的 goBack 还会走系统 popRoute / PopScope，
-    // 两边都退会一次退两级。
     if (key == LogicalKeyboardKey.escape) {
       if (down) _back();
+      return KeyEventResult.handled;
+    }
+    if (key == LogicalKeyboardKey.f11) {
+      if (down) unawaited(_toggleFullscreen());
       return KeyEventResult.handled;
     }
     if (!_focus.hasPrimaryFocus) return KeyEventResult.ignored;
@@ -245,7 +253,10 @@ class _PlayerPageState extends State<PlayerPage> with WidgetsBindingObserver {
             wide: _wide,
             onFullscreen: () => unawaited(_toggleFullscreen()),
             onWide: _toggleWide,
+            onVolume: (delta) => _volume(_playback.changeVolume(delta)),
+            onMiniWindow: widget.onMiniWindow,
             onSurface: _focus.requestFocus,
+            onSay: _say,
           ),
         ),
       ),

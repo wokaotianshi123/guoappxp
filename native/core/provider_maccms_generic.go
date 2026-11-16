@@ -115,30 +115,30 @@ func maccmsGenericTitleOK(value string) bool {
 
 // maccmsGenericTitle 依次尝试 a[title] → img[alt] → 链接文本 → 邻近标题节点。
 func maccmsGenericTitle(anchor *html.Node) string {
-	if text := maccmsGenericCleanText(providerHTMLAttr(anchor, "title")); maccmsGenericTitleOK(text) {
+	if text := maccmsGenericCleanText(ProviderHTMLAttr(anchor, "title")); maccmsGenericTitleOK(text) {
 		return text
 	}
-	for _, image := range providerHTMLNodes(anchor, func(node *html.Node) bool { return node.Data == "img" }) {
-		if text := maccmsGenericCleanText(providerHTMLAttr(image, "alt")); maccmsGenericTitleOK(text) {
+	for _, image := range ProviderHTMLNodes(anchor, func(node *html.Node) bool { return node.Data == "img" }) {
+		if text := maccmsGenericCleanText(ProviderHTMLAttr(image, "alt")); maccmsGenericTitleOK(text) {
 			return text
 		}
 	}
-	if text := maccmsGenericCleanText(providerHTMLText(anchor)); maccmsGenericTitleOK(text) {
+	if text := maccmsGenericCleanText(ProviderHTMLText(anchor)); maccmsGenericTitleOK(text) {
 		return text
 	}
 	for depth, parent := 0, anchor.Parent; parent != nil && depth < 3; depth, parent = depth+1, parent.Parent {
-		nodes := providerHTMLNodes(parent, func(node *html.Node) bool {
+		nodes := ProviderHTMLNodes(parent, func(node *html.Node) bool {
 			if node.Type != html.ElementNode {
 				return false
 			}
 			if node.Data == "h1" || node.Data == "h2" || node.Data == "h3" || node.Data == "h4" {
 				return true
 			}
-			class := strings.ToLower(providerHTMLAttr(node, "class"))
+			class := strings.ToLower(ProviderHTMLAttr(node, "class"))
 			return strings.Contains(class, "title") || strings.Contains(class, "name")
 		})
 		for _, node := range nodes {
-			if text := maccmsGenericCleanText(providerHTMLText(node)); maccmsGenericTitleOK(text) {
+			if text := maccmsGenericCleanText(ProviderHTMLText(node)); maccmsGenericTitleOK(text) {
 				return text
 			}
 		}
@@ -167,11 +167,11 @@ func maccmsGenericCover(anchor *html.Node, link string) string {
 			continue
 		}
 		for _, attribute := range []string{"data-original", "data-src", "src"} {
-			if address := providerCoverAddress(providerHTMLAttr(child, attribute), link); address != "" {
+			if address := providerCoverAddress(ProviderHTMLAttr(child, attribute), link); address != "" {
 				return address
 			}
 		}
-		if address := maccmsStyleCover(providerHTMLAttr(child, "style"), link); address != "" {
+		if address := maccmsStyleCover(ProviderHTMLAttr(child, "style"), link); address != "" {
 			return address
 		}
 	}
@@ -180,7 +180,7 @@ func maccmsGenericCover(anchor *html.Node, link string) string {
 
 func maccmsGenericRemark(anchor *html.Node) string {
 	for depth, parent := 0, anchor.Parent; parent != nil && depth < 2; depth, parent = depth+1, parent.Parent {
-		text := maccmsGenericCleanText(providerHTMLText(parent))
+		text := maccmsGenericCleanText(ProviderHTMLText(parent))
 		runes := []rune(text)
 		if len(runes) > 120 {
 			text = string(runes[:120])
@@ -216,8 +216,8 @@ func maccmsGenericScan(document *html.Node, base string, strict bool) []maccmsGe
 	var candidates []maccmsGenericCandidate
 	seen := map[string]bool{}
 	skeletons := map[string]int{}
-	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
-		href := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
+	for _, anchor := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		href := strings.TrimSpace(ProviderHTMLAttr(anchor, "href"))
 		if href == "" || strings.HasPrefix(href, "#") || maccmsGenericScheme.MatchString(href) {
 			continue
 		}
@@ -357,13 +357,13 @@ func maccmsGenericCategoryKey(path string) (string, string, string, bool) {
 }
 
 func maccmsGenericCategoryName(anchor *html.Node) string {
-	if text := maccmsCleanAnchorText(providerHTMLText(anchor)); text != "" {
+	if text := maccmsCleanAnchorText(ProviderHTMLText(anchor)); text != "" {
 		return text
 	}
-	if text := maccmsCleanAnchorText(providerHTMLAttr(anchor, "title")); text != "" {
+	if text := maccmsCleanAnchorText(ProviderHTMLAttr(anchor, "title")); text != "" {
 		return text
 	}
-	text := maccmsGenericCleanText(providerHTMLText(anchor))
+	text := maccmsGenericCleanText(ProviderHTMLText(anchor))
 	runes := []rune(text)
 	if len(runes) < 1 || len(runes) > 16 {
 		return ""
@@ -424,8 +424,8 @@ func maccmsGenericCategoryScan(document *html.Node, base string) ([]maccmsCatego
 	}
 	groups := map[string]*group{}
 	order := 0
-	for _, anchor := range providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
-		href := strings.TrimSpace(providerHTMLAttr(anchor, "href"))
+	for _, anchor := range ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "a" }) {
+		href := strings.TrimSpace(ProviderHTMLAttr(anchor, "href"))
 		if href == "" || strings.HasPrefix(href, "#") || maccmsGenericScheme.MatchString(href) {
 			continue
 		}

@@ -1,4 +1,5 @@
 import 'dart:io';
+import 'dart:ui';
 
 import 'package:flutter/material.dart';
 
@@ -6,6 +7,8 @@ import '../../core_bridge.dart';
 import '../../cover_loader.dart';
 import '../../models.dart';
 import '../app_scope.dart';
+import '../cover_blur.dart';
+import 'motion/motion_widgets.dart';
 
 const vipGold = Color(0xFFF6C86B);
 const onVipGold = Color(0xFF40300D);
@@ -39,11 +42,17 @@ class DramaCover extends StatelessWidget {
     this.radius = 12,
     this.details = true,
     this.rank,
+    this.heroScope,
+    this.showScore = false,
+    this.exploreBlur = false,
   });
   final Drama drama;
   final double radius;
   final bool details;
+  final bool exploreBlur;
+  final bool showScore;
   final int? rank;
+  final String? heroScope;
   static const imagesDisabled = bool.fromEnvironment('DISABLE_REMOTE_IMAGES');
 
   @override
@@ -59,19 +68,48 @@ class DramaCover extends StatelessWidget {
         ),
       ),
     );
+    Widget image = Stack(
+      fit: StackFit.expand,
+      children: [
+        placeholder,
+        if (!imagesDisabled && drama.id.isNotEmpty)
+          CoverImage(
+            key: ValueKey('${drama.id}\u0000${drama.cover}'),
+            drama: drama,
+            repository: AppScope.of(context).repository,
+            placeholder: placeholder,
+          ),
+      ],
+    );
+    // Always build the same wrapper so the CoverImage state is kept when the
+    // hero condition flips; HeroMode just turns the flight on or off.
+    final heroEnabled = heroScope != null && drama.id.isNotEmpty;
+    final blurred =
+        CoverBlurScope.of(context)?.blurs(drama, explore: exploreBlur) ?? false;
+    image = HeroMode(
+      enabled: heroEnabled,
+      child: Hero(
+        tag: coverHeroTag(drama.id, heroScope ?? ''),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(radius),
+          child: ImageFiltered(
+            enabled: blurred,
+            imageFilter: ImageFilter.blur(
+              sigmaX: 16,
+              sigmaY: 16,
+              tileMode: TileMode.clamp,
+            ),
+            child: image,
+          ),
+        ),
+      ),
+    );
     return ClipRRect(
       borderRadius: BorderRadius.circular(radius),
       child: Stack(
         fit: StackFit.expand,
         children: [
-          placeholder,
-          if (!imagesDisabled && drama.id.isNotEmpty)
-            CoverImage(
-              key: ValueKey('${drama.id}\u0000${drama.cover}'),
-              drama: drama,
-              repository: AppScope.of(context).repository,
-              placeholder: placeholder,
-            ),
+          image,
           if (details)
             const IgnorePointer(
               child: DecoratedBox(
@@ -91,6 +129,19 @@ class DramaCover extends StatelessWidget {
               child: Text(
                 drama.badge.isNotEmpty ? drama.badge : '共 ${drama.episodes} 集',
                 style: const TextStyle(color: Colors.white, fontSize: 12),
+              ),
+            ),
+          if (details && showScore && drama.score.isNotEmpty)
+            Positioned(
+              right: 9,
+              bottom: 9,
+              child: Text(
+                drama.score,
+                style: const TextStyle(
+                  color: Color(0xFFFFC542),
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                ),
               ),
             ),
           if (details && drama.vip)
@@ -287,6 +338,7 @@ class _CoverImageState extends State<CoverImage> {
         fit: BoxFit.cover,
         cacheWidth: _decodeWidth,
         excludeFromSemantics: true,
+        frameBuilder: fadeInFrameBuilder,
         errorBuilder: (_, _, _) => _failure(snapshot.data),
       );
     },

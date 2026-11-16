@@ -1,9 +1,5 @@
 package core
 
-// 模块站源的可选能力：推荐流、搜索联想、弹幕、设备注册、榜单、分季、封面、
-// 元数据补全、目录游标、播放鉴权。移植自 guoappxpx，接口名对齐 guoappxp 的
-// 既有定义（榜单用 SourceRankingEntries，账号用 SourceAccount）。
-
 import (
 	"context"
 	"encoding/json"
@@ -31,19 +27,6 @@ type jsMediaAuthorization struct {
 type jsSeason struct {
 	Number int   `json:"number"`
 	Drama  Drama `json:"drama"`
-}
-
-type jsRankingItem struct {
-	Rank   int    `json:"rank"`
-	Drama  Drama  `json:"drama"`
-	Metric string `json:"metric"`
-}
-
-type jsRankingPage struct {
-	Items       []jsRankingItem `json:"items"`
-	HasMore     bool            `json:"hasMore"`
-	TotalPages  int             `json:"totalPages"`
-	UpdatedText string          `json:"updatedText"`
 }
 
 func moduleRaw(raw json.RawMessage) json.RawMessage {
@@ -95,22 +78,9 @@ func (p *jsProvider) Devices(ctx context.Context, register bool) (bool, error) {
 	return ready, p.call(ctx, "devices", &ready, register)
 }
 
-// RankingEntries 实现 SourceRankingEntries：模块的 rankingPage(boardId, page)
-// 直接给出名次与热度文案，运行时按原样透传。
-//
-// 只实现这一种榜单能力（不实现 SourceRankings）是有意的：guoappxp 的
-// providerRankingPage 会优先取 SourceRankings，而那条路径拿不到名次，
-// 榜单页就会丢掉排位标记。
-func (p *jsProvider) RankingEntries(ctx context.Context, board string, page int) ([]RankingEntry, bool, error) {
-	var result jsRankingPage
-	if err := p.call(ctx, "rankingPage", &result, board, page); err != nil {
-		return nil, false, err
-	}
-	entries := make([]RankingEntry, 0, len(result.Items))
-	for _, item := range result.Items {
-		entries = append(entries, RankingEntry{Rank: item.Rank, Drama: item.Drama, Metric: item.Metric})
-	}
-	return entries, result.HasMore, nil
+func (p *jsProvider) RankingPage(ctx context.Context, board RankingBoard, page int) (RankingPage, error) {
+	var result RankingPage
+	return result, p.call(ctx, "rankingPage", &result, board.ID, page)
 }
 
 func (p *jsProvider) Seasons(ctx context.Context, sourceID string) ([]Season, error) {

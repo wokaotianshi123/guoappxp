@@ -1,5 +1,12 @@
 package core
 
+// 红果 App 请求客户端（听书专用裁剪版）。
+//
+// 移植自 guoappxp 的 provider_hongguo_app.go。原版客户端同时承载目录、详情、
+// 搜索、联想、弹幕、标签等多条业务线，字段与方法量很大；guoappxpx 本体不内置
+// 红果站源（站源以模块形式安装），听书只需要「签好名的 App 接口请求」这一项
+// 能力，因此这里只保留设备注册 + 请求签名 + 重试/轮转，其余缓存表一概不带。
+
 import (
 	"bytes"
 	"context"
@@ -19,126 +26,50 @@ const hongguoAppBaseURL = "https://api5-normal-sinfonlineb.fqnovel.com"
 
 const hongguoAppUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)"
 
-type hongguoCatalogCursor struct {
-	Offset        int       `json:"offset"`
-	SessionID     string    `json:"sessionId,omitempty"`
-	LastID        string    `json:"lastId,omitempty"`
-	PageSignature string    `json:"pageSignature,omitempty"`
-	Initialized   bool      `json:"initialized"`
-	Exhausted     bool      `json:"exhausted"`
-	UpdatedAt     time.Time `json:"updatedAt"`
-}
-
-type hongguoCatalogState struct {
-	Version          int                             `json:"version"`
-	DeviceID         string                          `json:"deviceId"`
-	InstallID        string                          `json:"installId"`
-	Registered       bool                            `json:"registered,omitempty"`
-	HelperDeviceID   string                          `json:"helperDeviceId,omitempty"`
-	HelperInstallID  string                          `json:"helperInstallId,omitempty"`
-	HelperRegistered bool                            `json:"helperRegistered,omitempty"`
-	Feeds            map[string]hongguoCatalogCursor `json:"feeds"`
-}
+// 书城 Tab 与 Cell 接口不需要设备签名，其余接口都需要。
+const (
+	hongguoBookmallTabPath        = "/reading/bookapi/bookmall/tab/v1/"
+	hongguoBookmallCellChangePath = "/reading/bookapi/bookmall/cell/change/v1/"
+)
 
 type hongguoAppClient struct {
 	mu                  sync.Mutex
-	catalogMu           sync.Mutex
 	deviceMu            sync.Mutex
 	registerPausedUntil time.Time
 	registerPauseErr    error
 	baseURL             string
-	state               hongguoCatalogState
-	details             map[string]hongguoDetailEntry
-	pending             map[string]*hongguoDetailCall
-	searches            map[string]hongguoSearchEntry
-	searchPending       map[string]*hongguoSearchCall
-	searchIDs           map[string]string
-	suggestions         map[string]hongguoSuggestionEntry
-	suggestPending      map[string]*hongguoSuggestionCall
-	danmaku             map[string]hongguoDanmakuCacheEntry
-	danmakuPending      map[string]*hongguoDanmakuCall
-	tagCursors          map[string]hongguoTagCursor
+	deviceID            string
+	installID           string
+	registered          bool
+	helperDeviceID      string
+	helperInstallID     string
+	helperRegistered    bool
 }
 
 func (downloader *Downloader) hongguoClient() *hongguoAppClient {
 	downloader.hongguoOnce.Do(func() {
 		downloader.hongguo = &hongguoAppClient{
-			baseURL: hongguoAppBaseURL,
-			state: hongguoCatalogState{Version: 1, DeviceID: newHongguoDeviceID(), InstallID: newHongguoDeviceID(),
-				HelperDeviceID: newHongguoDeviceID(), HelperInstallID: newHongguoDeviceID(), Feeds: map[string]hongguoCatalogCursor{}},
-			details: map[string]hongguoDetailEntry{}, pending: map[string]*hongguoDetailCall{},
-			searches: map[string]hongguoSearchEntry{}, searchPending: map[string]*hongguoSearchCall{}, searchIDs: map[string]string{},
-			suggestions: map[string]hongguoSuggestionEntry{}, suggestPending: map[string]*hongguoSuggestionCall{},
-			tagCursors: map[string]hongguoTagCursor{},
+			baseURL:         hongguoAppBaseURL,
+			deviceID:        newHongguoDeviceID(),
+			installID:       newHongguoDeviceID(),
+			helperDeviceID:  newHongguoDeviceID(),
+			helperInstallID: newHongguoDeviceID(),
 		}
 	})
 	return downloader.hongguo
 }
 
-func cloneHongguoCatalogState(state *hongguoCatalogState) *hongguoCatalogState {
-	if state == nil {
-		return nil
+func (client *hongguoAppClient) deviceLocked(helper bool) (string, string, bool) {
+	if helper {
+		return client.helperDeviceID, client.helperInstallID, client.helperRegistered
 	}
-	cloned := *state
-	cloned.Feeds = make(map[string]hongguoCatalogCursor, len(state.Feeds))
-	for name, cursor := range state.Feeds {
-		cloned.Feeds[name] = cursor
-	}
-	return &cloned
+	return client.deviceID, client.installID, client.registered
 }
 
-func (downloader *Downloader) restoreHongguoCatalog(state *hongguoCatalogState) {
-	if state == nil || state.Version != 1 || !hongguoNumericID.MatchString(state.DeviceID) || !hongguoNumericID.MatchString(state.InstallID) {
-		return
-	}
-	cloned := cloneHongguoCatalogState(state)
-	if !hongguoNumericID.MatchString(cloned.HelperDeviceID) || !hongguoNumericID.MatchString(cloned.HelperInstallID) {
-		cloned.HelperDeviceID, cloned.HelperInstallID, cloned.HelperRegistered = newHongguoDeviceID(), newHongguoDeviceID(), false
-	}
-	for name, cursor := range cloned.Feeds {
-		known := false
-		for _, genre := range hongguoAppGenres {
-			known = known || name == genre.key || name == "category:"+genre.key
-		}
-		if !known || !cursor.Initialized || cursor.Offset < 0 || cursor.Offset > 1_000_000 || len(cursor.SessionID) > 4096 || len(cursor.LastID) > 256 || len(cursor.PageSignature) > 64 {
-			delete(cloned.Feeds, name)
-		}
-	}
-	client := downloader.hongguoClient()
-	client.catalogMu.Lock()
-	defer client.catalogMu.Unlock()
+func (client *hongguoAppClient) device(helper bool) (string, string, bool) {
 	client.mu.Lock()
 	defer client.mu.Unlock()
-	if len(client.state.Feeds) == 0 {
-		client.state = *cloned
-	}
-}
-
-func (downloader *Downloader) hongguoCatalogSnapshot() *hongguoCatalogState {
-	client := downloader.hongguoClient()
-	client.mu.Lock()
-	defer client.mu.Unlock()
-	return cloneHongguoCatalogState(&client.state)
-}
-
-func hongguoCatalogInitialized(state *hongguoCatalogState) bool {
-	if state != nil && state.Version == 1 {
-		for _, cursor := range state.Feeds {
-			if cursor.Initialized {
-				return true
-			}
-		}
-	}
-	return false
-}
-
-func hongguoCatalogHasMore(state *hongguoCatalogState) bool {
-	for _, genre := range hongguoAppGenres {
-		if state == nil || !state.Feeds[genre.key].Exhausted {
-			return true
-		}
-	}
-	return false
+	return client.deviceLocked(helper)
 }
 
 func hongguoAppQuery(deviceID, installID string) url.Values {
@@ -153,9 +84,8 @@ func hongguoAppQuery(deviceID, installID string) url.Values {
 
 func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, path string, extra url.Values, payload any) (map[string]any, error) {
 	client := downloader.hongguoClient()
-	comment, _ := ctx.Value(hongguoCommentKey{}).(bool)
 	helper, _ := ctx.Value(hongguoHelperDeviceKey{}).(bool)
-	signed := !comment && path != hongguoBookmallTabPath
+	signed := path != hongguoBookmallTabPath
 	var registerErr error
 	if signed {
 		registerErr = downloader.ensureHongguoDevice(ctx, helper, "")
@@ -207,15 +137,6 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 		request.Header.Set("Accept", "application/json")
 		request.Header.Set("X-XS-From-Web", "0")
 		request.Header.Set("Sdk-Version", "2")
-		var commentNonce hongguoCommentNonce
-		if comment {
-			commentNonce, err = newHongguoCommentNonce()
-			if err != nil {
-				return nil, errors.New("无法准备红果文字请求")
-			}
-			request.Header.Set("Comment-Source", "601")
-			request.Header.Set("Server-Channel", "1000")
-		}
 		if payload != nil {
 			request.Header.Set("Content-Type", "application/json; charset=utf-8")
 		}
@@ -223,15 +144,13 @@ func (downloader *Downloader) hongguoAppRequest(ctx context.Context, method, pat
 			now := time.Now()
 			query.Set("_rticket", strconv.FormatInt(now.UnixMilli(), 10))
 			prepared.URL.RawQuery = query.Encode()
-			if comment {
-				signHongguoCommentRequest(prepared, commentNonce, now)
-			} else if signed {
+			if signed {
 				signHongguoPlayerRequest(prepared, body, now)
 			}
 		})
 		if err != nil {
 			lastErr = err
-			var backoff *requestBackoff
+			var backoff *RequestBackoff
 			if errors.As(err, &backoff) || ctx.Err() != nil {
 				return nil, err
 			}

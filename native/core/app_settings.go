@@ -17,7 +17,6 @@ type nativeResourceSettings struct {
 	ProxyMode           string `json:"proxyMode"`
 	ProxyURL            string `json:"proxyUrl"`
 	CatalogConcurrency  int    `json:"catalogConcurrency"`
-	CatalogIntervalMS   int    `json:"catalogIntervalMs"`
 	DownloadConcurrency int    `json:"downloadConcurrency"`
 	DownloadBySource    bool   `json:"downloadBySource"`
 	Warning             string `json:"warning,omitempty"`
@@ -25,14 +24,13 @@ type nativeResourceSettings struct {
 }
 
 func defaultResourceSettings() nativeResourceSettings {
-	return nativeResourceSettings{ProxyMode: "auto", CatalogConcurrency: 3, CatalogIntervalMS: 250, DownloadConcurrency: 2}
+	return nativeResourceSettings{ProxyMode: "auto", CatalogConcurrency: 3, DownloadConcurrency: 2}
 }
 
 func (settings nativeResourceSettings) validate() error {
 	if settings.CatalogConcurrency < 1 || settings.CatalogConcurrency > 6 ||
-		settings.CatalogIntervalMS < 0 || settings.CatalogIntervalMS > 5000 ||
 		settings.DownloadConcurrency < 1 || settings.DownloadConcurrency > 6 {
-		return errors.New("并发应为 1 至 6，请求间隔应为 0 至 5000 毫秒")
+		return errors.New("并发应为 1 至 6")
 	}
 	if settings.ProxyMode != "auto" && settings.ProxyMode != "direct" && settings.ProxyMode != "manual" {
 		return errors.New("代理模式无效")
@@ -113,7 +111,9 @@ func (engine *nativeEngine) resourceSettings() nativeResourceSettings {
 	settings := engine.settings
 	system := engine.downloader.proxyRouter.systemSettings()
 	settings.SystemProxyStatus = "自动读取系统静态代理及环境变量"
-	if system.PAC && system.HTTP == "" && system.HTTPS == "" {
+	if system.PACURL != "" {
+		settings.SystemProxyStatus = "系统配置了自动代理脚本，按脚本结果选择代理；脚本取不到结果时改用系统静态代理或环境变量"
+	} else if system.PAC && system.HTTP == "" && system.HTTPS == "" {
 		settings.SystemProxyStatus = "检测到系统自动代理脚本；请配置手动代理或选择直连"
 	} else if system.HTTP != "" || system.HTTPS != "" {
 		settings.SystemProxyStatus = "已读取系统静态代理"
@@ -130,7 +130,6 @@ func (engine *nativeEngine) applyResourceSettings(settings nativeResourceSetting
 	limiter := engine.downloader.limiter
 	limiter.mu.Lock()
 	limiter.concurrency = settings.CatalogConcurrency
-	limiter.interval = time.Duration(settings.CatalogIntervalMS) * time.Millisecond
 	limiter.notifyLocked()
 	limiter.mu.Unlock()
 	if engine.downloads != nil {

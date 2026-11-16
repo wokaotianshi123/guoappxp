@@ -1,17 +1,14 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
-import '../../cast/cast_controller.dart';
-import '../../cast/cast_sheet.dart';
 import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../theme/app_theme.dart';
+import '../../cast/cast_controller.dart';
+import '../../cast/cast_sheet.dart';
 import 'danmaku_settings.dart';
 
-/// 播放页弹层用的深色主题缓存。
-///
-/// 亮色主题下，播放页每次刷新（进度、缓冲、播控显隐都会触发）都要一份深色
-/// 配色；`AppTheme.build` 会重新构造整套 ColorScheme 与组件主题，很贵。这里
-/// 按主题色（seed）缓存一份，同一次播放里始终复用同一个 ThemeData。
 (Color, ThemeData)? _darkPlayerTheme;
 
 ThemeData playerTheme(BuildContext context) {
@@ -70,17 +67,54 @@ class PlaybackSettings extends StatelessWidget {
     super.key,
     required this.session,
     required this.onFailure,
-    this.showHeader = true,
-    this.onClose,
+    this.onMiniWindow,
   });
   final PlaybackSession session;
   final VoidCallback onFailure;
+  final VoidCallback? onMiniWindow;
 
-  /// 横屏播放器自己带了面板标题栏，这里只要设置项本体。
-  final bool showHeader;
+  @override
+  Widget build(BuildContext context) => Column(
+    crossAxisAlignment: CrossAxisAlignment.stretch,
+    children: [
+      SheetHeader(
+        children: [
+          const Expanded(child: Text('播放设置', style: sheetTitle)),
+          IconButton(
+            onPressed: () => Navigator.pop(context),
+            icon: const Icon(Icons.close_rounded),
+            tooltip: '关闭',
+          ),
+        ],
+      ),
+      Expanded(
+        child: PlaybackSettingsList(
+          session: session,
+          onFailure: onFailure,
+          onMiniWindow: onMiniWindow,
+          onCast: () {
+            final navigator = Navigator.of(context);
+            navigator.pop();
+            unawaited(showCastSheet(navigator.context, session: session));
+          },
+        ),
+      ),
+    ],
+  );
+}
 
-  /// 面板里的关闭按钮回调（横屏要点的是关闭侧边面板，不是 Navigator.pop）。
-  final VoidCallback? onClose;
+class PlaybackSettingsList extends StatelessWidget {
+  const PlaybackSettingsList({
+    super.key,
+    required this.session,
+    required this.onFailure,
+    this.onMiniWindow,
+    required this.onCast,
+  });
+  final PlaybackSession session;
+  final VoidCallback onFailure;
+  final VoidCallback? onMiniWindow;
+  final VoidCallback onCast;
 
   Future<void> _change(Future<void> Function() change) async {
     try {
@@ -96,7 +130,7 @@ class PlaybackSettings extends StatelessWidget {
     builder: (context, _) {
       final colors = Theme.of(context).colorScheme;
       final label = TextStyle(fontSize: 14, color: colors.onSurfaceVariant);
-      final list = ListView(
+      return ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
           Text('倍速', style: label),
@@ -157,89 +191,21 @@ class PlaybackSettings extends StatelessWidget {
                 ),
             ],
           ),
-          if (!session.local) ...[
-            const SizedBox(height: 18),
-            Text('播放线路', style: label),
-            const SizedBox(height: 4),
-            if (session.routeCount <= 1)
-              Text('本集只有一条可用线路', style: label)
-            else
-              Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  Text(
-                    '当前第 ${session.routeIndex + 1} / ${session.routeCount} 条，切换后从原进度继续，后续集数沿用这条线路',
-                    style: label,
-                  ),
-                  const SizedBox(height: 8),
-                  Wrap(
-                    spacing: 8,
-                    runSpacing: 8,
-                    children: [
-                      for (
-                        var route = 0;
-                        route < session.routeCount;
-                        route += 1
-                      )
-                        _Choice(
-                          label: '线路 ${route + 1}',
-                          selected: route == session.routeIndex,
-                          onSelected: session.ready
-                              ? () => _change(() => session.setRoute(route))
-                              : null,
-                        ),
-                    ],
-                  ),
-                ],
-              ),
-            const SizedBox(height: 8),
-          ],
-          if (CastController.instance.supported) ...[
-            const SizedBox(height: 18),
-            Text('投屏', style: label),
-            const SizedBox(height: 4),
-            ListenableBuilder(
-              listenable: CastController.instance,
-              builder: (context, _) {
-                final cast = CastController.instance;
-                return ListTile(
-                  contentPadding: EdgeInsets.zero,
-                  enabled: !session.local,
-                  leading: Icon(
-                    cast.casting ? Icons.tv_rounded : Icons.cast_rounded,
-                  ),
-                  title: Text(
-                    cast.casting ? (cast.device?.name ?? '投屏设备') : '投屏到电视',
-                  ),
-                  subtitle: Text(
-                    cast.casting
-                        ? '${cast.playing ? '正在投屏' : '已暂停'} · '
-                              '${cast.relayed ? '经手机转发' : '电视直连，可退出 App'}'
-                        : session.local
-                        ? '本地文件不支持投屏'
-                        : '同一 Wi-Fi 下搜索电视、盒子或投影仪',
-                  ),
-                  trailing: const Icon(Icons.chevron_right_rounded),
-                  onTap: session.local
-                      ? null
-                      : () => showCastSheet(context, session: session),
-                );
-              },
-            ),
-            if (!session.local) const SizedBox(height: 8),
-          ],
-          if (!session.local) ...[
-            const SizedBox(height: 8),
-            SwitchListTile(
-              contentPadding: EdgeInsets.zero,
-              title: const Text('去广告'),
-              subtitle: Text(session.adBlock ? '解析时尝试跳过源站片头广告' : '直接播放源站原始视频流'),
-              value: session.adBlock,
-              onChanged: session.ready
-                  ? (value) => _change(() => session.setAdBlock(value))
-                  : null,
-            ),
-          ],
+          const SizedBox(height: 18),
+          Text(sleepTimerLabel(session), style: label),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              for (final choice in sleepChoices)
+                _Choice(
+                  label: choice.label,
+                  selected: choice.selected(session),
+                  onSelected: () => choice.apply(session),
+                ),
+            ],
+          ),
           if (session.danmakuSupported) ...[
             const SizedBox(height: 8),
             SwitchListTile(
@@ -268,27 +234,59 @@ class PlaybackSettings extends StatelessWidget {
               ],
             ),
           ],
-        ],
-      );
-      if (!showHeader) return list;
-      return Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          SheetHeader(
-            children: [
-              const Expanded(child: Text('播放设置', style: sheetTitle)),
-              IconButton(
-                onPressed: onClose ?? () => Navigator.pop(context),
-                icon: const Icon(Icons.close_rounded),
-                tooltip: '关闭',
-              ),
-            ],
-          ),
-          Expanded(child: list),
+          if (onMiniWindow case final onMiniWindow?)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.picture_in_picture_alt_rounded),
+              title: const Text('小窗播放'),
+              onTap: onMiniWindow,
+            ),
+          if (CastController.instance.supported)
+            ListTile(
+              contentPadding: EdgeInsets.zero,
+              leading: const Icon(Icons.cast_rounded),
+              title: const Text('投屏'),
+              onTap: onCast,
+            ),
         ],
       );
     },
   );
+}
+
+typedef SleepChoice = ({
+  String label,
+  bool Function(PlaybackSession) selected,
+  void Function(PlaybackSession) apply,
+});
+
+final List<SleepChoice> sleepChoices = [
+  (
+    label: '关闭',
+    selected: (session) =>
+        session.sleepMinutes == 0 && !session.sleepAtEpisodeEnd,
+    apply: (session) => session.setSleepTimer(),
+  ),
+  (
+    label: '播完本集',
+    selected: (session) => session.sleepAtEpisodeEnd,
+    apply: (session) => session.setSleepTimer(episodeEnd: true),
+  ),
+  for (final minutes in const [15, 30, 60, 90])
+    (
+      label: '$minutes 分钟',
+      selected: (session) => session.sleepMinutes == minutes,
+      apply: (session) => session.setSleepTimer(minutes: minutes),
+    ),
+];
+
+String sleepTimerLabel(PlaybackSession session) {
+  if (session.sleepAtEpisodeEnd) return '定时停止 · 本集播完后暂停';
+  final at = session.sleepAt;
+  if (at == null) return '定时停止';
+  final time =
+      '${at.hour.toString().padLeft(2, '0')}:${at.minute.toString().padLeft(2, '0')}';
+  return '定时停止 · $time 暂停';
 }
 
 class _Choice extends StatelessWidget {

@@ -2,14 +2,18 @@ import 'package:flutter/material.dart';
 
 import '../../local_store.dart';
 import '../../models.dart';
+import '../../source_modules.dart';
 import '../../watch_history.dart';
 import '../app_scope.dart';
 import '../detail/detail_page.dart';
 import '../settings/settings_rows.dart';
 import '../shell/app_shell.dart';
+import '../theme/motion.dart';
 import '../widgets/drama_grid.dart';
 import '../widgets/drama_tile.dart';
 import '../widgets/focus_ring.dart';
+import '../widgets/motion/motion_widgets.dart';
+import '../widgets/page_header.dart';
 import '../widgets/search_field.dart';
 import '../widgets/status_view.dart';
 
@@ -22,8 +26,9 @@ typedef _View = ({
 });
 
 class HistoryPage extends StatefulWidget {
-  const HistoryPage({super.key, required this.store});
+  const HistoryPage({super.key, required this.store, this.root = false});
   final LocalStore store;
+  final bool root;
 
   @override
   State<HistoryPage> createState() => _HistoryPageState();
@@ -34,13 +39,14 @@ class _HistoryPageState extends State<HistoryPage> {
   final _firstPoster = FocusNode();
   final _editButton = FocusNode();
   final _searchField = FocusNode();
+  final _entered = <Object>{};
   var _source = '';
   Set<String>? _selection;
 
   @override
   void initState() {
     super.initState();
-    _keepFocus(_firstPoster);
+    if (!widget.root) _keepFocus(_firstPoster);
   }
 
   @override
@@ -245,13 +251,32 @@ class _HistoryPageState extends State<HistoryPage> {
 
   Widget _title(_View view, double size) => Semantics(
     header: true,
-    child: Text(
-      view.selection == null ? '观看记录' : '已选择 ${view.selection!.length} 部',
-      maxLines: 1,
-      overflow: TextOverflow.ellipsis,
-      style: TextStyle(fontSize: size, fontWeight: FontWeight.w800),
+    child: FadeSwitcher(
+      duration: Motion.short,
+      alignment: AlignmentDirectional.centerStart,
+      child: Text(
+        key: ValueKey(view.selection == null),
+        view.selection == null ? '观看记录' : '已选择 ${view.selection!.length} 部',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: TextStyle(fontSize: size, fontWeight: FontWeight.w800),
+      ),
     ),
   );
+
+  Widget _trailing(_View view, Widget search, {double spacing = 8}) =>
+      FadeSwitcher(
+        duration: Motion.short,
+        alignment: AlignmentDirectional.centerEnd,
+        child: Row(
+          key: ValueKey(view.selection == null),
+          mainAxisSize: MainAxisSize.min,
+          spacing: spacing,
+          children: view.selection == null
+              ? [search, ..._browseActions(view)]
+              : _editActions(view),
+        ),
+      );
 
   Widget _sourceChip(String id, String label, _View view) => FocusRing(
     radius: 8,
@@ -285,34 +310,68 @@ class _HistoryPageState extends State<HistoryPage> {
 
   Widget _phone(BuildContext context, _View view) {
     final selection = view.selection;
+    final root = widget.root;
     return Scaffold(
-      appBar: selection == null
-          ? AppBar(
-              title: const Text('观看记录'),
+      appBar: root
+          ? null
+          : AppBar(
+              leading: selection == null
+                  ? null
+                  : IconButton(
+                      tooltip: '退出编辑',
+                      onPressed: _finishEditing,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
+              title: FadeSwitcher(
+                duration: Motion.short,
+                alignment: AlignmentDirectional.centerStart,
+                child: Text(
+                  key: ValueKey(selection == null),
+                  selection == null ? '观看记录' : '已选择 ${selection.length} 部',
+                ),
+              ),
               actions: [
-                ..._browseActions(view, icons: false),
+                FadeSwitcher(
+                  duration: Motion.short,
+                  alignment: AlignmentDirectional.centerEnd,
+                  child: Row(
+                    key: ValueKey(selection == null),
+                    mainAxisSize: MainAxisSize.min,
+                    children: selection == null
+                        ? _browseActions(view, icons: false)
+                        : [_selectAll(view)],
+                  ),
+                ),
                 const SizedBox(width: 8),
               ],
-            )
-          : AppBar(
-              leading: IconButton(
-                tooltip: '退出编辑',
-                onPressed: _finishEditing,
-                icon: const Icon(Icons.close_rounded),
-              ),
-              title: Text('已选择 ${selection.length} 部'),
-              actions: [_selectAll(view), const SizedBox(width: 8)],
             ),
       body: SafeArea(
-        top: false,
+        top: root,
         bottom: false,
         child: _content(
           context,
           view,
           inset: 16,
           header: [
+            if (root)
+              FadeSwitcher(
+                child: selection == null
+                    ? PageHeader(
+                        key: const ValueKey(false),
+                        title: '观看记录',
+                        actions: _browseActions(view, icons: false),
+                      )
+                    : PageHeader(
+                        key: const ValueKey(true),
+                        title: '已选择 ${selection.length} 部',
+                        actions: [
+                          _selectAll(view),
+                          _textButton('完成', _finishEditing),
+                        ],
+                      ),
+              ),
             Padding(
-              padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+              padding: EdgeInsets.fromLTRB(16, root ? 0 : 4, 16, 8),
               child: _search(),
             ),
             ?_sources(view, inset: 16, scroll: true),
@@ -346,23 +405,26 @@ class _HistoryPageState extends State<HistoryPage> {
                 child: Row(
                   spacing: 8,
                   children: [
-                    if (view.selection == null)
-                      const BackButton()
-                    else
-                      IconButton(
-                        tooltip: '退出编辑',
-                        onPressed: _finishEditing,
-                        icon: const Icon(Icons.close_rounded),
-                      ),
+                    ToggleIconSwitcher(
+                      child: view.selection == null
+                          ? widget.root
+                                ? const SizedBox(key: ValueKey(false), width: 8)
+                                : const BackButton(key: ValueKey(false))
+                          : IconButton(
+                              key: const ValueKey(true),
+                              tooltip: '退出编辑',
+                              onPressed: _finishEditing,
+                              icon: const Icon(Icons.close_rounded),
+                            ),
+                    ),
                     Expanded(child: _title(view, 28)),
-                    if (view.selection == null) ...[
+                    _trailing(
+                      view,
                       SizedBox(
                         width: (constraints.maxWidth - 400).clamp(160.0, 280.0),
                         child: _search(),
                       ),
-                      ..._browseActions(view),
-                    ] else
-                      ..._editActions(view),
+                    ),
                   ],
                 ),
               ),
@@ -395,14 +457,14 @@ class _HistoryPageState extends State<HistoryPage> {
                 spacing: 12,
                 children: [
                   Expanded(child: _title(view, 24)),
-                  if (view.selection == null) ...[
+                  _trailing(
+                    view,
                     SizedBox(
                       width: 260,
                       child: _search(focusNode: _searchField),
                     ),
-                    ..._browseActions(view),
-                  ] else
-                    ..._editActions(view),
+                    spacing: 12,
+                  ),
                 ],
               ),
             ),
@@ -446,6 +508,13 @@ class _HistoryPageState extends State<HistoryPage> {
             .putIfAbsent(WatchPeriod.of(entry.updatedAt, now), () => [])
             .add(entry);
       }
+      final heroOwner = {
+        for (final MapEntry(key: id, value: index) in firstIndexById(
+          view.shown,
+          (entry) => entry.drama.id,
+        ).entries)
+          id: view.shown[index],
+      };
       final first = view.shown.firstOrNull;
       return CustomScrollView(
         slivers: [
@@ -456,11 +525,21 @@ class _HistoryPageState extends State<HistoryPage> {
           if (view.shown.isEmpty)
             SliverFillRemaining(
               hasScrollBody: false,
-              child: StatusView(
-                title: view.history.isEmpty ? '还没有观看记录' : '没有匹配的记录',
-                icon: view.history.isEmpty
-                    ? Icons.history_rounded
-                    : Icons.search_off_rounded,
+              child: FadeSwitcher(
+                scale: true,
+                child: StatusView(
+                  key: ValueKey(view.history.isEmpty),
+                  title: view.history.isEmpty ? '还没有观看记录' : '没有匹配的记录',
+                  message: view.history.isEmpty
+                      ? missingSourceHint(
+                          widget.store.missingSourceRecords().history,
+                          '条观看记录',
+                        )
+                      : null,
+                  icon: view.history.isEmpty
+                      ? Icons.history_rounded
+                      : Icons.search_off_rounded,
+                ),
               ),
             )
           else
@@ -499,12 +578,18 @@ class _HistoryPageState extends State<HistoryPage> {
                       skipTraversal: true,
                       onKeyEvent: (_, event) =>
                           wrapGridRow(index, columns, entries.length, event),
-                      child: _poster(
-                        context,
-                        entry,
-                        tile,
-                        view.selection,
-                        focusNode: entry == first ? _firstPoster : null,
+                      child: EnterOnce(
+                        id: entry.drama.id,
+                        played: _entered,
+                        index: index,
+                        child: _poster(
+                          context,
+                          entry,
+                          tile,
+                          view.selection,
+                          focusNode: entry == first ? _firstPoster : null,
+                          hero: identical(heroOwner[entry.drama.id], entry),
+                        ),
                       ),
                     );
                   },
@@ -527,6 +612,7 @@ class _HistoryPageState extends State<HistoryPage> {
     double width,
     Set<String>? selection, {
     FocusNode? focusNode,
+    bool hero = false,
   }) {
     final drama = entry.drama;
     final total = drama.episodes;
@@ -542,6 +628,7 @@ class _HistoryPageState extends State<HistoryPage> {
           ? long
           : '看到第 ${entry.episode} 集',
       tag: SourceSite.byId(drama.source).name,
+      heroScope: hero ? 'drama' : null,
       selected: selection?.contains(drama.id),
       onTap: selection == null
           ? () => openPage<void>(
@@ -549,7 +636,6 @@ class _HistoryPageState extends State<HistoryPage> {
               (_) => DetailPage(store: widget.store, drama: drama),
             )
           : () => _toggle(drama.id),
-      // 长按 / 右键直接进入多选并选中这一条。
       onMore: selection == null
           ? () => setState(() => _selection = {drama.id})
           : null,

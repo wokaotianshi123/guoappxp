@@ -1,11 +1,13 @@
+import 'dart:io';
+
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../../app_build.dart';
 import '../../local_store.dart';
 import '../../resource_settings_editor.dart';
 import '../app_scope.dart';
 import '../shell/app_shell.dart';
+import '../theme/motion.dart';
 import '../users/users_view.dart';
 import '../widgets/bar_button.dart';
 import '../widgets/focus_ring.dart';
@@ -33,6 +35,52 @@ void openUsers(BuildContext context, LocalStore store) => openPage<void>(
           ),
         ),
 );
+
+Future<void> openProxySettings(BuildContext context, LocalStore store) =>
+    openPage<void>(context, (_) => _ProxySettingsPage(store: store));
+
+class _ProxySettingsPage extends StatefulWidget {
+  const _ProxySettingsPage({required this.store});
+  final LocalStore store;
+
+  @override
+  State<_ProxySettingsPage> createState() => _ProxySettingsPageState();
+}
+
+class _ProxySettingsPageState extends State<_ProxySettingsPage> {
+  ResourceSettingsEditor? _editor;
+
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    _editor ??= ResourceSettingsEditor(
+      AppScope.of(context).repository,
+      widget.store,
+    )..load();
+  }
+
+  @override
+  void dispose() {
+    _editor?.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => Scaffold(
+    appBar: AppBar(title: Text(SettingsGroup.proxy.label)),
+    body: ListView(
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+      children: [
+        SettingsSection(
+          group: SettingsGroup.proxy,
+          store: widget.store,
+          editor: _editor!,
+          open: (title, body) => _openFullPage(context, title, body),
+        ),
+      ],
+    ),
+  );
+}
 
 void _openFullPage(BuildContext context, String title, WidgetBuilder body) =>
     openPage<void>(
@@ -103,14 +151,11 @@ class _SettingsPageState extends State<SettingsPage> {
             : store.themeColor.label,
         displayModes[platformDisplayMode(store.displayMode)],
       ].join(' · '),
-      SettingsGroup.playback => '倍速、清晰度、连播与弹幕',
+      SettingsGroup.playback => '倍速、清晰度、解码与手势',
       SettingsGroup.danmaku => '字号、颜色、显示区域与屏蔽词',
-      SettingsGroup.download => '默认画质、同时下载数量',
+      SettingsGroup.download =>
+        Platform.isAndroid ? '默认画质、同时下载数量、自动导出' : '默认画质、VIP 集、同时下载数量',
       SettingsGroup.storage => '下载目录、清理缓存、删除全部数据',
-      SettingsGroup.sources =>
-        allSourcesEnabled
-            ? '站源开关、站源账号、自定义源、模块、目录请求间隔'
-            : '站源开关、自定义源、模块、目录请求间隔',
       SettingsGroup.proxy => '连接方式、代理地址',
       SettingsGroup.users => '当前：${store.profile.name}',
       SettingsGroup.about =>
@@ -368,13 +413,17 @@ class _SettingsPageState extends State<SettingsPage> {
           offstage: subpage != null,
           child: ExcludeFocus(
             excluding: subpage != null,
-            child: Column(
-              key: ValueKey(_group),
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                _DetailHeader(title: _group.label, top: top, right: right),
-                Expanded(child: content),
-              ],
+            child: _PaneSwitcher(
+              duration: television ? Duration.zero : Motion.medium,
+              offset: const Offset(0, 0.02),
+              child: Column(
+                key: ValueKey(_group),
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  _DetailHeader(title: _group.label, top: top, right: right),
+                  Expanded(child: content),
+                ],
+              ),
             ),
           ),
         ),
@@ -406,6 +455,51 @@ class _SettingsPageState extends State<SettingsPage> {
       ],
     );
   }
+}
+
+class _PaneSwitcher extends StatelessWidget {
+  const _PaneSwitcher({
+    required this.duration,
+    required this.offset,
+    required this.child,
+  });
+
+  final Duration duration;
+  final Offset offset;
+  final Widget child;
+
+  @override
+  Widget build(BuildContext context) => AnimatedSwitcher(
+    duration: Motion.of(context, duration),
+    reverseDuration: Motion.of(context, Motion.short),
+    switchInCurve: Motion.enter,
+    switchOutCurve: Motion.exit,
+    layoutBuilder: (current, previous) => Stack(
+      fit: StackFit.expand,
+      children: [
+        for (final child in previous) _inert(child, true),
+        if (current != null) _inert(current, false),
+      ],
+    ),
+    transitionBuilder: (child, animation) => FadeTransition(
+      opacity: animation,
+      child: SlideTransition(
+        position: Tween(begin: offset, end: Offset.zero).animate(animation),
+        child: child,
+      ),
+    ),
+    child: child,
+  );
+
+  // 新旧内容保持同一层级和同一 key，切换时不会重建内部状态
+  static Widget _inert(Widget child, bool inert) => ExcludeFocus(
+    key: child.key,
+    excluding: inert,
+    child: IgnorePointer(
+      ignoring: inert,
+      child: ExcludeSemantics(excluding: inert, child: child),
+    ),
+  );
 }
 
 class _DetailHeader extends StatelessWidget {

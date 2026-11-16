@@ -1024,11 +1024,11 @@ func xbpqPartMatches(node *html.Node, part xbpqSelectorPart, requireAttrValue bo
 	if part.tag != "" && strings.ToLower(node.Data) != part.tag {
 		return false
 	}
-	if part.id != "" && providerHTMLAttr(node, "id") != part.id {
+	if part.id != "" && ProviderHTMLAttr(node, "id") != part.id {
 		return false
 	}
 	for _, class := range part.classes {
-		if !providerHTMLClass(node, class) {
+		if !ProviderHTMLClass(node, class) {
 			return false
 		}
 	}
@@ -1045,12 +1045,12 @@ func xbpqPartMatches(node *html.Node, part xbpqSelectorPart, requireAttrValue bo
 		}
 	}
 	for _, word := range part.contains {
-		if !strings.Contains(providerHTMLText(node), word) {
+		if !strings.Contains(ProviderHTMLText(node), word) {
 			return false
 		}
 	}
 	for _, word := range part.notContains {
-		if strings.Contains(providerHTMLText(node), word) {
+		if strings.Contains(ProviderHTMLText(node), word) {
 			return false
 		}
 	}
@@ -1076,7 +1076,7 @@ func xbpqNodeHasAncestorChain(node *html.Node, ancestors []xbpqSelectorPart) boo
 // xbpqSelectorNodes 在 document 上执行选择器，返回目标节点列表。
 func xbpqSelectorNodes(document *html.Node, selector xbpqSelector) []*html.Node {
 	var found []*html.Node
-	for _, node := range providerHTMLNodes(document, func(n *html.Node) bool { return n.Type == html.ElementNode }) {
+	for _, node := range ProviderHTMLNodes(document, func(n *html.Node) bool { return n.Type == html.ElementNode }) {
 		if !xbpqPartMatches(node, selector.target, false) {
 			continue
 		}
@@ -1117,14 +1117,14 @@ func xbpqSelectorStrings(sourceHTML, pattern string) []string {
 	var values []string
 	for _, node := range xbpqSelectorNodes(document, selector) {
 		if selector.target.attr != "" {
-			values = append(values, strings.TrimSpace(providerHTMLAttr(node, selector.target.attr)))
+			values = append(values, strings.TrimSpace(ProviderHTMLAttr(node, selector.target.attr)))
 			continue
 		}
 		if selector.extract == "html" {
 			values = append(values, xbpqRenderHTML(node))
 			continue
 		}
-		values = append(values, providerHTMLText(node))
+		values = append(values, ProviderHTMLText(node))
 	}
 	return values
 }
@@ -1464,16 +1464,16 @@ func xbpqItemField(item xbpqItem, pattern string) string {
 					continue
 				}
 				if selector.target.attr != "" {
-					return strings.TrimSpace(providerHTMLAttr(node, selector.target.attr))
+					return strings.TrimSpace(ProviderHTMLAttr(node, selector.target.attr))
 				}
-				return providerHTMLText(node)
+				return ProviderHTMLText(node)
 			}
 			if len(nodes) > 0 {
 				node := nodes[0]
 				if selector.target.attr != "" {
-					return strings.TrimSpace(providerHTMLAttr(node, selector.target.attr))
+					return strings.TrimSpace(ProviderHTMLAttr(node, selector.target.attr))
 				}
-				return providerHTMLText(node)
+				return ProviderHTMLText(node)
 			}
 			return ""
 		}
@@ -1535,19 +1535,19 @@ func xbpqCleanText(value string) string {
 var xbpqCategoryIDPattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_/-]{0,79}$`)
 
 // categories：分类串 name$id#name$id（含 `1--子分类$5#...` 变体）
-func xbpqRuleCategories(rule xbpqRule) []nativeCategory {
+func xbpqRuleCategories(rule xbpqRule) []Category {
 	raw := rule.field("分类")
 	if raw == "" {
 		return nil
 	}
-	var categories []nativeCategory
+	var categories []Category
 	seen := map[string]bool{}
 	add := func(id, name string) {
 		if id == "" || name == "" || seen[id] {
 			return
 		}
 		seen[id] = true
-		categories = append(categories, nativeCategory{ID: id, Name: name})
+		categories = append(categories, Category{ID: id, Name: name})
 	}
 	// 先扫所有行：主分类行形如 `电视剧$2`，子分类行形如 `1--动作片$5#喜剧片$6`
 	type subEntry struct {
@@ -1585,7 +1585,7 @@ func xbpqRuleCategories(rule xbpqRule) []nativeCategory {
 			continue
 		}
 		seen[sub.id] = true
-		categories = append(categories, nativeCategory{ID: sub.id, Name: sub.name})
+		categories = append(categories, Category{ID: sub.id, Name: sub.name})
 	}
 	return categories
 }
@@ -1810,9 +1810,9 @@ func (d *Downloader) xbpqDetail(ctx context.Context, source, base, sourceID stri
 	}
 	if title == "" {
 		for _, name := range []string{"h1", "h2"} {
-			nodes := providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == name })
+			nodes := ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == name })
 			if len(nodes) > 0 {
-				if text := xbpqCleanText(providerHTMLText(nodes[0])); len([]rune(text)) >= 2 && len([]rune(text)) <= 60 {
+				if text := xbpqCleanText(ProviderHTMLText(nodes[0])); len([]rune(text)) >= 2 && len([]rune(text)) <= 60 {
 					title = text
 				}
 				break
@@ -1820,8 +1820,8 @@ func (d *Downloader) xbpqDetail(ctx context.Context, source, base, sourceID stri
 		}
 	}
 	if title == "" {
-		if nodes := providerHTMLNodes(document, func(node *html.Node) bool { return node.Data == "h1" }); len(nodes) > 0 {
-			title = xbpqCleanText(providerHTMLText(nodes[0]))
+		if nodes := ProviderHTMLNodes(document, func(node *html.Node) bool { return node.Data == "h1" }); len(nodes) > 0 {
+			title = xbpqCleanText(ProviderHTMLText(nodes[0]))
 		}
 	}
 	intro := pick(rule.field("简介"), maccmsDetailIntro(document))
@@ -2037,30 +2037,30 @@ func xbpqAlternateRoutes(groups [][]xbpqEpisode, index, mainCount int, main xbpq
 // 主线路失败则依次尝试其它线路，第一个成功的顶上。
 // xbpqResolveMedia 取直链。解析失败且规则配了刷新令牌时，自动换新令牌重试一次
 // （令牌过期是这类接口源最常见、也最容易自动修复的失败原因）。
-func (d *Downloader) xbpqResolveMedia(ctx context.Context, task Task, rule xbpqRule, base, name string) (providerMedia, error) {
+func (d *Downloader) xbpqResolveMedia(ctx context.Context, task Task, rule xbpqRule, base, name string) (ProviderMedia, error) {
 	media, err := d.xbpqResolveMediaOnce(ctx, task, rule, base, name)
 	if err == nil {
 		return media, nil
 	}
 	refreshed, ok := d.xbpqRefreshAccessToken(ctx, task.Chapter.Source, rule, base)
 	if !ok {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	if retried, retryErr := d.xbpqResolveMediaOnce(ctx, task, refreshed, base, name); retryErr == nil {
 		return retried, nil
 	}
-	return providerMedia{}, err
+	return ProviderMedia{}, err
 }
 
-func (d *Downloader) xbpqResolveMediaOnce(ctx context.Context, task Task, rule xbpqRule, base, name string) (providerMedia, error) {
+func (d *Downloader) xbpqResolveMediaOnce(ctx context.Context, task Task, rule xbpqRule, base, name string) (ProviderMedia, error) {
 	pageURL := strings.TrimSpace(task.Chapter.PageURL)
 	address := strings.TrimSpace(task.Chapter.VideoURL)
 	referer := firstNonEmpty(task.Chapter.Referer, base+"/")
 	// 规则写了 播放请求头/头部集合 的 Referer 时以规则为准：不少站点（如接口型
 	// 采集站）要求固定站点 Referer，章节自带的播放页 Referer 反而会被拒。
 	referer = xbpqPlayReferer(rule, referer)
-	if isProviderHTTPMediaURL(address) && duanjuLooksLikeMedia(address) {
-		media, err := d.prepareWebProviderMedia(ctx, providerMedia{URL: address, Referer: referer}, name)
+	if IsProviderHTTPMediaURL(address) && duanjuLooksLikeMedia(address) {
+		media, err := d.prepareWebProviderMedia(ctx, ProviderMedia{URL: address, Referer: referer}, name)
 		if err == nil {
 			media.Variants = d.xbpqResolveRoutes(ctx, task.Chapter.Routes, rule, base, name)
 		}
@@ -2083,15 +2083,15 @@ func (d *Downloader) xbpqResolveMediaOnce(ctx context.Context, task Task, rule x
 			return alt, nil
 		}
 	}
-	return providerMedia{}, err
+	return ProviderMedia{}, err
 }
 
 // xbpqResolveOne 单个播放页取直链。
-func (d *Downloader) xbpqResolveOne(ctx context.Context, pageURL, referer string, rule xbpqRule, name string) (providerMedia, error) {
+func (d *Downloader) xbpqResolveOne(ctx context.Context, pageURL, referer string, rule xbpqRule, name string) (ProviderMedia, error) {
 	playHeaders := rule.playHeaderSet()
 	body, err := d.xbpqFetchWithHeaders(ctx, pageURL, referer, rule.userAgent(), playHeaders)
 	if err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	// 交给播放器的 Referer：规则指定优先，否则用播放页地址（CDN 只认有 Referer 的站）。
 	mediaReferer := xbpqPlayReferer(rule, pageURL)
@@ -2099,16 +2099,16 @@ func (d *Downloader) xbpqResolveOne(ctx context.Context, pageURL, referer string
 		for _, candidate := range xbpqJumpCandidates(body, jump) {
 			candidate = xbpqJoinLink(pageURL, candidate)
 			candidate = maccmsNormalizePlaybackURL(candidate)
-			if isProviderHTTPMediaURL(candidate) && duanjuLooksLikeMedia(candidate) {
-				return d.prepareWebProviderMedia(ctx, providerMedia{URL: candidate, Referer: mediaReferer}, name)
+			if IsProviderHTTPMediaURL(candidate) && duanjuLooksLikeMedia(candidate) {
+				return d.prepareWebProviderMedia(ctx, ProviderMedia{URL: candidate, Referer: mediaReferer}, name)
 			}
 			if strings.HasPrefix(candidate, "http") && !duanjuLooksLikeMedia(candidate) {
 				// 跳转到二级播放页：再取一次
 				if second, secondErr := d.xbpqFetchWithHeaders(ctx, candidate, pageURL, rule.userAgent(), playHeaders); secondErr == nil {
 					if direct := xbpqJumpValue(second, jump); direct != "" {
 						direct = maccmsNormalizePlaybackURL(direct)
-						if isProviderHTTPMediaURL(direct) {
-							return d.prepareWebProviderMedia(ctx, providerMedia{URL: direct, Referer: candidate}, name)
+						if IsProviderHTTPMediaURL(direct) {
+							return d.prepareWebProviderMedia(ctx, ProviderMedia{URL: direct, Referer: candidate}, name)
 						}
 					}
 				}
@@ -2117,19 +2117,19 @@ func (d *Downloader) xbpqResolveOne(ctx context.Context, pageURL, referer string
 	}
 	if media := maccmsPlayerURL(body); media != "" {
 		media = maccmsNormalizePlaybackURL(media)
-		if isProviderHTTPMediaURL(media) {
-			return d.prepareWebProviderMedia(ctx, providerMedia{URL: media, Referer: mediaReferer}, name)
+		if IsProviderHTTPMediaURL(media) {
+			return d.prepareWebProviderMedia(ctx, ProviderMedia{URL: media, Referer: mediaReferer}, name)
 		}
 		if parsed := d.resolveMaccmsCloudParse(ctx, body, media, pageURL); parsed != "" {
-			return d.prepareWebProviderMedia(ctx, providerMedia{URL: maccmsNormalizePlaybackURL(parsed), Referer: mediaReferer}, name)
+			return d.prepareWebProviderMedia(ctx, ProviderMedia{URL: maccmsNormalizePlaybackURL(parsed), Referer: mediaReferer}, name)
 		}
 	}
-	return providerMedia{}, fmt.Errorf("%s未解析到播放地址", name)
+	return ProviderMedia{}, fmt.Errorf("%s未解析到播放地址", name)
 }
 
 // xbpqResolveRoutes 并发解析其它线路，返回可切换的备选媒体；失败的线路自动剔除。
 // 并发上限 4，避免同时打太多请求到同一站点被限流；输出保持 routes 原顺序。
-func (d *Downloader) xbpqResolveRoutes(ctx context.Context, routes []string, rule xbpqRule, base, name string) []providerMedia {
+func (d *Downloader) xbpqResolveRoutes(ctx context.Context, routes []string, rule xbpqRule, base, name string) []ProviderMedia {
 	var targets []string
 	for _, route := range routes {
 		route = strings.TrimSpace(route)
@@ -2142,7 +2142,7 @@ func (d *Downloader) xbpqResolveRoutes(ctx context.Context, routes []string, rul
 	}
 	const maxConcurrent = 4
 	sem := make(chan struct{}, maxConcurrent)
-	results := make([]providerMedia, len(targets))
+	results := make([]ProviderMedia, len(targets))
 	done := make([]bool, len(targets))
 	var wg sync.WaitGroup
 	var mu sync.Mutex
@@ -2171,7 +2171,7 @@ func (d *Downloader) xbpqResolveRoutes(ctx context.Context, routes []string, rul
 		}(index, route)
 	}
 	wg.Wait()
-	var variants []providerMedia
+	var variants []ProviderMedia
 	for index, ok := range done {
 		if ok {
 			variants = append(variants, results[index])
@@ -2250,6 +2250,6 @@ func customXBPQRule(id string) (xbpqRule, bool) {
 }
 
 // xbpqCategories 分类列表（规则驱动）。
-func (d *Downloader) xbpqCategories(rule xbpqRule) []nativeCategory {
+func (d *Downloader) xbpqCategories(rule xbpqRule) []Category {
 	return xbpqRuleCategories(rule)
 }

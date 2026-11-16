@@ -26,7 +26,7 @@ class SourceCatalog {
   static const recommendGenre = 'find_drama';
   static const topicPrefix = 'tag:';
 
-  bool get recommends => source.id == SourceSite.hongguo.id;
+  bool get recommends => source.recommends;
 
   List<RankingBoard> get boards => _boards;
 
@@ -70,7 +70,7 @@ class SourceCatalog {
     RankingBoard board, {
     int page = 1,
     bool force = false,
-  }) => repository.rankings(board.id, page: page, force: force);
+  }) => repository.rankings(board, page: page, force: force);
 
   void remember(Iterable<Drama> items) {
     for (final drama in items) {
@@ -101,7 +101,12 @@ class SourceCatalog {
   Future<CatalogPage> recommendations({
     bool more = false,
     bool force = false,
-  }) => repository.recommendations(recommendGenre, more: more, force: force);
+  }) => repository.recommendations(
+    source.id,
+    recommendGenre,
+    more: more,
+    force: force,
+  );
 
   Future<CatalogPage> search(String query, {int page = 1}) async {
     final result = await repository.catalog(

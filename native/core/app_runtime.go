@@ -2,15 +2,13 @@ package core
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/hex"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"net/http"
 	"os"
 	"path/filepath"
-	"runtime/debug"
 	"strconv"
 	"strings"
 	"sync"
@@ -18,66 +16,39 @@ import (
 )
 
 type Config struct {
-	dataDir          string
-	MaxPagesPerSort  int
-	PageSize         int
-	Retries          int
-	InsecureTLS      bool
-	HuangguoAIURL    string
-	HuangguoVideoURL string
-	HuangdouURL      string
-	JinguoDuanjuURL  string
-	HeitaoURL        string
-	// BeaboxURL 是笔盒的固定线路；留空时按「上次可用线路 → 内置线路 → 发布页发现」顺序取。
-	BeaboxURL      string
-	HongguoURL     string
-	HuangjuURL     string
-	HuangjuAPIURL  string
-	YeguoURL       string
-	YeguoAPIURL    string
-	DSDURL         string
-	SoraniURL      string
-	SoraniAPIURL   string
-	GuipianURL     string
-	HanxiaoquanURL string
-	// FanqieURL 是番茄内容引擎（本机 loopback REST）地址，留空用默认 127.0.0.1:18921。
-	FanqieURL    string
-	XChinaURL    string
-	ThepornyURL  string
-	Token        string
-	AESKeyHex    string
-	InterfaceKey string
-	ParamKey     string
-	ParamIV      string
-	APIBase      string
-	CDNURL       string
+	dataDir         string
+	cacheDir        string
+	MaxPagesPerSort int
+	PageSize        int
+	Retries         int
+	InsecureTLS     bool
 }
 
 type Downloader struct {
-	rankings      rankingCache
-	cfg           Config
-	client        *http.Client
-	providerMu    sync.Mutex
-	providerHosts map[string]string
-	// 编译期接入的站源实现按站源 ID 缓存（见 source_api.go）。
-	sourceProviderMu sync.Mutex
-	sourceProviders  map[string]Provider
-	limiter          *requestLimiter
-	proxyRouter      *proxyRouter
-	browserTransport *huangguoBrowserTransport
-	hongguoOnce      sync.Once
-	hongguo          *hongguoAppClient
-	diagnostics      *diagnosticLog
-	apiMu            sync.Mutex
-	apiBase          string
-	apiFailures      map[string]time.Time
-	previewMu        sync.Mutex
-	previewSessions  map[string]*huangguoPreviewSession
+	rankings          rankingCache
+	cfg               Config
+	client            *http.Client
+	reserveMu         sync.Mutex
+	reserveNext       uint64
+	reservations      map[uint64]func()
+	providerMu        sync.Mutex
+	providerHosts     map[string]string
+	providersMu       sync.Mutex
+	providers         map[string]Provider
+	providerRevisions map[string]uint64
+	limiter           *requestLimiter
+	proxyRouter       *proxyRouter
+	directOnce        sync.Once
+	direct            *http.Client
+	diagnostics       *diagnosticLog
+	// 红果 App 接口客户端（听书用）。惰性创建，见 provider_hongguo_app.go。
+	hongguoOnce sync.Once
+	hongguo     *hongguoAppClient
 }
 
-func defaultConfig() Config { return Config{MaxPagesPerSort: 50, PageSize: 30, Retries: 2} }
+func DefaultConfig() Config { return Config{MaxPagesPerSort: 50, PageSize: 30, Retries: 2} }
 
-type nativeDrama struct {
+type LibraryDrama struct {
 	MetadataSchema int      `json:"metadataSchema"`
 	ID             string   `json:"id"`
 	Source         string   `json:"source"`
@@ -91,19 +62,18 @@ type nativeDrama struct {
 	Heat           string   `json:"heat,omitempty"`
 	Views          string   `json:"views,omitempty"`
 	OnlineDate     string   `json:"onlineDate,omitempty"`
+	Score          string   `json:"score,omitempty"`
 	Tags           []string `json:"tags,omitempty"`
 	ReleaseStatus  string   `json:"releaseStatus,omitempty"`
 	Badge          string   `json:"badge,omitempty"`
 	// Peers 在跨源聚合搜索里带上其它站源的同一部剧，供界面一键切换播放源。
-	Peers []nativeDrama `json:"peers,omitempty"`
+	Peers []LibraryDrama `json:"peers,omitempty"`
 }
 
 type nativeInput struct {
 	SystemProxy     nativeSystemProxy       `json:"systemProxy"`
 	Settings        nativeResourceSettings  `json:"settings"`
 	JobIDs          []string                `json:"jobIds"`
-	Sources         []string                `json:"sources"`
-	Search          string                  `json:"search"`
 	PlaybackSession string                  `json:"playbackSession"`
 	StartMS         int64                   `json:"startMs"`
 	DurationMS      int64                   `json:"durationMs"`
@@ -113,95 +83,104 @@ type nativeInput struct {
 	Command         string                  `json:"command"`
 	Action          string                  `json:"action"`
 	Directory       string                  `json:"directory"`
+	Cache           string                  `json:"cache"`
+	Downloads       string                  `json:"downloads"`
 	Source          string                  `json:"source"`
-	Name            string                  `json:"name"`
-	Base            string                  `json:"base"`
-	Rule            string                  `json:"rule"`
-	Kind            string                  `json:"kind"`
-	// 站源模块安装用：File 是本地 zip 路径，URL 是 zip 下载地址，
-	// Token 是 prepareModule 暂存安装包后回给前端的凭据。
-	File  string `json:"file"`
-	URL   string `json:"url"`
-	Token string `json:"token"`
-	Content         string                  `json:"content"`
 	Page            int                     `json:"page"`
 	Query           string                  `json:"query"`
 	Category        string                  `json:"category"`
-	Drama           nativeDrama             `json:"drama"`
+	Drama           LibraryDrama            `json:"drama"`
 	Chapter         Chapter                 `json:"chapter"`
 	Index           int                     `json:"index"`
 	Quality         int                     `json:"quality"`
-	Route           int                     `json:"route"`
 	Session         string                  `json:"session"`
-	Peer            string                  `json:"peer"`
 	Sequence        int64                   `json:"sequence"`
 	Force           bool                    `json:"force"`
-	AdBlock         *bool                   `json:"adBlock"`
+	Bundled         bool                    `json:"bundled"`
+	Version         string                  `json:"version"`
+	Since           string                  `json:"since"`
 	Account         json.RawMessage         `json:"account"`
-	CacheDirectory  string                  `json:"cacheDirectory"`
-	// 下载列表增量：Since 是上次拿到的列表指纹，列表没变化时核心只回指纹。
-	Since string `json:"since"`
-	// Offset 是「调用方已持有的条目数」，用于听书书池这类大列表的增量拉取：
-	// 传已持有数量就只回新增部分，避免轮询时反复传全量。
-	Offset int `json:"offset"`
+	Device          string                  `json:"device"`
+	File            string                  `json:"file"`
+	URL             string                  `json:"url"`
+	Token           string                  `json:"token"`
+	// Content / Offset 供听书接口使用：Content 是听书请求的附加请求头 JSON，
+	// Offset 是红果书池增量拉取的起始下标。
+	Content string `json:"content"`
+	Offset  int    `json:"offset"`
+	// Peer 是投屏目标（电视）的地址，核心据此挑本机走哪块网卡。
+	Peer string `json:"peer"`
+	// Sources 是跨源聚合搜索要查的站源列表；Search 是搜索会话号。
+	Sources []string `json:"sources"`
+	Search  string   `json:"search"`
+	// 自定义源表单字段。
+	Name string `json:"name"`
+	Base string `json:"base"`
+	Rule string `json:"rule"`
+	Kind string `json:"kind"`
+	// AdBlock 控制 m3u8 广告分片过滤。缺省（nil）按开启处理，
+	// 与播放设置里的默认值一致。
+	AdBlock *bool `json:"adBlock"`
 }
 
 type nativeCatalogResult struct {
-	Items       []nativeDrama `json:"items"`
-	HasMore     bool          `json:"hasMore"`
-	Page        int           `json:"page"`
-	Warning     string        `json:"warning,omitempty"`
-	LocalSearch bool          `json:"localSearch"`
-	Fresh       bool          `json:"fresh"`
-	hongguo     *hongguoCatalogState
+	Items       []LibraryDrama `json:"items"`
+	HasMore     bool           `json:"hasMore"`
+	Page        int            `json:"page"`
+	Warning     string         `json:"warning,omitempty"`
+	LocalSearch bool           `json:"localSearch"`
+	Fresh       bool           `json:"fresh"`
 	saveError   error
 }
 
 type nativePlan struct {
-	ExpiresAt       int64  `json:"expiresAt,omitempty"`
-	PrefetchedBytes int64  `json:"prefetchedBytes,omitempty"`
-	DanmakuID       string `json:"danmakuId,omitempty"`
-	Local           bool   `json:"local"`
-	URL             string `json:"url"`
-	// DirectURL 是站源返回的原始播放地址（未经本机中转）。投屏时优先用它，
-	// 让电视自己去拉流，手机退出 App 也不影响播放。只有不需要本机重写播放
-	// 列表、也不需要本机解密分片时才非空；本地文件与加密线路为空。
-	DirectURL  string            `json:"directUrl,omitempty"`
-	Headers    map[string]string `json:"headers"`
-	Key        string            `json:"decryptionKey,omitempty"`
-	Quality    int               `json:"quality"`
-	Qualities  []int             `json:"qualities"`
-	Session    string            `json:"session,omitempty"`
-	RouteIndex int               `json:"routeIndex"`
-	RouteCount int               `json:"routeCount"`
+	ExpiresAt       int64             `json:"expiresAt,omitempty"`
+	PrefetchedBytes int64             `json:"prefetchedBytes,omitempty"`
+	DanmakuID       string            `json:"danmakuId,omitempty"`
+	Local           bool              `json:"local"`
+	URL             string            `json:"url"`
+	// DirectURL 是站源给出的原始播放地址，投屏时优先直接交给电视。
+	DirectURL       string            `json:"directUrl,omitempty"`
+	Headers         map[string]string `json:"headers"`
+	Key             string            `json:"decryptionKey,omitempty"`
+	Quality         int               `json:"quality"`
+	Qualities       []int             `json:"qualities"`
+	Session         string            `json:"session,omitempty"`
+	RouteIndex      int               `json:"routeIndex"`
+	RouteCount      int               `json:"routeCount"`
 }
 
 type nativeEngine struct {
-	settingsMu       sync.Mutex
-	settings         nativeResourceSettings
-	readMu           sync.Mutex
-	reads            map[string]nativeReadRequest
-	readCount        int
-	work             map[string]bool
-	downloads        *nativeDownloads
-	downloader       *Downloader
-	directory        string
-	mu               sync.Mutex
-	catalogs         map[string][]nativeDrama
-	catalogStates    map[string]nativeCatalogState
-	categoryOptions  map[string][]nativeCategory
-	hongguoCatalog   *hongguoCatalogState
-	recommendations  map[string]nativeRecommendationState
-	catalogSaveError error
-	covers           *nativeCoverCache
-	stream           *nativeStreamServer
-	playbacks        map[string]nativePlaybackChoice
-	playbackMu       sync.Mutex
-	playbackSequence int64
-	playbackCancel   context.CancelFunc
-	sourceCatalogMu  sync.Mutex
-	sourceCatalogs   map[string]chan struct{}
-	customRegistry   *customMaccmsRegistry
+	settingsMu          sync.Mutex
+	settings            nativeResourceSettings
+	readMu              sync.Mutex
+	reads               map[string]nativeReadRequest
+	readCount           int
+	work                map[string]bool
+	downloads           *nativeDownloads
+	downloader          *Downloader
+	directory           string
+	cacheDirectory      string
+	defaultDownloads    string
+	mu                  sync.Mutex
+	catalogs            map[string][]LibraryDrama
+	catalogStates       map[string]nativeCatalogState
+	categoryOptions     map[string][]Category
+	providerStates      map[string]json.RawMessage
+	providerStatesSaved []byte
+	recommendations     map[string]nativeRecommendationState
+	catalogSaveError    error
+	covers              *nativeCoverCache
+	stream              *nativeStreamServer
+	cast                nativeCast
+	playbacks           map[string]nativePlaybackChoice
+	playbackMu          sync.Mutex
+	playbackSequence    int64
+	playbackCancel      context.CancelFunc
+	sourceCatalogMu     sync.Mutex
+	sourceCatalogs      map[string]chan struct{}
+	// customRegistry 是自定义源（MacCMS / XBPQ 规则）注册表，落盘在数据目录。
+	customRegistry *customMaccmsRegistry
 	// 跨源聚合搜索的进行中会话：searchStart 建会话，searchPoll 读快照。
 	searchMu sync.Mutex
 	searches map[string]*nativeSearchSession
@@ -212,19 +191,19 @@ var nativeState struct {
 	engine *nativeEngine
 }
 
-func nativeText(value any) string {
+func NativeText(value any) string {
 	switch v := value.(type) {
 	case string:
 		return strings.TrimSpace(v)
 	case map[string]any:
 		for _, key := range []string{"url", "src", "cover", "image", "pic"} {
-			if text := nativeText(v[key]); text != "" {
+			if text := NativeText(v[key]); text != "" {
 				return text
 			}
 		}
 	case []any:
 		for _, entry := range v {
-			if text := nativeText(entry); text != "" {
+			if text := NativeText(entry); text != "" {
 				return text
 			}
 		}
@@ -238,34 +217,43 @@ func nativeText(value any) string {
 	return ""
 }
 
-func nativeNormalize(drama Drama) nativeDrama {
+func NativeNormalize(drama Drama) LibraryDrama {
 	cover := ""
 	for _, value := range []any{drama.Cover, drama.CoverURL, drama.CoverURLSnake, drama.Image, drama.ImageURL, drama.ImageURLSnake, drama.Img, drama.Pic, drama.Picture, drama.Poster, drama.Thumb, drama.Thumbnail} {
-		candidate := nativeText(value)
+		candidate := NativeText(value)
 		if strings.HasPrefix(candidate, "//") {
 			candidate = "https:" + candidate
 		}
-		if isProviderHTTPMediaURL(candidate) {
+		if IsProviderHTTPMediaURL(candidate) {
 			cover = candidate
 			break
 		}
 	}
 	episodes := 0
 	for _, value := range []any{drama.TotalEpisode, drama.TotalEpisodeSnake, drama.EpisodeCount, drama.EpisodeCountSnake, drama.ChapterCount, drama.ChapterCountSnake, drama.Total, drama.Episodes} {
-		if count, _ := strconv.Atoi(nativeText(value)); count > episodes {
+		if count, _ := strconv.Atoi(NativeText(value)); count > episodes {
 			episodes = count
 		}
 	}
-	source, sourceID, _ := splitProviderDramaID(drama.ID)
-	return nativeDrama{MetadataSchema: 1, ID: drama.ID, Source: source, SourceID: sourceID, Title: drama.DisplayTitle(),
-		Description: firstNonEmpty(drama.Desc, drama.Intro), Cover: cover, Episodes: episodes,
+	source, sourceID, _ := SplitProviderDramaID(drama.ID)
+	return LibraryDrama{MetadataSchema: 1, ID: drama.ID, Source: source, SourceID: sourceID, Title: drama.DisplayTitle(),
+		Description: FirstNonEmpty(drama.Desc, drama.Intro), Cover: cover, Episodes: episodes,
 		Category: nativeDramaCategory(drama), VIP: drama.VIP,
-		Heat: drama.Heat, Views: drama.Views, OnlineDate: providerReleaseDate(drama.OnlineDate),
+		Heat: drama.Heat, Views: drama.Views, OnlineDate: ProviderReleaseDate(drama.OnlineDate), Score: NativeDramaScore(drama.Score),
 		Tags: append([]string(nil), drama.Tags...), ReleaseStatus: drama.ReleaseStatus, Badge: drama.Badge}
 }
 
+func NativeDramaScore(score string) string {
+	score = strings.TrimSpace(strings.TrimSuffix(strings.TrimPrefix(strings.TrimSpace(score), "评分"), "分"))
+	value, err := strconv.ParseFloat(score, 64)
+	if err != nil || !(value > 0 && value <= 10) {
+		return ""
+	}
+	return strconv.FormatFloat(value, 'f', 1, 64)
+}
+
 func nativeDramaCategory(drama Drama) string {
-	category := firstNonEmpty(drama.CategoryName, drama.CategoryNameSnake, drama.TypeName, drama.TypeNameSnake, drama.SortName, drama.SortNameSnake, drama.Category)
+	category := FirstNonEmpty(drama.CategoryName, drama.CategoryNameSnake, drama.TypeName, drama.TypeNameSnake, drama.SortName, drama.SortNameSnake, drama.Category)
 	if category != "" {
 		return category
 	}
@@ -276,35 +264,33 @@ func nativeDramaCategory(drama Drama) string {
 	return ""
 }
 
-func newNativeEngine(directory string) (*nativeEngine, error) {
+func newNativeEngine(directory, cache, downloads string) (*nativeEngine, error) {
 	if !filepath.IsAbs(directory) {
 		return nil, errors.New("应用数据目录无效")
+	}
+	if !filepath.IsAbs(cache) {
+		return nil, errors.New("应用缓存目录无效")
 	}
 	if err := os.MkdirAll(directory, 0700); err != nil {
 		return nil, err
 	}
-	cfg := defaultConfig()
+	if err := os.MkdirAll(cache, 0700); err != nil {
+		return nil, err
+	}
+	moveLegacyNativeCache(directory, cache)
+	cfg := DefaultConfig()
 	cfg.dataDir = directory
+	cfg.cacheDir = cache
 	router := &proxyRouter{}
 	d := &Downloader{cfg: cfg, providerHosts: map[string]string{}, proxyRouter: router,
-		limiter: newRequestLimiter(3, 250*time.Millisecond), diagnostics: newDiagnosticLog(directory)}
+		limiter: newRequestLimiter(3, 0), diagnostics: newDiagnosticLog(directory)}
 	transport := http.DefaultTransport.(*http.Transport).Clone()
-	// RootCAs 设为「系统信任库 + 打包 CA 全集」。通过 dart:ffi / JNI 嵌入时 Go 的
-	// crypto/tls 不会加载系统信任库，x509.SystemCertPool() 在 Android 端返回空池，
-	// 站源换成 Certum 等小众公共根后 m3u8 分片与海报就会报
-	// "tls: failed to verify certificate: x509: certificate signed by unknown
-	// authority"。打包 CA 在此提供信任锚；其余平台只是多追加一份，行为不变。
-	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: systemCertPoolWithBundle()}
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12}
 	transport.MaxIdleConnsPerHost = 8
 	transport.ResponseHeaderTimeout = 20 * time.Second
 	transport.Proxy = router.proxy
 	cdn := newCDNTransport(transport, newDNSResolver(transport))
-	// 浏览器指纹传输必须留住引用：自定义源新增/读取时要把自己的 host 登记进
-	// 白名单（registerCustomBrowserHost），这里不赋值的话白名单永远是空的，
-	// 自定义源与 XBPQ 的页面请求会走普通传输，直接被源站拒掉。
-	browserTransport := newHuangguoBrowserTransport(cdn, d)
-	d.browserTransport = browserTransport
-	d.client = &http.Client{Transport: browserTransport, Timeout: 45 * time.Second,
+	d.client = &http.Client{Transport: newHuangguoBrowserTransport(cdn, d), Timeout: 45 * time.Second,
 		CheckRedirect: func(request *http.Request, via []*http.Request) error {
 			if len(via) >= 10 {
 				return errors.New("站源重定向次数过多")
@@ -314,35 +300,27 @@ func newNativeEngine(directory string) (*nativeEngine, error) {
 			}
 			return nil
 		}}
-	engine := &nativeEngine{downloader: d, directory: directory, catalogs: map[string][]nativeDrama{}, catalogStates: map[string]nativeCatalogState{}, searches: map[string]*nativeSearchSession{}}
-	engine.loadResourceSettings()
-	// 站源模块要在榜单缓存之前加载：模块清单里声明的榜单会被并进榜单表，
-	// 榜单缓存恢复时按 ID 查表，加载晚了那批榜单的缓存就全被丢掉。
+	engine := &nativeEngine{downloader: d, directory: directory, cacheDirectory: cache, defaultDownloads: nativeDefaultDownloads(directory), catalogs: map[string][]LibraryDrama{}, catalogStates: map[string]nativeCatalogState{}}
+	if filepath.IsAbs(downloads) {
+		engine.defaultDownloads = filepath.Clean(downloads)
+	}
 	d.loadModules()
-	d.loadRankingCache()
-	engine.loadCatalogCache()
-	// 自定义源注册表必须在任何站源判定之前就绪：isDuanjuProviderSource /
-	// isHuangguoProviderSource 都会回调 customMaccmsSpecFor 查询自定义源，
-	// registry 为 nil 时那次查询会直接空指针 panic（表现为「本地核心处理失败」）。
+	// 自定义源注册表必须在任何站源判定之前就绪：站源可用性判定会回调
+	// customMaccmsSpecFor 查询自定义源，registry 为 nil 时那次查询会直接
+	// 空指针 panic（表现为「本地核心处理失败」）。
 	engine.customRegistry = newCustomMaccmsRegistry(directory)
 	engine.customRegistry.load()
-	// 已存在的自定义源也要登记进浏览器指纹传输白名单，保证重启后
-	// 其目录/页面请求与运行时新增路径一致。
-	for _, record := range engine.customMaccmsSources() {
-		engine.registerCustomBrowserHost(record.Base)
-	}
-	engine.covers = newNativeCoverCache(directory, d)
+	engine.loadResourceSettings()
+	d.loadRankingCache()
+	engine.loadCatalogCache()
+	engine.covers = newNativeCoverCache(cache, d)
 	engine.downloads = newNativeDownloads(engine)
 	return engine, nil
 }
 
 func NativeRequest(raw string) (result string) {
 	defer func() {
-		if recovered := recover(); recovered != nil {
-			// 这里必须留下堆栈：对外只回「处理失败」，没有堆栈就无从定位。
-			// c-shared 下 stderr 已被重定向到 native_stderr.log（见 bridge），
-			// 本地服务版则直接打在终端。
-			fmt.Fprintf(os.Stderr, "native core panic: %v\n%s\n", recovered, debug.Stack())
+		if recover() != nil {
 			result = `{"ok":false,"error":"本地核心处理失败，请重试"}`
 		}
 	}()
@@ -353,14 +331,14 @@ func NativeRequest(raw string) (result string) {
 	data, err := nativeDispatch(input)
 	envelope := map[string]any{"ok": err == nil}
 	if err != nil {
-		envelope["error"] = publicError(err).Error()
+		envelope["error"] = PublicError(err).Error()
 		if errors.Is(err, errNativeLocalFile) {
 			envelope["code"] = "local_media"
 		}
-		if errors.Is(err, ErrSourceLoginRequired) || errors.Is(err, ErrSourceLoginExpired) {
+		if errors.Is(err, ErrSourceLogin) {
 			envelope["code"] = "source_login"
 		}
-		var backoff *requestBackoff
+		var backoff *RequestBackoff
 		if errors.As(err, &backoff) {
 			envelope["code"] = "source_blocked"
 			envelope["retryAt"] = backoff.until
@@ -382,15 +360,16 @@ func nativeDispatch(input nativeInput) (any, error) {
 	nativeState.Lock()
 	if input.Action == "initialize" {
 		if nativeState.engine == nil {
-			engine, err := newNativeEngine(input.Directory)
+			engine, err := newNativeEngine(input.Directory, input.Cache, input.Downloads)
 			if err != nil {
 				nativeState.Unlock()
 				return nil, err
 			}
 			nativeState.engine = engine
 		}
+		engine := nativeState.engine
 		nativeState.Unlock()
-		return map[string]any{"version": "0.2.17", "standalone": true, "allSources": buildAllSources == "true"}, nil
+		return map[string]any{"version": "0.2.17", "standalone": true, "sources": engine.sourceList()}, nil
 	}
 	engine := nativeState.engine
 	nativeState.Unlock()
@@ -398,12 +377,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return nil, errors.New("应用核心尚未就绪，请重新打开应用")
 	}
 	duration := 60 * time.Second
-	if input.Action == "moveDownloads" {
+	if input.Action == "moveDownloads" || input.Action == "deleteAllData" {
 		duration = 10 * time.Minute
-	} else if input.Action == "analyzeCustomSourceSite" {
-		// 自动识别要依次抓首页 / 分类页 / 搜索接口 / 详情页，给足预算；
-		// 分析器内部另有 45 秒硬预算与请求数上限，不会真的拖到 90 秒。
-		duration = 90 * time.Second
 	} else if input.Action == "danmaku" {
 		duration = 10 * time.Second
 	} else if input.Action == "preload" {
@@ -438,9 +413,24 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "recommendations":
 		return engine.nativeRecommendations(ctx, input)
 	case "cachedRecommendations":
-		return engine.cachedRecommendations(input.Category)
+		return engine.cachedRecommendations(nativeActionSource(input), input.Category)
+	case "modules":
+		items, err := engine.modules()
+		return map[string]any{"items": items}, err
+	case "moduleIndex":
+		return engine.moduleStore(ctx)
+	case "prepareModule":
+		return engine.prepareModule(ctx, input.File, input.URL, input.Source, input.Bundled)
+	case "installModule":
+		return engine.installModule(input.Token)
+	case "uninstallModule":
+		return engine.uninstallModule(input.Source)
+	case "sourceDevices":
+		return engine.sourceDevices(ctx, nativeActionSource(input), input.Command == "register")
+	case "soraniAccount", "sourceAccount":
+		return engine.sourceAccount(ctx, nativeActionSource(input), input.Command, input.Account)
 	case "rankingBoards":
-		boards := []rankingBoard{}
+		boards := []RankingBoard{}
 		for _, board := range allRankingBoards() {
 			if nativeSourceAvailable(board.Source) {
 				boards = append(boards, board)
@@ -450,8 +440,49 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "rankings":
 		return engine.nativeRanking(ctx, input)
 	case "suggestions":
-		items, err := engine.suggestions(ctx, input.Source, input.Query)
+		items, err := engine.suggestions(ctx, nativeActionSource(input), input.Query)
 		return map[string]any{"items": items}, err
+	case "customSources":
+		return map[string]any{"items": engine.customMaccmsSources()}, nil
+	// analyzeCustomSourceSite：新增自定义源时按网页 HTML 自动反推 XBPQ 规则。
+	// 只返回规则文本与诊断说明，不写盘；是否保存仍由用户在表单里点「保存」决定。
+	case "analyzeCustomSourceSite":
+		return engine.downloader.analyzeCustomSourceSite(ctx, input.Base)
+	case "addCustomSource":
+		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
+		if err != nil {
+			return nil, err
+		}
+		return record, nil
+	case "updateCustomSource":
+		record, err := engine.updateCustomMaccmsSource(input.Source, input.Name, input.Base, input.Rule, input.Kind)
+		if err != nil {
+			return nil, err
+		}
+		return record, nil
+	case "removeCustomSource":
+		return true, engine.removeCustomMaccmsSource(input.Source)
+	case "exportCustomSources":
+		content, err := engine.exportCustomMaccmsSources()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"content": content, "filename": customSourceExportFilename()}, nil
+	case "importCustomSources":
+		if strings.TrimSpace(input.Content) == "" {
+			return nil, errors.New("导入内容为空")
+		}
+		result, err := engine.importCustomMaccmsSources(input.Content)
+		if err != nil {
+			return nil, err
+		}
+		return result, nil
+	case "resetCustomSources":
+		removed, err := engine.resetCustomMaccmsSources()
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"removed": removed}, nil
 	case "audiobookFetch":
 		body, err := engine.downloader.fetchAudiobookRaw(ctx, input.Query, input.Content)
 		if err != nil {
@@ -492,11 +523,6 @@ func nativeDispatch(input nativeInput) (any, error) {
 			return nil, err
 		}
 		return map[string]any{"books": books, "hasMore": hasMore, "origin": "hongguo"}, nil
-	// 全量书池：把整个频道一直翻到底。服务端建书库、App 首屏建池都用它，
-	// 单页接口只有 12 本，靠它才能拿到完整目录。
-	// 走进程内缓存 + 后台增量抓取：首次请求短暂等首屏那一批，切换书源命中缓存
-	// 瞬时返回。since 是调用方已持有的书数，传了就只回增量，避免轮询时反复
-	// 把上千本书（含封面 / 简介）序列化过 IPC。
 	case "audiobookHongguoPool":
 		books, total, loading, _ := engine.downloader.audiobookHongguoPoolStart(
 			ctx, input.Category, input.Page, input.Force, input.Offset)
@@ -532,19 +558,17 @@ func nativeDispatch(input nativeInput) (any, error) {
 		engine.downloads.mu.Unlock()
 		return map[string]string{"directory": root}, nil
 	case "storage":
-		return engine.storage(input.CacheDirectory)
-	case "cacheInfo":
-		return engine.cacheInfo(input.CacheDirectory), nil
+		return engine.storage()
+	case "cache":
+		return map[string]int64{"bytes": engine.cacheBytes()}, nil
 	case "clearCache":
-		return engine.clearCache(input.CacheDirectory)
+		return true, engine.clearCache()
 	case "deleteAllData":
-		leftover, err := engine.deleteAllData(input.CacheDirectory)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"leftover": leftover}, nil
+		leftover, err := engine.deleteAllData()
+		return map[string]any{"leftover": leftover}, err
 	case "moveDownloads":
-		return true, engine.moveDownloads(ctx, input.Directory)
+		leftover, reason, err := engine.moveDownloads(ctx, input.Directory)
+		return map[string]string{"leftover": leftover, "leftoverReason": reason}, err
 	case "workLease":
 		count, err := engine.workLease(input.JobID, input.Command)
 		return map[string]int{"count": count}, err
@@ -564,7 +588,8 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return plan, err
 	case "catalog":
 		return engine.nativeCatalog(ctx, input)
-	// 跨源聚合搜索：start 立刻建会话返回，poll 取增量快照，cancel 主动放弃。
+	// 跨源聚合搜索：searchStart 建会话并并发查各源，searchPoll 读增量快照，
+	// searchCancel 取消，searchAcross 是一次性（不分页轮询）的同步版本。
 	case "searchStart":
 		return engine.nativeSearchStart(input)
 	case "searchPoll":
@@ -575,7 +600,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "searchAcross":
 		return engine.nativeSearchAcross(ctx, input)
 	case "cached":
-		if !validNativeCategory(canonicalProviderSource(input.Source), input.Category) {
+		if !ValidNativeCategory(canonicalProviderSource(input.Source), input.Category) {
 			return nil, errors.New("内容分类无效")
 		}
 		return engine.nativeCached(nativeCatalogKey(input.Source, input.Category)), nil
@@ -604,22 +629,16 @@ func nativeDispatch(input nativeInput) (any, error) {
 			return engine.nativeNextPlayback(playback, input.Session)
 		}
 		return engine.nativeResolve(playback, input)
-	case "selectRoute":
-		playback, finish, err := engine.nativeBeginPlayback(ctx, input.Sequence)
-		if err != nil {
-			return nil, err
-		}
-		defer finish()
-		return engine.nativeSelectRoute(playback, input.Session, input.Route)
 	case "cancelPlayback":
 		engine.nativeCancelPlayback(input.Sequence)
 		return true, nil
 	case "release":
 		engine.nativeReleasePlayback(input.Session)
 		return true, nil
-	// 投屏：把当前播放会话再挂一份到 0.0.0.0，返回电视能访问的内网基址；
-	// 停止投屏时关掉该监听，会话本身不影响本机播放。Peer 是电视地址，
-	// 用来确定手机这一侧走哪块网卡（Android 网卡枚举不一定可用）。
+	case "cast":
+		return engine.nativeCast(ctx, input)
+	// 投屏（移植自 guoappxp）：castBase 开局域网监听并返回电视可访问的基址，
+	// closeCast 停止监听。DLNA 的 SSDP/SOAP 在 Android 原生侧，这里只管流。
 	case "castBase":
 		base, err := engine.nativeCastBase(input.Peer)
 		if err != nil {
@@ -629,105 +648,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "closeCast":
 		engine.nativeCloseCast()
 		return true, nil
-	case "customSources":
-		return map[string]any{"items": engine.customMaccmsSources()}, nil
-	// analyzeCustomSourceSite：新增自定义源时按网页 HTML 自动反推 XBPQ 规则。
-	// 只返回规则文本与诊断说明，不写盘；是否保存仍由用户在表单里点「保存」决定。
-	case "analyzeCustomSourceSite":
-		return engine.downloader.analyzeCustomSourceSite(ctx, input.Base)
-	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
-	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
-	// 这里不返回 Flutter 端那套任务进度字段（xp 的 core 没有站源任务状态机）。
-	case "sourceStatus":
-		return map[string]any{"source": canonicalProviderSource(input.Source), "available": true}, nil
-	// 启动时先注册红果主设备与辅助设备；command == "register" 是用户显式重试，
-	// 会忽略上一次失败留下的暂停窗口。
-	case "hongguoDevices":
-		return engine.hongguoDevices(ctx, input.Command == "register")
-	// sourceDevices：通用的站源设备注册（上游 DeviceProvider 契约）。
-	// 站源自己管设备池时用它；未实现该接口的源返回 available=false，
-	// 前端据此隐藏入口，不会误报错。
-	case "sourceDevices":
-		registered, handled, err := engine.downloader.providerDevices(ctx, input.Source, input.Command == "register")
-		if err != nil {
-			return nil, err
-		}
-		if !handled {
-			return map[string]any{"available": false}, nil
-		}
-		return map[string]any{"available": true, "registered": registered}, nil
-	// soraniAccount：站源账号能力（登录 / 验证码 / 登出）。具体语义由站源自己定义，
-	// 运行时只按 action 找到站源并把 command 与 account 原样转过去。
-	case "soraniAccount":
-		provider, ok := engine.downloader.sourceProvider(sourceSorani)
-		if !ok {
-			return nil, errSourceNotCompiled
-		}
-		account, ok := providerAs[SourceAccount](provider)
-		if !ok {
-			return nil, errors.New("当前版本的青空次元不支持账号登录")
-		}
-		return account.Account(ctx, input.Command, input.Account)
-	// sourceAccount：通用的站源账号能力（站源模块用自己的登录流程时走这里）。
-	// command 与 account 由站源自己解释，运行时只负责按 action 找到站源转过去。
-	case "sourceAccount":
-		provider, ok := engine.downloader.sourceProvider(input.Source)
-		if !ok {
-			return nil, errSourceNotCompiled
-		}
-		account, ok := providerAs[SourceAccount](provider)
-		if !ok {
-			return nil, errors.New("该站源不支持账号登录")
-		}
-		return account.Account(ctx, input.Command, input.Account)
-	// 站源模块：已装列表、商店索引、准备安装包、安装、卸载。
-	// 站源以模块形式提供，装上后即出现在站源列表里（见 module_loader.go）。
-	case "modules":
-		items, err := engine.modules()
-		return map[string]any{"items": items}, err
-	case "moduleIndex":
-		return engine.moduleStore(ctx)
-	case "prepareModule":
-		return engine.prepareModule(ctx, input.File, input.URL, input.Source)
-	case "installModule":
-		return engine.installModule(input.Token)
-	case "uninstallModule":
-		return engine.uninstallModule(input.Source)
-	case "addCustomSource":
-		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
-		if err != nil {
-			return nil, err
-		}
-		return record, nil
-	case "updateCustomSource":
-		record, err := engine.updateCustomMaccmsSource(input.Source, input.Name, input.Base, input.Rule, input.Kind)
-		if err != nil {
-			return nil, err
-		}
-		return record, nil
-	case "removeCustomSource":
-		return true, engine.removeCustomMaccmsSource(input.Source)
-	case "exportCustomSources":
-		content, err := engine.exportCustomMaccmsSources()
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"content": content, "filename": customSourceExportFilename()}, nil
-	case "importCustomSources":
-		if strings.TrimSpace(input.Content) == "" {
-			return nil, errors.New("导入内容为空")
-		}
-		result, err := engine.importCustomMaccmsSources(input.Content)
-		if err != nil {
-			return nil, err
-		}
-		return result, nil
-	case "resetCustomSources":
-		removed, err := engine.resetCustomMaccmsSources()
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"removed": removed}, nil
+	case "checkUpdate":
+		return engine.checkUpdate(ctx, input.Version)
+	case "reportUsage":
+		return true, engine.reportUsage(ctx, input.Version)
 	default:
 		return nil, errors.New("不支持的应用操作")
 	}
@@ -735,19 +659,11 @@ func nativeDispatch(input nativeInput) (any, error) {
 
 func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput) (nativeCatalogResult, error) {
 	source := canonicalProviderSource(input.Source)
-	if !isHuangguoProviderSource(source) {
+	if !registeredProviderSource(source) {
 		return nativeCatalogResult{}, errors.New("请选择有效站源")
 	}
-	// 站源模块的分类由它自己的 JS 判定（descriptor.ValidCategory 指向模块的
-	// validCategory），而 JS 实例是取 Provider 时才建出来的。这里先把 Provider
-	// 建好，否则「实例还不存在」会让模块源第一次带分类的请求被判成无效分类；
-	// 前端先拉分类再进目录时看不出来，直接带分类请求（单源搜索、恢复上次分类）
-	// 就会踩。
-	if isModuleProviderSource(source) {
-		engine.downloader.sourceProvider(source)
-	}
 	category := strings.TrimSpace(input.Category)
-	if !validNativeCategory(source, category) {
+	if !ValidNativeCategory(source, category) {
 		return nativeCatalogResult{}, errors.New("内容分类无效")
 	}
 	cacheKey := nativeCatalogKey(source, category)
@@ -769,22 +685,40 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			return cached, nil
 		}
 	}
-	result := nativeCatalogResult{Items: []nativeDrama{}, Page: page}
-	if query != "" {
-		// 有在线搜索接口的站源统一走 nativeSearchSource：单源搜索与「全部源」
-		// 聚合搜索共用同一套实现，不会出现两处结果不一致的情况。
-		if nativeSourceSupportsSearch(source) {
-			return engine.nativeSearchSource(ctx, source, query, page)
+	d := engine.downloader
+	result := nativeCatalogResult{Items: []LibraryDrama{}, Page: page}
+	registered, hasProvider := d.provider(source)
+	if searcher, ok := providerAs[WarningSearcher](registered); ok && query != "" {
+		items, more, warning, err := searcher.SearchWithWarning(ctx, page, query)
+		if err != nil {
+			return result, err
 		}
-		// 没有搜索接口的站源（黄豆、黄果 AI / 视频 / 旧版）退回已缓存目录里筛选。
+		for _, drama := range items {
+			result.Items = append(result.Items, NativeNormalize(drama))
+		}
+		result.Warning, result.HasMore = warning, more
+		return result, nil
+	}
+	if searcher, ok := providerAs[Searcher](registered); ok && query != "" {
+		items, more, err := searcher.Search(ctx, page, query)
+		if err != nil {
+			return result, err
+		}
+		for _, drama := range items {
+			result.Items = append(result.Items, NativeNormalize(drama))
+		}
+		result.HasMore = more
+		return result, nil
+	}
+	if query != "" {
 		engine.mu.Lock()
-		items := append([]nativeDrama{}, engine.catalogs[source]...)
+		items := append([]LibraryDrama{}, engine.catalogs[source]...)
 		engine.mu.Unlock()
 		for _, item := range items {
-			text := hongguoSearchText(item.Title + " " + item.Description + " " + strings.Join(item.Tags, " "))
+			text := NativeSearchText(item.Title + " " + item.Description + " " + strings.Join(item.Tags, " "))
 			matches := true
 			for _, word := range strings.Fields(query) {
-				matches = matches && strings.Contains(text, hongguoSearchText(word))
+				matches = matches && strings.Contains(text, NativeSearchText(word))
 			}
 			if matches {
 				result.Items = append(result.Items, item)
@@ -793,7 +727,6 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 		result.LocalSearch = true
 		return result, nil
 	}
-	d := engine.downloader
 	unlock, lockErr := engine.lockSourceCatalog(ctx, source)
 	if lockErr != nil {
 		return nativeCatalogResult{}, lockErr
@@ -804,81 +737,32 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	}
 	var items []Drama
 	var err error
-	if provider, ok := engine.downloader.sourceProvider(source); ok {
-		// 连续信息流类站源（上游 CatalogStateful）需要上次的翻页游标，
-		// 先把落盘的游标还给它，再请求这一页。
-		if saved, found := engine.catalogStateFor(source); found && len(saved) > 0 {
-			engine.downloader.restoreProviderCatalogState(source, saved)
+	if !hasProvider {
+		return result, errors.New("请选择有效站源")
+	}
+	descriptor := registered.Descriptor()
+	allowEmptyCatalog := descriptor.AllowEmptyCatalog
+	if descriptor.ContinuousFeed {
+		engine.mu.Lock()
+		known := make(map[string]bool, len(engine.catalogs[cacheKey]))
+		for _, drama := range engine.catalogs[cacheKey] {
+			known[drama.ID] = true
 		}
-		items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
-	} else {
-		switch source {
-		case sourceHongguo:
-			if strings.HasPrefix(category, hongguoTagPrefix) {
-				items, result.HasMore, err = d.fetchHongguoTagPage(ctx, category, page)
-				break
-			}
-			engine.mu.Lock()
-			known := make(map[string]bool, len(engine.catalogs[cacheKey]))
-			for _, drama := range engine.catalogs[cacheKey] {
-				known[drama.ID] = true
-			}
-			engine.mu.Unlock()
-			ctx = context.WithValue(ctx, libraryKnownKey{}, known)
-			if page > 1 {
-				ctx = context.WithValue(ctx, libraryMoreKey{}, true)
-			}
-			items, err = d.fetchHongguoAppCatalogCategory(ctx, category)
-			state := d.hongguoCatalogSnapshot()
-			result.hongguo = state
-			result.HasMore = hongguoCatalogHasMore(state)
-			if category != "" && state != nil {
-				result.HasMore = !state.Feeds["category:"+category].Exhausted
-			}
-			if len(items) == 0 && err != nil && ctx.Err() == nil && (category == "" || category == "short_play") {
-				var totalPages int
-				items, totalPages, err = d.fetchHongguoCategoryPage(ctx, "real-drama?page="+strconv.Itoa(page), "真人剧")
-				result.HasMore = page < totalPages
-			}
-		case sourceGuipian:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceIkanbot:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceA123:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceXChina:
-			if provider, ok := d.sourceProvider(source); ok {
-				items, result.HasMore, err = provider.CatalogPage(ctx, page, category)
-			} else {
-				err = errSourceNotCompiled
-			}
-		default:
-			// 短剧家族与自定义 MacCMS 源共用同一套目录抓取（isDuanjuProviderSource 已含自定义源）。
-			if isDuanjuProviderSource(source) {
-				items, result.HasMore, err = d.fetchDuanjuCatalogPage(ctx, source, page, category)
-			}
+		engine.mu.Unlock()
+		ctx = context.WithValue(ctx, LibraryKnownKey{}, known)
+		if page > 1 {
+			ctx = context.WithValue(ctx, LibraryMoreKey{}, true)
 		}
 	}
+	items, result.HasMore, err = registered.CatalogPage(ctx, page, category)
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
-	if len(items) == 0 && page == 1 && source != sourceHuangju && source != sourceYeguo && source != sourceJinguoDuanju && source != sourceJinguo && source != sourceHeitao && source != sourceBeabox && source != sourceDSD && source != sourceSorani && source != sourceGuipian && source != sourceHanxiaoquan && source != sourceFanqie && !moduleAllowsEmptyCatalog(source) {
+	if len(items) == 0 && page == 1 && !allowEmptyCatalog {
 		return result, errors.New("站源暂未返回剧集，请稍后刷新")
 	}
 	if err != nil {
-		result.Warning = publicError(err).Error()
+		result.Warning = PublicError(err).Error()
 	}
 	seen := map[string]bool{}
 	for _, drama := range items {
@@ -886,72 +770,34 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 			continue
 		}
 		seen[drama.ID] = true
-		result.Items = append(result.Items, nativeNormalize(drama))
+		result.Items = append(result.Items, NativeNormalize(drama))
 	}
 	engine.saveCatalogCache(cacheKey, &result)
 	return result, nil
 }
 
-func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama) (any, error) {
-	source, sourceID, valid := splitProviderDramaID(drama.ID)
+func (engine *nativeEngine) nativeDetail(ctx context.Context, drama LibraryDrama) (any, error) {
+	source, sourceID, valid := SplitProviderDramaID(drama.ID)
 	if !valid {
 		return nil, errors.New("剧集信息无效，请刷新剧库")
 	}
-	var title string
-	var raw Drama
-	var chapters []Chapter
-	var err error
-	if provider, ok := engine.downloader.sourceProvider(source); ok {
-		raw, chapters, err = provider.Detail(ctx, sourceID)
-		title = raw.DisplayTitle()
-	} else {
-		switch source {
-		case sourceGuipian:
-			if provider, ok := engine.downloader.sourceProvider(source); ok {
-				raw, chapters, err = provider.Detail(ctx, sourceID)
-			} else {
-				err = errSourceNotCompiled
-			}
-		case sourceXChina:
-			if provider, ok := engine.downloader.sourceProvider(source); ok {
-				raw, chapters, err = provider.Detail(ctx, sourceID)
-			} else {
-				err = errSourceNotCompiled
-			}
-		default:
-			// 必须拿完整 Drama：这些源（网页源 / XBPQ 自定义源 / 爱看机器人 /
-			// A123 / 短剧家族 / 红果 / 黄豆）的详情层解析出了简介、封面、类型等，
-			// 只取标题会让播放页简介与详情页资料区一直空白。
-			raw, chapters, err = engine.downloader.GetHuangguoDetail(ctx, source, sourceID)
-			title = raw.DisplayTitle()
-		}
+	p, ok := engine.downloader.provider(source)
+	if !ok {
+		return nil, errors.New("请选择有效站源")
 	}
+	raw, chapters, err := p.Detail(ctx, sourceID)
 	if err != nil {
 		return nil, err
 	}
 	if len(chapters) == 0 {
 		return nil, errors.New("该剧暂时没有可播放的分集")
 	}
-	if title != "" && title != "短剧" {
-		drama.Title = title
-	}
 	if raw.ID == drama.ID {
-		drama = mergeNativeDrama(drama, nativeNormalize(raw))
+		drama = MergeNativeDrama(drama, NativeNormalize(raw))
 	}
-	if source == sourceHongguo {
-		raw := engine.downloader.hongguoCachedDrama(Drama{ID: drama.ID, Title: drama.Title, Source: source})
-		drama = mergeNativeDrama(drama, nativeNormalize(raw))
-	}
-	// 覆盖前留一份「榜单 / 剧库 / 详情元数据」给出的总集数。
-	metadataEpisodes := drama.Episodes
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
-	if source == sourceHongguo {
-		// 红果网页只开放前几集 vid，len(chapters) 是「可看集数」而非总集数；
-		// 站点声明的 episode_cnt / 榜单 episodeCount 才应该显示成「共 N 集」。
-		drama.Episodes = max(max(drama.Episodes, metadataEpisodes), nativeNormalize(raw).Episodes)
-	}
-	if source == sourceHuangju || source == sourceYeguo || source == sourceJinguoDuanju || source == sourceJinguo {
-		drama.Episodes = max(drama.Episodes, nativeNormalize(raw).Episodes)
+	if p.Descriptor().KeepDetailEpisodes {
+		drama.Episodes = max(drama.Episodes, NativeNormalize(raw).Episodes)
 	}
 	warning := ""
 	if err := engine.saveDetailMetadata(drama); err != nil {
@@ -961,7 +807,7 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama nativeDrama)
 }
 
 func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput) (nativePlan, error) {
-	if _, _, valid := splitProviderDramaID(input.Drama.ID); !valid {
+	if _, _, valid := SplitProviderDramaID(input.Drama.ID); !valid {
 		return nativePlan{}, errors.New("剧集信息无效")
 	}
 	if !input.Force && engine.downloads != nil {
@@ -969,31 +815,29 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 			return plan, err
 		}
 	}
-	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index, Quality: input.Quality}
+	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}
 	media, err := engine.downloader.resolveProviderMedia(ctx, task)
 	if err != nil {
 		return nativePlan{}, err
 	}
-	// 沿用玩家上一次选中的线路（input.Route，0 起）。这一集没有该序号
-	// 的线路时由 nativeChoosePlayback 回落到第一条。
-	choice := nativeChoosePlayback(media, input.Quality, input.Route)
+	choice := nativePlaybackChoices(media, input.Quality)
 	if input.AdBlock != nil {
 		choice.adBlock = *input.AdBlock
 	}
-	if series, video, valid := hongguoPlaybackIDs(task); valid {
-		choice.danmakuSeries, choice.danmakuVideo = series, video
+	if p, ok := engine.downloader.provider(SourceFromDramaID(task.DramaID)); ok {
+		if danmaku, ok := providerAs[DanmakuProvider](p); ok {
+			if series, video, valid := danmaku.DanmakuIDs(task); valid {
+				choice.danmakuSource, choice.danmakuSeries, choice.danmakuVideo = p.Descriptor().ID, series, video
+			}
+		}
 	}
 	return engine.nativeOpenPlayback(ctx, choice)
 }
 
 // withAudiobookStream 给听书音频附上一个本机明文流地址（streamUrl）。
-//
-// 播放器拿到的是带 .m4a 扩展名的 127.0.0.1 地址，与短剧播放完全同构：
-// 容器探测稳定、CENC 的 decryption_key 能落到 mov demuxer，上游的
-// Referer / User-Agent 也由 Go 侧统一注入。桌面端（Windows）不再依赖
-// libmpv 对裸 CDN 地址与 httpHeaders 的平台相关处理。streamUrl 是附加
-// 字段：本地服务版网页听书仍按原样读取 url / decryptionKey / headers，
-// 不受影响；拿不到流服务器时也只是退回原来的直连路径。
+// 播放器拿到的是带 .m4a 扩展名的 127.0.0.1 地址，与短剧播放同构：容器探测稳定、
+// CENC 的 decryption_key 能落到 mov demuxer，上游的 Referer / User-Agent 也由
+// Go 侧统一注入。streamUrl 是附加字段：拿不到流服务器时退回原来的直连路径。
 func (engine *nativeEngine) withAudiobookStream(plan map[string]any) map[string]any {
 	if plan == nil {
 		return plan

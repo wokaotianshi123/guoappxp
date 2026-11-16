@@ -12,7 +12,7 @@ import (
 	"time"
 )
 
-func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) ([]nativeCategory, error) {
+func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) ([]Category, error) {
 	source = canonicalProviderSource(source)
 	if !isDuanjuProviderSource(source) {
 		return nil, errors.New("该站源不支持分类读取")
@@ -21,9 +21,9 @@ func (d *Downloader) fetchDuanjuCategories(ctx context.Context, source string) (
 		return providerCategories(ctx, provider, false), nil
 	}
 	if static, found := duanjuStaticCategories[source]; found {
-		categories := make([]nativeCategory, 0, len(static))
+		categories := make([]Category, 0, len(static))
 		for _, entry := range static {
-			categories = append(categories, nativeCategory{ID: entry.ID, Name: entry.Name})
+			categories = append(categories, Category{ID: entry.ID, Name: entry.Name})
 		}
 		return categories, nil
 	}
@@ -78,12 +78,12 @@ func duanjuSupportsPaging(source string) bool {
 	return found && spec.Paged
 }
 
-func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (providerMedia, error) {
+func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (ProviderMedia, error) {
 	source := canonicalProviderSource(task.Chapter.Source)
 	name := duanjuSourceName(source)
 	base := d.duanjuBaseURL(source)
 	if base == "" {
-		return providerMedia{}, errors.New("站源地址不可用")
+		return ProviderMedia{}, errors.New("站源地址不可用")
 	}
 	// XBPQ 规则源：播放页按规则「跳转播放链接」→ player_data → 嗅探兜底。
 	if rule, ok := customXBPQRule(source); ok {
@@ -92,9 +92,9 @@ func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (provide
 	address := strings.TrimSpace(task.Chapter.VideoURL)
 	pageURL := strings.TrimSpace(task.Chapter.PageURL)
 	referer := firstNonEmpty(task.Chapter.Referer, base+"/")
-	if !isProviderHTTPMediaURL(address) || !duanjuLooksLikeMedia(address) {
+	if !IsProviderHTTPMediaURL(address) || !duanjuLooksLikeMedia(address) {
 		if pageURL == "" {
-			if source, sourceID, valid := splitProviderDramaID(task.DramaID); valid {
+			if source, sourceID, valid := SplitProviderDramaID(task.DramaID); valid {
 				if _, chapters, err := d.fetchDuanjuDetail(ctx, source, sourceID); err == nil {
 					for _, fresh := range chapters {
 						if fresh.ID == task.Chapter.ID {
@@ -109,7 +109,7 @@ func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (provide
 		if pageURL != "" {
 			resolved, err := d.resolveDuanjuWebPage(ctx, source, pageURL, referer)
 			if err != nil {
-				return providerMedia{}, err
+				return ProviderMedia{}, err
 			}
 			prepared, err := d.prepareWebProviderMedia(ctx, resolved, name)
 			if err == nil {
@@ -119,39 +119,39 @@ func (d *Downloader) resolveDuanjuMedia(ctx context.Context, task Task) (provide
 			if fallback, ok := d.prepareWebProviderRouteFallback(ctx, resolved, name); ok {
 				return fallback, nil
 			}
-			return providerMedia{}, err
+			return ProviderMedia{}, err
 		}
 	}
-	if !isProviderHTTPMediaURL(address) {
-		return providerMedia{}, fmt.Errorf("%s未返回有效播放地址，请刷新章节后重试", name)
+	if !IsProviderHTTPMediaURL(address) {
+		return ProviderMedia{}, fmt.Errorf("%s未返回有效播放地址，请刷新章节后重试", name)
 	}
-	return d.prepareWebProviderMedia(ctx, providerMedia{URL: address, Referer: referer}, name)
+	return d.prepareWebProviderMedia(ctx, ProviderMedia{URL: address, Referer: referer}, name)
 }
 
 // prepareWebProviderRouteFallback 在主线路拿不到可播内容时，依次试用备选线路，
 // 首个可播线路提为主地址，其余线路（含原主线路）继续留在备选列表里供手动切换。
-func (d *Downloader) prepareWebProviderRouteFallback(ctx context.Context, media providerMedia, name string) (providerMedia, bool) {
+func (d *Downloader) prepareWebProviderRouteFallback(ctx context.Context, media ProviderMedia, name string) (ProviderMedia, bool) {
 	if len(media.Variants) == 0 {
-		return providerMedia{}, false
+		return ProviderMedia{}, false
 	}
 	for index, variant := range media.Variants {
-		if !isProviderHTTPMediaURL(variant.URL) {
+		if !IsProviderHTTPMediaURL(variant.URL) {
 			continue
 		}
-		prepared, err := d.prepareWebProviderMedia(ctx, providerMedia{URL: variant.URL, Referer: variant.Referer}, name)
+		prepared, err := d.prepareWebProviderMedia(ctx, ProviderMedia{URL: variant.URL, Referer: variant.Referer}, name)
 		if err != nil {
 			continue
 		}
-		remaining := make([]providerMedia, 0, len(media.Variants))
+		remaining := make([]ProviderMedia, 0, len(media.Variants))
 		remaining = append(remaining, media.Variants[:index]...)
 		remaining = append(remaining, media.Variants[index+1:]...)
-		if isProviderHTTPMediaURL(media.URL) {
-			remaining = append([]providerMedia{{URL: media.URL, Referer: media.Referer}}, remaining...)
+		if IsProviderHTTPMediaURL(media.URL) {
+			remaining = append([]ProviderMedia{{URL: media.URL, Referer: media.Referer}}, remaining...)
 		}
 		prepared.Variants = remaining
 		return prepared, true
 	}
-	return providerMedia{}, false
+	return ProviderMedia{}, false
 }
 
 func duanjuLooksLikeMedia(address string) bool {
@@ -159,14 +159,14 @@ func duanjuLooksLikeMedia(address string) bool {
 	return strings.Contains(lower, ".m3u8") || strings.Contains(lower, ".mp4") || strings.Contains(lower, ".flv")
 }
 
-func (d *Downloader) resolveDuanjuWebPage(ctx context.Context, source, pageURL, referer string) (providerMedia, error) {
+func (d *Downloader) resolveDuanjuWebPage(ctx context.Context, source, pageURL, referer string) (ProviderMedia, error) {
 	body, err := d.fetchProviderText(ctx, pageURL, referer)
 	if err != nil {
-		return providerMedia{}, err
+		return ProviderMedia{}, err
 	}
 	address := maccmsNormalizePlaybackURL(maccmsPlayerURL(body))
-	if isProviderHTTPMediaURL(address) {
-		media := providerMedia{URL: address, Referer: pageURL}
+	if IsProviderHTTPMediaURL(address) {
+		media := ProviderMedia{URL: address, Referer: pageURL}
 		// 同一集通常有多条线路（m3u8/云播/各视频站），详情只展示一条线路的集数，
 		// 其余线路在这里补齐，播放页就能用「线路 N」切换。
 		media.Variants = d.collectMaccmsRouteVariants(ctx, pageURL, address)
@@ -176,11 +176,11 @@ func (d *Downloader) resolveDuanjuWebPage(ctx context.Context, source, pageURL, 
 		if !duanjuLooksLikeMedia(address) {
 			for index, variant := range media.Variants {
 				if duanjuLooksLikeMedia(variant.URL) {
-					remaining := make([]providerMedia, 0, len(media.Variants))
+					remaining := make([]ProviderMedia, 0, len(media.Variants))
 					remaining = append(remaining, media.Variants[:index]...)
 					remaining = append(remaining, media.Variants[index+1:]...)
 					media.URL, media.Referer = variant.URL, variant.Referer
-					media.Variants = append([]providerMedia{{URL: address, Referer: pageURL}}, remaining...)
+					media.Variants = append([]ProviderMedia{{URL: address, Referer: pageURL}}, remaining...)
 					break
 				}
 			}
@@ -192,17 +192,17 @@ func (d *Downloader) resolveDuanjuWebPage(ctx context.Context, source, pageURL, 
 	encrypted := fields["url"]
 	if encrypted != "" && !strings.HasPrefix(strings.ToLower(encrypted), "http") {
 		if parsed := d.resolveMaccmsCloudParse(ctx, body, encrypted, pageURL); parsed != "" {
-			return providerMedia{URL: maccmsNormalizePlaybackURL(parsed), Referer: pageURL}, nil
+			return ProviderMedia{URL: maccmsNormalizePlaybackURL(parsed), Referer: pageURL}, nil
 		}
 		// 当前线路云解析失败（如默认 sid 为 iqiyi 等重型加密线）：换该站其他线路逐条重试。
 		if alt := d.resolveMaccmsAlternateRoutes(ctx, pageURL); alt != "" {
-			return providerMedia{URL: maccmsNormalizePlaybackURL(alt), Referer: pageURL}, nil
+			return ProviderMedia{URL: maccmsNormalizePlaybackURL(alt), Referer: pageURL}, nil
 		}
 	}
-	if address == "" || !isProviderHTTPMediaURL(address) {
-		return providerMedia{}, fmt.Errorf("%s未返回有效播放地址，请刷新章节后重试", duanjuSourceName(source))
+	if address == "" || !IsProviderHTTPMediaURL(address) {
+		return ProviderMedia{}, fmt.Errorf("%s未返回有效播放地址，请刷新章节后重试", duanjuSourceName(source))
 	}
-	return providerMedia{URL: address, Referer: pageURL}, nil
+	return ProviderMedia{URL: address, Referer: pageURL}, nil
 }
 
 var (
@@ -280,7 +280,7 @@ func (d *Downloader) maccmsResolveRoutePage(ctx context.Context, altURL, referer
 	if err != nil || body == "" {
 		return ""
 	}
-	if address := maccmsNormalizePlaybackURL(maccmsPlayerURL(body)); isProviderHTTPMediaURL(address) {
+	if address := maccmsNormalizePlaybackURL(maccmsPlayerURL(body)); IsProviderHTTPMediaURL(address) {
 		return address
 	}
 	fields := maccmsPlayerFields(body)
@@ -296,7 +296,7 @@ func (d *Downloader) maccmsResolveRoutePage(ctx context.Context, altURL, referer
 
 // collectMaccmsRouteVariants 采集同一集其他线路的播放地址，作为播放页的备选线路。
 // 详情页只保留一条线路的集数，线路切换靠这里补齐；采集失败不影响主线路，只做尽力而为。
-func (d *Downloader) collectMaccmsRouteVariants(ctx context.Context, pageURL, primary string) []providerMedia {
+func (d *Downloader) collectMaccmsRouteVariants(ctx context.Context, pageURL, primary string) []ProviderMedia {
 	siteBase, paths := maccmsAlternateRoutePaths(pageURL)
 	if siteBase == "" {
 		return nil
@@ -326,13 +326,13 @@ func (d *Downloader) collectMaccmsRouteVariants(ctx context.Context, pageURL, pr
 	if primary != "" {
 		seen[primary] = true
 	}
-	var variants []providerMedia
+	var variants []ProviderMedia
 	for index, address := range found {
-		if !isProviderHTTPMediaURL(address) || seen[address] {
+		if !IsProviderHTTPMediaURL(address) || seen[address] {
 			continue
 		}
 		seen[address] = true
-		variants = append(variants, providerMedia{URL: address, Referer: siteBase + paths[index]})
+		variants = append(variants, ProviderMedia{URL: address, Referer: siteBase + paths[index]})
 	}
 	return variants
 }

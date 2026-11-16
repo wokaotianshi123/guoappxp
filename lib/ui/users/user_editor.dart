@@ -1,5 +1,4 @@
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 
 import '../../local_profiles.dart';
 import '../../local_store.dart';
@@ -7,6 +6,7 @@ import '../../models.dart';
 import '../app_scope.dart';
 import '../settings/settings_rows.dart';
 import '../widgets/focus_ring.dart';
+import '../widgets/form_text_field.dart';
 import '../widgets/group_card.dart';
 
 class UserEditor extends StatefulWidget {
@@ -238,7 +238,7 @@ class _UserEditorState extends State<UserEditor> {
                       1,
                       4,
                     );
-                    const sites = SourceSite.values;
+                    final sites = SourceSite.values;
                     return Column(
                       children: [
                         for (var row = 0; row < sites.length; row += columns)
@@ -363,15 +363,11 @@ class _Field extends StatelessWidget {
             color: theme.colorScheme.onSurfaceVariant,
           ),
         ),
-        TextField(
+        FormTextField(
           controller: controller,
           enabled: enabled,
-          obscureText: obscure,
-          enableSuggestions: !obscure,
-          autocorrect: !obscure,
-          inputFormatters: [
-            if (maxLength != null) LengthLimitingTextInputFormatter(maxLength),
-          ],
+          obscure: obscure,
+          maxLength: maxLength,
           decoration: InputDecoration(
             hintText: hint,
             isDense: true,

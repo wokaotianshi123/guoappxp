@@ -1,10 +1,5 @@
 package core
 
-// 模块的安装、卸载与升级。移植自 guoappxpx，差别有三处：
-//   - 暂存目录用引擎的数据目录（guoappxp 只有 dataDir，没有单独的 cacheDir）；
-//   - 不再因为与本体站源同名而拒绝安装（冲突由 moduleSourceID 改名解决）；
-//   - 对外回报里带上实际登记的站源 ID，界面据此在源列表里显示出模块源。
-
 import (
 	"archive/zip"
 	"bytes"
@@ -14,7 +9,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"maps"
 	"net/http"
 	"net/url"
 	"os"
@@ -44,9 +38,6 @@ type nativeModuleInfo struct {
 	Previous     string   `json:"previous,omitempty"`
 	Token        string   `json:"token,omitempty"`
 	Error        string   `json:"error,omitempty"`
-	// SourceID 是模块在站源列表里实际用的 ID。与本体站源同名时带 mod- 前缀，
-	// 前端用它把模块源登记进源列表并与同名的本体源区分开。
-	SourceID string `json:"sourceId,omitempty"`
 }
 
 func moduleInfo(manifest ModuleManifest) nativeModuleInfo {
@@ -62,26 +53,18 @@ func (engine *nativeEngine) modules() ([]nativeModuleInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	root := engine.downloader.moduleRoot()
-	loadedModules.Lock()
-	registered := maps.Clone(loadedModules.byName)
-	loadedModules.Unlock()
 	items := []nativeModuleInfo{}
 	for _, entry := range entries {
 		if !entry.IsDir() || strings.HasPrefix(entry.Name(), ".") {
 			continue
 		}
-		module, err := readModule(filepath.Join(root, entry.Name()))
+		module, err := readModule(filepath.Join(engine.downloader.moduleRoot(), entry.Name()))
 		if err != nil {
 			items = append(items, nativeModuleInfo{ID: entry.Name(), Name: entry.Name(), Error: err.Error()})
 			continue
 		}
 		info := moduleInfo(module.manifest)
-		info.SourceID = entry.Name()
-		if source, found := registered[entry.Name()]; found {
-			info.SourceID = source
-		}
-		if !registeredProviderSource(info.SourceID) {
+		if !registeredProviderSource(module.manifest.ID) {
 			info.Error = "模块未能加载，详见诊断日志"
 		}
 		items = append(items, info)
@@ -89,12 +72,12 @@ func (engine *nativeEngine) modules() ([]nativeModuleInfo, error) {
 	return items, nil
 }
 
-func (engine *nativeEngine) prepareModule(ctx context.Context, file, address, indexed string) (nativeModuleInfo, error) {
+func (engine *nativeEngine) prepareModule(ctx context.Context, file, address, indexed string, bundled bool) (nativeModuleInfo, error) {
 	var raw []byte
 	var err error
 	switch {
 	case indexed != "":
-		raw, err = engine.indexedModulePackage(ctx, indexed)
+		raw, err = engine.indexedModulePackage(ctx, indexed, bundled)
 	case address != "":
 		raw, err = engine.downloadModulePackage(ctx, address)
 	default:
@@ -110,7 +93,10 @@ func (engine *nativeEngine) prepareModule(ctx context.Context, file, address, in
 	if indexed != "" && module.manifest.ID != indexed {
 		return nativeModuleInfo{}, fmt.Errorf("索引里的 %s 实际是模块 %s", indexed, module.manifest.ID)
 	}
-	folder := filepath.Join(engine.directory, modulePackageFolder)
+	if err := moduleConflict(module.manifest); err != nil {
+		return nativeModuleInfo{}, err
+	}
+	folder := filepath.Join(engine.cacheDirectory, modulePackageFolder)
 	if err := os.RemoveAll(folder); err != nil {
 		return nativeModuleInfo{}, err
 	}
@@ -134,7 +120,7 @@ func (engine *nativeEngine) installModule(token string) (map[string]any, error) 
 	if !modulePackageToken.MatchString(token) {
 		return nil, errors.New("安装包已失效，请重新选择")
 	}
-	staged := filepath.Join(engine.directory, modulePackageFolder, token+".zip")
+	staged := filepath.Join(engine.cacheDirectory, modulePackageFolder, token+".zip")
 	raw, err := os.ReadFile(staged)
 	if err != nil {
 		return nil, errors.New("安装包已失效，请重新选择")
@@ -148,30 +134,24 @@ func (engine *nativeEngine) installModule(token string) (map[string]any, error) 
 		return nil, err
 	}
 	d := engine.downloader
-	// 注册表的加解锁必须自己包住，reloadModuleLocked 之后才能安全地重新列举模块
-	// （modules() 也要拿同一把锁，嵌在里面会死锁）。
+	loadedModules.Lock()
+	defer loadedModules.Unlock()
+	if err := moduleConflict(module.manifest); err != nil {
+		return nil, err
+	}
 	id := module.manifest.ID
-	source, err := func() (string, error) {
-		loadedModules.Lock()
-		defer loadedModules.Unlock()
-		if err := d.writeModuleLocked(id, manifest, code); err != nil {
-			return "", err
-		}
-		if err := d.markBundledRemoved(id, false); err != nil {
-			return "", err
-		}
-		d.reloadModuleLocked(id)
-		registered, loaded := loadedModules.byName[id]
-		if !loaded || !registeredProviderSource(registered) {
-			return "", errors.New("模块已写入但未能加载，详见诊断日志")
-		}
-		return registered, nil
-	}()
-	if err != nil {
+	if err := d.writeModuleLocked(id, manifest, code); err != nil {
+		return nil, err
+	}
+	if err := d.markBundledRemoved(id, false); err != nil {
 		return nil, err
 	}
 	_ = os.Remove(staged)
-	return map[string]any{"source": source, "modules": engine.moduleInfos()}, nil
+	d.reloadModuleLocked(id)
+	if !registeredProviderSource(id) {
+		return nil, errors.New("模块已写入但未能加载，详见诊断日志")
+	}
+	return map[string]any{"source": id, "sources": engine.sourceList()}, nil
 }
 
 func (engine *nativeEngine) uninstallModule(name string) (map[string]any, error) {
@@ -180,31 +160,15 @@ func (engine *nativeEngine) uninstallModule(name string) (map[string]any, error)
 	}
 	d := engine.downloader
 	loadedModules.Lock()
-	err := func() error {
-		if err := os.RemoveAll(filepath.Join(d.moduleRoot(), name)); err != nil {
-			return err
-		}
-		if err := d.markBundledRemoved(name, true); err != nil {
-			return err
-		}
-		d.reloadModuleLocked(name)
-		return nil
-	}()
-	loadedModules.Unlock()
-	if err != nil {
+	defer loadedModules.Unlock()
+	if err := os.RemoveAll(filepath.Join(d.moduleRoot(), name)); err != nil {
 		return nil, err
 	}
-	return map[string]any{"modules": engine.moduleInfos()}, nil
-}
-
-// moduleInfos 是 modules() 的容错包装：卸载/安装成功后顺手回报一份最新列表，
-// 读不到就让前端自己再拉一次，不因此把已经成功的操作报成失败。
-func (engine *nativeEngine) moduleInfos() []nativeModuleInfo {
-	items, err := engine.modules()
-	if err != nil {
-		return []nativeModuleInfo{}
+	if err := d.markBundledRemoved(name, true); err != nil {
+		return nil, err
 	}
-	return items
+	d.reloadModuleLocked(name)
+	return map[string]any{"sources": engine.sourceList()}, nil
 }
 
 func (d *Downloader) writeModuleLocked(id string, manifest, code []byte) error {

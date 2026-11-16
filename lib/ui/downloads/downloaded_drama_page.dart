@@ -1,26 +1,43 @@
+import 'dart:async';
+import 'dart:io';
+import 'dart:math';
+
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 
+import '../../app_device.dart';
+import '../../core_bridge.dart';
 import '../../download_collections.dart';
+import '../../download_export.dart';
+import '../../download_merge.dart';
+import '../../merge_queue.dart';
 import '../../download_overview.dart';
 import '../../local_store.dart';
 import '../../models.dart';
 import '../app_scope.dart';
+import '../detail/detail_page.dart';
 import '../player/playback_handle.dart';
 import '../player/playback_page.dart';
+import '../shell/app_shell.dart';
+import '../theme/motion.dart';
 import '../widgets/cover_image.dart';
 import '../widgets/focus_ring.dart';
+import '../widgets/motion/motion_widgets.dart';
 import '../widgets/status_view.dart';
 import 'download_actions.dart';
+import 'merge_actions.dart';
 
 class DownloadedDramaPage extends StatefulWidget {
   const DownloadedDramaPage({
     super.key,
     required this.store,
     required this.downloads,
+    required this.merges,
     required this.drama,
   });
   final LocalStore store;
   final DownloadOverview downloads;
+  final MergeQueue merges;
   final Drama drama;
 
   @override
@@ -47,12 +64,6 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
     _updater?.dispose();
     super.dispose();
   }
-
-  void _toggle(String id) => setState(() {
-    final selection = {...?_selection};
-    if (!selection.remove(id)) selection.add(id);
-    _selection = selection;
-  });
 
   Future<void> _fill(Drama drama) async {
     final updater = _updater!;
@@ -93,6 +104,94 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
     }
   }
 
+  Future<void> _merge(DownloadedDrama item, Set<String> ids) async {
+    setState(() => _busy = true);
+    final queued = await enqueueMerges(context, widget.merges, [
+      [
+        for (final job in item.episodes)
+          if (ids.contains(job.id)) job,
+      ],
+    ]);
+    if (!mounted) return;
+    setState(() {
+      _busy = false;
+      if (queued) _selection = null;
+    });
+  }
+
+  Future<void> _export(DownloadedDrama item, Set<String> ids) async {
+    final repository = AppScope.of(context).repository;
+    final messenger = ScaffoldMessenger.of(context);
+    final navigator = Navigator.of(context, rootNavigator: true);
+    final jobs = [
+      for (final job in item.episodes)
+        if (ids.contains(job.id)) job,
+    ];
+    try {
+      if (!await AppDevice.requestVideoExport()) {
+        throw AppFailure('未获得存储权限，无法导出');
+      }
+    } catch (error) {
+      messenger.showSnackBar(SnackBar(content: Text('$error')));
+      return;
+    }
+    if (!mounted) return;
+    final delete = widget.store.deleteAfterManualExport;
+    final exported = ValueNotifier(0);
+    setState(() => _busy = true);
+    showDialog<void>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => PopScope(
+        canPop: false,
+        child: AlertDialog(
+          title: const Text('导出到 Movies'),
+          content: ValueListenableBuilder(
+            valueListenable: exported,
+            builder: (context, count, _) => Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              spacing: 16,
+              children: [
+                Text('已导出 $count / ${jobs.length} 集'),
+                LinearProgressIndicator(value: count / jobs.length),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    final failures = <String>[];
+    for (final job in jobs) {
+      try {
+        await exportDownload(repository, job, delete: delete);
+        exported.value++;
+      } catch (error) {
+        failures.add('$error');
+      }
+    }
+    navigator.pop();
+    await widget.downloads.refresh();
+    messenger.showSnackBar(
+      SnackBar(
+        content: Text(
+          failures.isEmpty
+              ? '已导出到 Movies/${safeFileName(item.drama.title)}'
+              : '${failures.length} 集未能导出：${failures.first}',
+        ),
+      ),
+    );
+    if (!mounted) return;
+    if (delete && exported.value == item.episodes.length) {
+      Navigator.pop(context);
+    } else {
+      setState(() {
+        _busy = false;
+        _selection = null;
+      });
+    }
+  }
+
   Future<void> _play(DownloadedDrama item, int index) async {
     if (_playing) return;
     _playing = true;
@@ -109,6 +208,9 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
       ]),
       index: index,
       position: position,
+      preopen: widget.store.playbackPreferences.preopens(
+        television: AppScope.of(context).television,
+      ),
     );
     handle.session.start(index, position: position);
     await Navigator.of(context, rootNavigator: true).push(
@@ -160,6 +262,11 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
     icon: icon ? Icons.refresh_rounded : null,
   );
 
+  void _openDetail(Drama drama) => openPage<void>(
+    context,
+    (_) => DetailPage(store: widget.store, drama: drama),
+  );
+
   Widget _editButton(DownloadedDrama? item, {bool icon = true}) => _textButton(
     '编辑',
     item == null ? null : () => setState(() => _selection = {}),
@@ -174,6 +281,29 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
       () => setState(() => _selection = everything ? {} : all),
     );
   }
+
+  Widget _mergeButton(DownloadedDrama item, Set<String> selection) => FocusRing(
+    radius: 20,
+    child: FilledButton.tonalIcon(
+      onPressed: selection.length < 2 || _busy
+          ? null
+          : () => _merge(item, selection),
+      icon: const Icon(Icons.merge_rounded, size: 18),
+      label: const Text('合并'),
+    ),
+  );
+
+  Widget _exportButton(DownloadedDrama item, Set<String> selection) =>
+      FocusRing(
+        radius: 20,
+        child: FilledButton.tonalIcon(
+          onPressed: selection.isEmpty || _busy
+              ? null
+              : () => _export(item, selection),
+          icon: const Icon(Icons.drive_folder_upload_outlined, size: 18),
+          label: const Text('导出'),
+        ),
+      );
 
   Widget _deleteButton(DownloadedDrama item, Set<String> selection) {
     final colors = Theme.of(context).colorScheme;
@@ -204,7 +334,7 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
           ? AppBar(
               title: Text(drama.title),
               actions: [
-                _fillButton(drama, icon: false),
+                _textButton('详情', () => _openDetail(drama)),
                 _editButton(item, icon: false),
                 const SizedBox(width: 8),
               ],
@@ -216,7 +346,11 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
                 icon: const Icon(Icons.close_rounded),
               ),
               title: Text('已选择 ${selection.length} 集'),
-              actions: [_selectAll(item, selection), const SizedBox(width: 8)],
+              actions: [
+                _fillButton(drama, icon: false),
+                _selectAll(item, selection),
+                const SizedBox(width: 8),
+              ],
             ),
       body: SafeArea(
         top: false,
@@ -230,7 +364,16 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
                 padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
                 child: SizedBox(
                   height: 48,
-                  child: _deleteButton(item, selection),
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.stretch,
+                    spacing: 12,
+                    children: [
+                      Expanded(child: _mergeButton(item, selection)),
+                      if (Platform.isAndroid)
+                        Expanded(child: _exportButton(item, selection)),
+                      Expanded(child: _deleteButton(item, selection)),
+                    ],
+                  ),
                 ),
               ),
             ),
@@ -257,39 +400,71 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
                 child: Row(
                   spacing: 8,
                   children: [
-                    if (editing)
-                      IconButton(
-                        tooltip: '退出编辑',
-                        onPressed: () => setState(() => _selection = null),
-                        icon: const Icon(Icons.close_rounded),
-                      )
-                    else
-                      const BackButton(),
+                    ToggleIconSwitcher(
+                      child: editing
+                          ? IconButton(
+                              key: const ValueKey('close'),
+                              tooltip: '退出编辑',
+                              onPressed: () =>
+                                  setState(() => _selection = null),
+                              icon: const Icon(Icons.close_rounded),
+                            )
+                          : const BackButton(key: ValueKey('back')),
+                    ),
                     Expanded(
                       child: Semantics(
                         header: true,
-                        child: Text(
-                          editing ? '已选择 ${selection.length} 集' : drama.title,
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: const TextStyle(
-                            fontSize: 28,
-                            fontWeight: FontWeight.w800,
+                        child: FadeSwitcher(
+                          duration: Motion.short,
+                          alignment: AlignmentDirectional.centerStart,
+                          child: Text(
+                            editing ? '已选择 ${selection.length} 集' : drama.title,
+                            key: ValueKey(editing),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 28,
+                              fontWeight: FontWeight.w800,
+                            ),
                           ),
                         ),
                       ),
                     ),
-                    if (editing) ...[
-                      _selectAll(item, selection),
-                      _deleteButton(item, selection),
-                      _textButton(
-                        '完成',
-                        () => setState(() => _selection = null),
-                      ),
-                    ] else ...[
-                      _fillButton(drama),
-                      _editButton(item),
-                    ],
+                    FadeSwitcher(
+                      duration: Motion.short,
+                      alignment: AlignmentDirectional.centerEnd,
+                      child: editing
+                          ? Row(
+                              key: const ValueKey('editing'),
+                              mainAxisSize: MainAxisSize.min,
+                              spacing: 8,
+                              children: [
+                                _fillButton(drama),
+                                _selectAll(item, selection),
+                                _mergeButton(item, selection),
+                                if (Platform.isAndroid)
+                                  _exportButton(item, selection),
+                                _deleteButton(item, selection),
+                                _textButton(
+                                  '完成',
+                                  () => setState(() => _selection = null),
+                                ),
+                              ],
+                            )
+                          : Row(
+                              key: const ValueKey('normal'),
+                              mainAxisSize: MainAxisSize.min,
+                              spacing: 8,
+                              children: [
+                                _textButton(
+                                  '详情',
+                                  () => _openDetail(drama),
+                                  icon: Icons.info_outline_rounded,
+                                ),
+                                _editButton(item),
+                              ],
+                            ),
+                    ),
                   ],
                 ),
               ),
@@ -359,6 +534,22 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
           ),
         ),
     ];
+    return FadeSwitcher(
+      scale: true,
+      child: KeyedSubtree(
+        key: ValueKey(item == null),
+        child: _contentBody(context, item, selection, header, inset),
+      ),
+    );
+  }
+
+  Widget _contentBody(
+    BuildContext context,
+    DownloadedDrama? item,
+    Set<String>? selection,
+    List<Widget> header,
+    double inset,
+  ) {
     if (item == null) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
@@ -373,51 +564,282 @@ class _DownloadedDramaPageState extends State<DownloadedDramaPage> {
         ],
       );
     }
-    final watched = widget.store.watched(item.drama.id)?.episode;
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        const gap = 12.0;
-        final width = constraints.maxWidth - inset * 2;
-        final columns = ((width + gap) / (inset == 16 ? 160 + gap : 220 + gap))
-            .floor()
-            .clamp(1, 99);
-        return CustomScrollView(
-          slivers: [
-            SliverList.list(children: header),
-            SliverPadding(
-              padding: EdgeInsets.fromLTRB(inset, 12, inset, 32),
-              sliver: SliverGrid.builder(
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  crossAxisSpacing: gap,
-                  mainAxisSpacing: gap,
-                  mainAxisExtent: 64,
-                ),
-                itemCount: item.episodes.length,
-                itemBuilder: (context, index) {
-                  final job = item.episodes[index];
-                  return _EpisodeCard(
-                    key: ValueKey(job.id),
-                    job: job,
-                    watching:
-                        selection == null && job.episode.number == watched,
-                    selected: selection?.contains(job.id),
-                    onTap: selection == null
-                        ? () => _play(item, index)
-                        : () => _toggle(job.id),
-                    // 长按 / 右键：直接进多选并选中这一集。
-                    onMore: selection == null
-                        ? () => setState(() => _selection = {job.id})
-                        : null,
-                  );
-                },
-              ),
-            ),
-          ],
-        );
-      },
+    return _EpisodeList(
+      header: header,
+      episodes: item.episodes,
+      watched: widget.store.watched(item.drama.id)?.episode,
+      selection: selection,
+      inset: inset,
+      touch: AppScope.formFactorOf(context) != FormFactor.window,
+      onSelect: (selection) => setState(() => _selection = selection),
+      onPlay: (index) => _play(item, index),
     );
   }
+}
+
+const _cardHeight = 64.0;
+const _cardGap = 12.0;
+const _rowExtent = _cardHeight + _cardGap;
+const _gridTop = 12.0;
+
+class _EpisodeList extends StatefulWidget {
+  const _EpisodeList({
+    required this.header,
+    required this.episodes,
+    required this.watched,
+    required this.selection,
+    required this.inset,
+    required this.touch,
+    required this.onSelect,
+    required this.onPlay,
+  });
+  final List<Widget> header;
+  final List<DownloadJob> episodes;
+  final int? watched;
+  final Set<String>? selection;
+  final double inset;
+  final bool touch;
+  final ValueChanged<Set<String>> onSelect;
+  final ValueChanged<int> onPlay;
+
+  @override
+  State<_EpisodeList> createState() => _EpisodeListState();
+}
+
+class _EpisodeListState extends State<_EpisodeList> {
+  final _scroll = ScrollController();
+  final _headerKey = GlobalKey();
+  bool? _dragAdds;
+  bool _marked = false;
+  bool _swallowTap = false;
+  int _dragAnchor = 0;
+  Set<String> _dragBase = const {};
+  Offset? _dragPoint;
+  Timer? _autoScroll;
+  double _width = 0;
+  double _height = 0;
+  int _columns = 1;
+
+  List<DownloadJob> get _episodes => widget.episodes;
+
+  @override
+  void didUpdateWidget(_EpisodeList oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    if (widget.selection == null) _dragEnd();
+  }
+
+  @override
+  void dispose() {
+    _autoScroll?.cancel();
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  double get _top => (_headerKey.currentContext?.size?.height ?? 0) + _gridTop;
+
+  double get _cardWidth =>
+      (_width - widget.inset * 2 - _cardGap * (_columns - 1)) / _columns;
+
+  int? _hit(Offset point, {bool exact = false}) {
+    if (_episodes.isEmpty || !_scroll.hasClients) return null;
+    final pitch = _cardWidth + _cardGap;
+    final x = point.dx - widget.inset;
+    final y = point.dy + _scroll.offset - _top;
+    if (exact &&
+        (x < 0 ||
+            y < 0 ||
+            x >= pitch * _columns ||
+            x % pitch > _cardWidth ||
+            y % _rowExtent > _cardHeight)) {
+      return null;
+    }
+    final rows = (_episodes.length / _columns).ceil();
+    final column = (x / pitch).floor().clamp(0, _columns - 1);
+    final row = (y / _rowExtent).floor().clamp(0, rows - 1);
+    final index = row * _columns + column;
+    if (index < _episodes.length) return index;
+    return exact ? null : _episodes.length - 1;
+  }
+
+  void _mark(int index) {
+    final adds = _dragAdds;
+    if (adds == null) return;
+    _marked = true;
+    final range = {
+      for (
+        var item = min(index, _dragAnchor);
+        item <= max(index, _dragAnchor);
+        item++
+      )
+        _episodes[item].id,
+    };
+    widget.onSelect(
+      adds ? _dragBase.union(range) : _dragBase.difference(range),
+    );
+  }
+
+  void _toggle(int index) {
+    if (_swallowTap) return;
+    final selection = {...?widget.selection};
+    final id = _episodes[index].id;
+    if (!selection.remove(id)) selection.add(id);
+    widget.onSelect(selection);
+  }
+
+  void _dragStart(Offset point) {
+    final selection = widget.selection;
+    final index = _hit(point, exact: true);
+    if (selection == null || index == null) return;
+    _dragAdds = !selection.contains(_episodes[index].id);
+    _dragAnchor = index;
+    _dragBase = selection;
+    _dragPoint = point;
+    if (widget.touch) _mark(index);
+  }
+
+  void _dragMove(Offset point) {
+    if (_dragAdds == null) return;
+    _dragPoint = point;
+    final index = _hit(point);
+    if (index != null && (_marked || index != _dragAnchor)) _mark(index);
+    if (_marked && _edgeSpeed(point.dy) != 0) {
+      _autoScroll ??= Timer.periodic(
+        const Duration(milliseconds: 16),
+        (_) => _autoScrollTick(),
+      );
+    }
+  }
+
+  void _pointerUp() {
+    _swallowTap = _marked;
+    scheduleMicrotask(() => _swallowTap = false);
+    _dragEnd();
+  }
+
+  void _dragEnd() {
+    _dragAdds = null;
+    _dragPoint = null;
+    _marked = false;
+    _autoScroll?.cancel();
+    _autoScroll = null;
+  }
+
+  double _edgeSpeed(double y) {
+    const zone = 64.0;
+    final depth = y < zone
+        ? y - zone
+        : y > _height - zone
+        ? y - (_height - zone)
+        : 0.0;
+    if (depth == 0) return 0;
+    final t = (depth.abs() / zone).clamp(0.0, 2.0) / 2;
+    return depth.sign * (120 + 1700 * t * t);
+  }
+
+  void _autoScrollTick() {
+    final point = _dragPoint;
+    final speed = point == null ? 0.0 : _edgeSpeed(point.dy);
+    if (speed == 0 || !_scroll.hasClients) {
+      _autoScroll?.cancel();
+      _autoScroll = null;
+      return;
+    }
+    final position = _scroll.position;
+    final next = (position.pixels + speed * .016).clamp(
+      position.minScrollExtent,
+      position.maxScrollExtent,
+    );
+    if (next == position.pixels) return;
+    _scroll.jumpTo(next);
+    final index = _hit(point!);
+    if (index != null) _mark(index);
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (context, constraints) {
+      _width = constraints.maxWidth;
+      _height = constraints.maxHeight;
+      _columns =
+          ((_width - widget.inset * 2 + _cardGap) /
+                  ((widget.inset == 16 ? 160 : 220) + _cardGap))
+              .floor()
+              .clamp(1, 99);
+      final selection = widget.selection;
+      final selecting = selection != null;
+      final list = CustomScrollView(
+        controller: _scroll,
+        slivers: [
+          SliverToBoxAdapter(
+            child: KeyedSubtree(
+              key: _headerKey,
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: widget.header,
+              ),
+            ),
+          ),
+          SliverPadding(
+            padding: EdgeInsets.fromLTRB(
+              widget.inset,
+              _gridTop,
+              widget.inset,
+              32,
+            ),
+            sliver: SliverGrid.builder(
+              gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                crossAxisCount: _columns,
+                crossAxisSpacing: _cardGap,
+                mainAxisSpacing: _cardGap,
+                mainAxisExtent: _cardHeight,
+              ),
+              itemCount: _episodes.length,
+              itemBuilder: (context, index) {
+                final job = _episodes[index];
+                return _EpisodeCard(
+                  key: ValueKey(job.id),
+                  job: job,
+                  watching: !selecting && job.episode.number == widget.watched,
+                  selected: selection?.contains(job.id),
+                  onTap: selecting
+                      ? () => _toggle(index)
+                      : () => widget.onPlay(index),
+                  onLongPress: selecting
+                      ? null
+                      : () => widget.onSelect({job.id}),
+                );
+              },
+            ),
+          ),
+        ],
+      );
+      if (widget.touch) {
+        return GestureDetector(
+          dragStartBehavior: DragStartBehavior.down,
+          onHorizontalDragStart: selecting
+              ? (details) => _dragStart(details.localPosition)
+              : null,
+          onHorizontalDragUpdate: selecting
+              ? (details) => _dragMove(details.localPosition)
+              : null,
+          onHorizontalDragEnd: selecting ? (_) => _dragEnd() : null,
+          onHorizontalDragCancel: selecting ? _dragEnd : null,
+          child: list,
+        );
+      }
+      return Listener(
+        onPointerDown: selecting
+            ? (event) => _dragStart(event.localPosition)
+            : null,
+        onPointerMove: selecting
+            ? (event) => _dragMove(event.localPosition)
+            : null,
+        onPointerUp: (_) => _pointerUp(),
+        onPointerCancel: (_) => _dragEnd(),
+        child: list,
+      );
+    },
+  );
 }
 
 class _FillDialog extends StatelessWidget {
@@ -486,9 +908,19 @@ class _FillDialog extends StatelessWidget {
                 ),
               ];
       }
+      final state = snapshot.hasError ? 2 : (plan == null ? 0 : 1);
       return AlertDialog(
         title: const Text('补齐缺集'),
-        content: content,
+        content: AnimatedSize(
+          duration: Motion.of(context, Motion.medium),
+          curve: Motion.standard,
+          alignment: Alignment.topLeft,
+          child: FadeSwitcher(
+            duration: Motion.short,
+            alignment: AlignmentDirectional.topStart,
+            child: KeyedSubtree(key: ValueKey(state), child: content),
+          ),
+        ),
         actions: actions,
       );
     },
@@ -502,13 +934,13 @@ class _EpisodeCard extends StatelessWidget {
     required this.watching,
     required this.selected,
     required this.onTap,
-    this.onMore,
+    this.onLongPress,
   });
   final DownloadJob job;
   final bool watching;
   final bool? selected;
   final VoidCallback onTap;
-  final VoidCallback? onMore;
+  final VoidCallback? onLongPress;
 
   @override
   Widget build(BuildContext context) {
@@ -537,8 +969,7 @@ class _EpisodeCard extends StatelessWidget {
           clipBehavior: Clip.antiAlias,
           child: InkWell(
             onTap: onTap,
-            onLongPress: onMore,
-            onSecondaryTap: onMore,
+            onLongPress: onLongPress,
             child: Padding(
               padding: EdgeInsets.fromLTRB(selected == null ? 16 : 8, 8, 12, 8),
               child: Row(
