@@ -2503,6 +2503,16 @@ function renderModules() {
     if (!storeRows) {
       storeRows = '<div class="empty">商店里还没有模块。</div>';
     }
+    // 一键安装只处理「还没装」或「商店里版本更新」的模块，已是最新的不重复打接口。
+    var pendingIds = store.items.filter(function (entry) {
+      var have = byId[entry.id];
+      return !have || moduleNewerVersion(entry.version, have.version);
+    }).map(function (entry) {
+      return entry.id;
+    });
+    var installAllButton = pendingIds.length
+      ? '<button type="button" class="btn" id="module-install-all" title="在线仓库里还有 ' + pendingIds.length + ' 个未安装或可更新">安装全部站源（' + pendingIds.length + '）</button>'
+      : '';
     view.innerHTML =
       '<div class="lib">' +
       '<div class="lib-tabs">' +
@@ -2519,18 +2529,80 @@ function renderModules() {
       (store.warning ? '<div class="empty">' + escapeHTML(store.warning) + '</div>' : '') +
       '<div style="font-weight:600;padding:8px 2px 2px">已安装</div>' +
       installedRows +
-      '<div style="font-weight:600;padding:12px 2px 2px">模块商店</div>' +
+      '<div style="font-weight:600;padding:12px 2px 2px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+      '<span>模块商店</span>' +
+      installAllButton +
+      '</div>' +
       storeRows +
       '</div>';
-    bindModuleView();
+    bindModuleView(pendingIds);
   });
 }
 
-function bindModuleView() {
+// 一键安装商店里所有还没装（或有新版）的模块。
+//
+// 串行安装而不是并发：核心的安装接口一次只处理一个包，并发打过去既排不上队，
+// 出错也分不清是哪个模块。每个模块单独 catch，一个失败不影响后面的继续装，
+// 结束后把失败原因一次性列出来。
+function moduleInstallAll(ids, button) {
+  if (!ids.length) {
+    return;
+  }
+  // 与 Flutter 端一致的确认文案：批量装的是站源，说清楚会逐个安装并启用。
+  if (!window.confirm('安装 ' + ids.length + ' 个站源？这些站源会逐个安装并启用。')) {
+    return;
+  }
+  var original = button.textContent;
+  var failed = [];
+  button.disabled = true;
+  Array.prototype.forEach.call(view.querySelectorAll('[data-module-install]'), function (item) {
+    item.disabled = true;
+  });
+  function step(index) {
+    if (index >= ids.length) {
+      return Promise.resolve();
+    }
+    button.textContent = '安装中 ' + (index + 1) + '/' + ids.length + '…';
+    return moduleInstall({ id: ids[index] })
+      .catch(function (error) {
+        failed.push(ids[index] + '：' + (error.message || '安装失败'));
+      })
+      .then(function () {
+        return step(index + 1);
+      });
+  }
+  return step(0)
+    .then(function () {
+      return loadSources();
+    })
+    .then(function () {
+      // renderModules 会用最新的已装列表重建整个视图，按钮也跟着重来，
+      // 这里不用再把文字和禁用状态还原。
+      return renderModules();
+    })
+    .catch(function (error) {
+      button.textContent = original;
+      button.disabled = false;
+      window.alert(error.message || '安装模块失败');
+    })
+    .then(function () {
+      if (failed.length) {
+        window.alert('以下模块没能装上：\n' + failed.join('\n'));
+      }
+    });
+}
+
+function bindModuleView(installableIds) {
   var back = document.getElementById('custom-tab-back');
   if (back) {
     back.addEventListener('click', function () {
       renderCustomSources();
+    });
+  }
+  var installAll = document.getElementById('module-install-all');
+  if (installAll) {
+    installAll.addEventListener('click', function () {
+      moduleInstallAll(installableIds || [], installAll);
     });
   }
   var fileInput = document.getElementById('module-install-file');
