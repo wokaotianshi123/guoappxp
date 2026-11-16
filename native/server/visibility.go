@@ -130,10 +130,16 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 	switch request.Method {
 	case http.MethodGet:
 		items := []map[string]any{}
+		seen := map[string]bool{}
+		moduleSources := moduleSourceNames()
 		for _, source := range sourceNames {
 			if sourceAvailable(source.ID) {
+				seen[source.ID] = true
+				// 静态表只提供规范显示名与顺序，不代表这个源就编在包里：本地服务版
+				// 不内置站源，表里的 id 同样是模块提供的，别标成「内置」。
+				_, fromModule := moduleSources[source.ID]
 				items = append(items, map[string]any{
-					"id": source.ID, "name": source.Name, "builtin": true,
+					"id": source.ID, "name": source.Name, "builtin": !fromModule, "module": fromModule,
 					"visible": !hiddenSources[source.ID],
 				})
 			}
@@ -147,6 +153,7 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 		if json.Unmarshal([]byte(core.NativeRequest(`{"action":"customSources"}`)), &customReply) == nil && customReply.OK {
 			for _, custom := range customReply.Data.Items {
 				if sourceAvailable(custom["id"]) {
+					seen[custom["id"]] = true
 					items = append(items, map[string]any{
 						"id": custom["id"], "name": custom["name"], "builtin": false,
 						"visible": !hiddenSources[custom["id"]],
@@ -156,7 +163,15 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 		}
 		// 站源模块提供的站源同样要能在这里开关：装上的模块源与内置源、自定义源
 		// 一样参与「首页显示」的取舍。
-		for source, name := range moduleSourceNames() {
+		//
+		// 模块注册的站源 ID 就是模块标识，很可能与静态表里的 id 同一个（模块商店
+		// 里的 hongguo、ikanbot 之类就是照这些 id 命名的）。那种情况上面已经加过
+		// 且用的是规范名，这里跳过，否则同一个源会列出两条。
+		for source, name := range moduleSources {
+			if seen[source] {
+				continue
+			}
+			seen[source] = true
 			if sourceAvailable(source) {
 				items = append(items, map[string]any{
 					"id": source, "name": name, "builtin": false, "module": true,

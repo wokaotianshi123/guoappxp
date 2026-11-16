@@ -56,7 +56,10 @@ func moduleItems() []moduleInfo {
 // 模块注册的站源 ID 就是模块标识本身——核心 core.jsModule.descriptor() 拿
 // manifest.ID 当 SourceDescriptor.ID，并不额外下发 sourceId 字段（曾经按
 // sourceId 取，取到的永远是空串，于是模块源在站源列表和源显示里都不出现）。
-// 显示名统一带「（模块）」标注，与同名的本体源区分开。
+//
+// 名字用原名，不加「（模块）」之类的后缀：本地服务版不内置站源，所有站源都
+// 来自模块，逐个标「模块」等于没标；App 端的站源页也从不加这个标注。
+// 源显示列表要区分来源，由前端按 builtin / module / custom 标记自行渲染。
 func moduleSourceNames() map[string]string {
 	names := map[string]string{}
 	for _, item := range moduleItems() {
@@ -68,7 +71,7 @@ func moduleSourceNames() map[string]string {
 		if name == "" {
 			name = source
 		}
-		names[source] = name + "（模块）"
+		names[source] = name
 	}
 	return names
 }

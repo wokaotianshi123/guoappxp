@@ -2304,7 +2304,7 @@ function renderSourceVisibility() {
         '<div class="vis-row" style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
         '<div style="min-width:0">' +
         '<div style="font-weight:600">' + escapeHTML(item.name || '') +
-        (item.builtin ? '（内置）' : item.module ? '（模块）' : '（自定义）') + '</div>' +
+        (item.builtin ? '（内置）' : item.module ? '' : '（自定义）') + '</div>' +
         '<div style="font-size:12px;opacity:0.6">' + escapeHTML(item.id) + '</div>' +
         '</div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:none">' +
