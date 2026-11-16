@@ -85,10 +85,13 @@ jobs:
       - id: version
         env:
           GH_TOKEN: ${{ github.token }}
+          # 默认分支名不写死：main 与 master 都很常见，直接读仓库设置，
+          # 换分支名或换仓库都不用再改工作流。
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
         run: |
           set -euo pipefail
-          if [ "$GITHUB_REF" != "refs/heads/main" ]; then
-            echo "只能从 main 分支手动发布，当前为 $GITHUB_REF。" >&2
+          if [ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]; then
+            echo "只能从默认分支 $DEFAULT_BRANCH 手动发布，当前为 $GITHUB_REF。" >&2
             exit 1
           fi
           version=$(sed -n 's/^version:[[:space:]]*//p' pubspec.yaml | head -n1)
