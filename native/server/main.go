@@ -53,8 +53,10 @@ var mediaPort atomic.Value
 var localMediaAddress = regexp.MustCompile(`http://(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)/`)
 
 // 站源 ID → 显示名，同时决定 /api/sources 下拉框的顺序：红果在前，
-// 与 Flutter 端 SourceSite.defaultSource 及网页端 state.source 的默认站源一致。
-// 名称与 Flutter 端保持一致；后续顺序不必与 SourceSite.allValues 逐一对应。
+// 与网页端 state.source 的默认站源一致。名称与 Flutter 端保持一致；后续顺序
+// 不必与 SourceSite.allValues 逐一对应。
+// （Flutter 端已无 SourceSite.defaultSource 这个概念，默认站源由核心的注册
+// 顺序决定，别再照这个名字去找。）
 var sourceNames = []struct {
 	ID   string
 	Name string
