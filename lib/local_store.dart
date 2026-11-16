@@ -1043,6 +1043,22 @@ class LocalStore extends ChangeNotifier {
     if (locked || !profile.admin) throw StateError('仅管理员可以修改此设置');
   }
 
+  /// 删除全部数据：先让核心把磁盘上的下载、缓存与数据目录清掉，再清本地偏好。
+  ///
+  /// 与其它写操作不同，这里**不校验管理员**：这是「把这台设备恢复出厂」，
+  /// 卡在管理员验证上会让非管理员用户没法收拾自己的机器。调用方在完成后
+  /// 需要退出应用——内存里还握着已删掉的索引，继续跑只会不断报错。
+  ///
+  /// 返回没能删除的路径，供界面提示用户手动处理。
+  Future<List<String>> eraseAll(Future<List<String>> Function() wipe) async {
+    var leftover = const <String>[];
+    await _queue(() async {
+      leftover = await wipe();
+      await preferences.clear();
+    });
+    return leftover;
+  }
+
   Future<void> _checkPin(LocalProfile target, String pin) async {
     if (DateTime.now().isBefore(_retryAfter)) {
       throw StateError('密码输入过于频繁，请稍后再试');

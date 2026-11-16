@@ -24,6 +24,8 @@ func Register(descriptor SourceDescriptor, factory ProviderFactory) {
 	sourceRegistry.factories[id] = factory
 	sourceRegistry.descriptors[id] = descriptor
 	sourceRegistry.order = append(sourceRegistry.order, id)
+	// 代数自增：浏览器指纹等派生缓存据此重建，模块新装或更新后立刻生效。
+	sourceRegistry.generation++
 }
 
 // registeredProviderSource 供门卫判断「这个 ID 是否已编入」，避免每加一个新源

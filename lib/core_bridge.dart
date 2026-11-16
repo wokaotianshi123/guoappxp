@@ -166,11 +166,13 @@ abstract class AppRepository {
   }) async => const [CatalogCategory.all];
   bool get supportsSourceManagement => false;
   Future<List<String>> suggestions(String query) async => const [];
-  Future<Map<String, dynamic>> storage() async => {};
+  Future<Map<String, dynamic>> storage({String cacheDirectory = ''}) async => {};
   Future<Map<String, dynamic>> cacheInfo({String cacheDirectory = ''}) async =>
       {};
   Future<Map<String, dynamic>> clearCache({String cacheDirectory = ''}) async =>
       {};
+  Future<List<String>> deleteAllData({String cacheDirectory = ''}) async =>
+      throw AppFailure('当前环境不支持删除数据');
   Future<String> downloadDirectory() async =>
       (await storage())['directory'] as String? ?? '';
   Future<void> moveDownloads(String directory) async =>
@@ -663,9 +665,9 @@ class NativeRepository extends AppRepository {
   }
 
   @override
-  Future<Map<String, dynamic>> storage() async {
+  Future<Map<String, dynamic>> storage({String cacheDirectory = ''}) async {
     _downloadPermission();
-    return _call({'action': 'storage'});
+    return _call({'action': 'storage', 'cacheDirectory': cacheDirectory});
   }
 
   @override
@@ -675,6 +677,26 @@ class NativeRepository extends AppRepository {
   @override
   Future<Map<String, dynamic>> clearCache({String cacheDirectory = ''}) =>
       _call({'action': 'clearCache', 'cacheDirectory': cacheDirectory});
+
+  @override
+  Future<List<String>> deleteAllData({String cacheDirectory = ''}) async {
+    // 按产品要求，删除全部数据不再要求管理员：这是「我自己的设备我要重置」，
+    // 卡在管理员验证上会让非管理员用户没法收拾自己的机器。
+    // 仍要占一次存储工作租约，避免和正在跑的下载 / 迁移撞车。
+    await workLease('storage', 'start');
+    try {
+      final result = await _call({
+        'action': 'deleteAllData',
+        'cacheDirectory': cacheDirectory,
+      });
+      return [
+        for (final item in result['leftover'] as List? ?? const []) '$item',
+      ];
+    } catch (_) {
+      await workLease('storage', 'end');
+      rethrow;
+    }
+  }
 
   @override
   Future<void> moveDownloads(String directory) async {

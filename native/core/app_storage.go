@@ -15,9 +15,10 @@ type nativeStorageInfo struct {
 	Bytes     int64  `json:"bytes"`
 	Free      int64  `json:"free"`
 	Files     int    `json:"files"`
+	Cache     int64  `json:"cache"`
 }
 
-func (engine *nativeEngine) storage() (nativeStorageInfo, error) {
+func (engine *nativeEngine) storage(extra string) (nativeStorageInfo, error) {
 	manager := engine.downloads
 	manager.mu.Lock()
 	root := manager.root
@@ -41,6 +42,12 @@ func (engine *nativeEngine) storage() (nativeStorageInfo, error) {
 	if err != nil {
 		return info, errors.New("无法读取下载目录，请检查存储设备")
 	}
+	// 缓存也算应用占用的空间，一并计入总用量：存储页要能反映「清理缓存」
+	// 到底能腾出多少，否则清完数字不变会让人以为没生效。
+	// 统计口径与 cacheInfo / clearCache 完全一致（同一份白名单文件集），
+	// 这样「总量」减「清理后总量」正好等于清理释放的字节数。
+	info.Cache = engine.cacheInfo(extra).Bytes
+	info.Bytes += info.Cache
 	info.Free = nativeFreeSpace(root)
 	return info, nil
 }

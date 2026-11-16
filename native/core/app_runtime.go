@@ -532,11 +532,17 @@ func nativeDispatch(input nativeInput) (any, error) {
 		engine.downloads.mu.Unlock()
 		return map[string]string{"directory": root}, nil
 	case "storage":
-		return engine.storage()
+		return engine.storage(input.CacheDirectory)
 	case "cacheInfo":
 		return engine.cacheInfo(input.CacheDirectory), nil
 	case "clearCache":
 		return engine.clearCache(input.CacheDirectory)
+	case "deleteAllData":
+		leftover, err := engine.deleteAllData(input.CacheDirectory)
+		if err != nil {
+			return nil, err
+		}
+		return map[string]any{"leftover": leftover}, nil
 	case "moveDownloads":
 		return true, engine.moveDownloads(ctx, input.Directory)
 	case "workLease":

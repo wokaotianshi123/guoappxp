@@ -24,7 +24,8 @@ type browserHTTPClient interface {
 type huangguoBrowserTransport struct {
 	base      http.RoundTripper
 	router    *proxyRouter
-	hosts     map[string]bool
+	baseURL   func(string) string
+	static    map[string]string
 	insecure  bool
 	record    func(diagnosticEvent)
 	mu        sync.Mutex
@@ -36,12 +37,20 @@ type huangguoBrowserTransport struct {
 	// 因此它们先走标准传输，只有真被验证页拦住（challenged）才升级到浏览器指纹。
 	custom   map[string]bool
 	upgraded map[string]bool
+	// fingerprintHosts 是「声明了 browserFingerprint 的站源」的 host → 站源 ID 表，
+	// 由站源注册表（含运行期注册的模块）现算。之前这里只认编译期写死的
+	// duanjuProviderCatalog 里的 Browser 标记，模块清单里的 browserFingerprint
+	// 从来没被读过，于是 Hanime1、MissAV 这类模块在部分网络下开屏即 403。
+	// 表按注册表代数缓存，模块装卸后自动失效重建。
+	fingerprintHosts map[string]string
+	fingerprintGen   int
 }
 
 func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader) *huangguoBrowserTransport {
 	configured, _ := url.Parse(downloader.providerBaseURL(sourceHuangguoVideo))
 	transport := &huangguoBrowserTransport{
-		base: base, router: downloader.proxyRouter, hosts: browserTransportHosts(configured.Host),
+		base: base, router: downloader.proxyRouter, baseURL: downloader.providerBaseURL,
+		static:   browserTransportHosts(configured.Host),
 		insecure: downloader.cfg.InsecureTLS, record: downloader.recordDiagnostic,
 		clients: make(map[string]browserHTTPClient), custom: make(map[string]bool),
 		upgraded: make(map[string]bool),
@@ -50,33 +59,97 @@ func newHuangguoBrowserTransport(base http.RoundTripper, downloader *Downloader)
 	return transport
 }
 
-func browserTransportHosts(huangguoVideoHost string) map[string]bool {
-	hosts := map[string]bool{"huangguo.video": true}
+// browserTransportHosts 是编译期固定的指纹 host：黄果系站点与显式标了
+// Browser 的短剧源。模块与其它站源走 fingerprintHosts 动态查表。
+func browserTransportHosts(huangguoVideoHost string) map[string]string {
+	hosts := map[string]string{"huangguo.video": sourceHuangguoVideo}
 	if huangguoVideoHost != "" {
-		hosts[strings.ToLower(huangguoVideoHost)] = true
+		hosts[strings.ToLower(huangguoVideoHost)] = sourceHuangguoVideo
 	}
 	for _, spec := range duanjuProviderCatalog {
 		if !spec.Browser {
 			continue
 		}
 		if parsed, err := url.Parse(spec.Base); err == nil && parsed.Host != "" {
-			hosts[strings.ToLower(parsed.Host)] = true
+			hosts[strings.ToLower(parsed.Host)] = spec.ID
 		}
 	}
 	return hosts
+}
+
+// buildFingerprintHosts 汇总「该走浏览器指纹」的 host。
+//
+// 判据是站源描述符上的 BrowserFingerprint（模块清单里的 browserFingerprint
+// 会原样带进描述符），host 取三类：配置里的基础地址、描述符声明的 BaseURL、
+// 以及别名。三类都补上 www. 变体，避免站点在裸域与 www 之间跳转后指纹失效。
+func (transport *huangguoBrowserTransport) buildFingerprintHosts() map[string]string {
+	hosts := make(map[string]string, len(transport.static)+8)
+	for host, source := range transport.static {
+		hosts[host] = source
+	}
+	add := func(raw, source string) {
+		host := strings.ToLower(strings.TrimSpace(raw))
+		if host == "" {
+			return
+		}
+		hosts[host] = source
+		if without, ok := strings.CutPrefix(host, "www."); ok && without != "" {
+			if _, exists := hosts[without]; !exists {
+				hosts[without] = source
+			}
+		} else if !strings.Contains(host, ":") {
+			if _, exists := hosts["www."+host]; !exists {
+				hosts["www."+host] = source
+			}
+		}
+	}
+	for _, descriptor := range RegisteredSources() {
+		if !descriptor.BrowserFingerprint {
+			continue
+		}
+		if configured, err := url.Parse(transport.baseURL(descriptor.ID)); err == nil && configured.Host != "" {
+			add(configured.Host, descriptor.ID)
+		}
+		if declared, err := url.Parse(descriptor.BaseURL); err == nil && declared.Host != "" {
+			add(declared.Host, descriptor.ID)
+		}
+		for _, name := range descriptor.Aliases {
+			add(name, descriptor.ID)
+		}
+	}
+	return hosts
+}
+
+// source 返回该地址应走浏览器指纹的站源 ID，空串表示不用指纹。
+func (transport *huangguoBrowserTransport) source(address *url.URL) string {
+	if address == nil {
+		return ""
+	}
+	transport.mu.Lock()
+	generation := sourceRegistryGeneration()
+	if transport.fingerprintHosts == nil || transport.fingerprintGen != generation {
+		transport.fingerprintHosts = transport.buildFingerprintHosts()
+		transport.fingerprintGen = generation
+	}
+	hosts := transport.fingerprintHosts
+	transport.mu.Unlock()
+	if source, ok := hosts[strings.ToLower(address.Host)]; ok {
+		return source
+	}
+	return hosts[strings.ToLower(address.Hostname())]
 }
 
 func (transport *huangguoBrowserTransport) matches(request *http.Request) bool {
 	if !browserEligibleRequest(request) {
 		return false
 	}
+	if transport.source(request.URL) != "" {
+		return true
+	}
+	// 自定义源 host 只有在被验证页拦住过之后才用指纹传输。
 	host := strings.ToLower(request.URL.Hostname())
 	transport.mu.Lock()
-	after := transport.hosts[strings.ToLower(request.URL.Host)] || transport.hosts[host]
-	if !after {
-		// 自定义源 host 只有在被验证页拦住过之后才用指纹传输。
-		after = transport.upgraded[host]
-	}
+	after := transport.upgraded[host]
 	transport.mu.Unlock()
 	return after
 }
@@ -133,10 +206,13 @@ func (transport *huangguoBrowserTransport) registerHost(host string) {
 	if host == "" {
 		return
 	}
-	transport.mu.Lock()
-	if !transport.hosts[host] {
-		transport.custom[host] = true
+	// 已声明 browserFingerprint 的站源 host 本来就常走指纹，不必再登记成
+	// 「先标准后升级」的自定义源。
+	if transport.source(&url.URL{Scheme: "https", Host: host}) != "" {
+		return
 	}
+	transport.mu.Lock()
+	transport.custom[host] = true
 	transport.mu.Unlock()
 }
 
@@ -273,11 +349,7 @@ func (transport *huangguoBrowserTransport) recordEvent(request *http.Request, st
 	if transport.record == nil || request == nil || request.URL == nil {
 		return
 	}
-	source := sourceHuangguoVideo
-	if transport.isCustomHost(request) {
-		source = ""
-	}
-	transport.record(diagnosticEvent{Event: "network.browser_request", Level: "warning", Source: source,
+	transport.record(diagnosticEvent{Event: "network.browser_request", Level: "warning", Source: transport.source(request.URL),
 		Host: request.URL.Hostname(), HTTPStatus: status, Client: huangguoBrowserProfile,
 		ResponseType: "text/html", Message: message})
 }
@@ -320,14 +392,10 @@ func (transport *huangguoBrowserTransport) browserRoundTrip(request *http.Reques
 		if result.StatusCode >= 400 || strings.EqualFold(result.Header.Get("Cf-Mitigated"), "challenge") {
 			level = "warning"
 		}
-		source := sourceHuangguoVideo
-		if transport.isCustomHost(request) {
-			source = ""
-		}
-		transport.record(diagnosticEvent{Event: "network.browser_request", Level: level, Source: source,
+		transport.record(diagnosticEvent{Event: "network.browser_request", Level: level, Source: transport.source(request.URL),
 			Host: request.URL.Hostname(), HTTPStatus: result.StatusCode, Client: huangguoBrowserProfile,
 			Protocol: result.Proto, CFRay: truncate(result.Header.Get("Cf-Ray"), 128),
-			ResponseType: truncate(result.Header.Get("Content-Type"), 128), Message: "黄果浏览器指纹请求完成"})
+			ResponseType: truncate(result.Header.Get("Content-Type"), 128), Message: "浏览器指纹请求完成"})
 	}
 	return result, nil
 }

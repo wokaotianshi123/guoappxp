@@ -50,7 +50,7 @@ func TestDownloadMigrationPreservesMediaAndRestartLocation(t *testing.T) {
 	if body, err := os.ReadFile(filepath.Join(location, id, "media.mp4")); err != nil || string(body) != "synthetic-video" {
 		t.Fatalf("media not copied: %v", err)
 	}
-	info, err := engine.storage()
+	info, err := engine.storage("")
 	if err != nil || info.Files < 2 || info.Bytes < 15 || info.Free < 1 {
 		t.Fatalf("storage stats: %+v %v", info, err)
 	}

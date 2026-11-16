@@ -19,7 +19,6 @@ import '../widgets/focus_ring.dart';
 import '../widgets/group_card.dart';
 import 'appearance_settings.dart';
 import 'backup_actions.dart';
-import 'cache_view.dart';
 import 'diary_view.dart';
 import 'modules_view.dart';
 import 'settings_rows.dart';
@@ -31,7 +30,7 @@ enum SettingsGroup {
   playback('播放', Icons.play_arrow_rounded),
   danmaku('弹幕', Icons.subtitles_outlined),
   download('下载', Icons.download_rounded),
-  cache('缓存', Icons.cleaning_services_outlined),
+  storage('存储', Icons.folder_outlined),
   sources('站源', Icons.dns_outlined),
   proxy('代理', Icons.language_rounded),
   users('用户', Icons.manage_accounts_outlined),
@@ -94,7 +93,7 @@ class SettingsSection extends StatelessWidget {
               SettingsGroup.playback => _playback(context),
               SettingsGroup.danmaku => _danmaku(context),
               SettingsGroup.download => _download(context),
-              SettingsGroup.cache => _cache(context),
+              SettingsGroup.storage => _storage(context),
               SettingsGroup.sources => _sources(context),
               SettingsGroup.proxy => _proxy(context),
               SettingsGroup.users => [UsersView(store: store, open: open)],
@@ -269,12 +268,6 @@ class SettingsSection extends StatelessWidget {
                       savePreferences(preferences.copyWith(includeVip: value))
                 : null,
           ),
-          SettingsTile(
-            title: '目录与空间',
-            subtitle: canDownload ? '查看存储用量、迁移已下载文件' : _noDownload,
-            enabled: canDownload,
-            onTap: () => open('目录与空间', (_) => StorageView(store: store)),
-          ),
         ],
       ),
       SettingsCard(
@@ -309,17 +302,12 @@ class SettingsSection extends StatelessWidget {
     ];
   }
 
-  List<Widget> _cache(BuildContext context) => [
-    SettingsCard(
-      children: [
-        SettingsTile(
-          icon: Icons.cleaning_services_outlined,
-          title: '清理缓存',
-          subtitle: '查看占用，清除播放、封面、目录缓存与日志',
-          onTap: () => open('清理缓存', (_) => const CacheView()),
-        ),
-      ],
-    ),
+  /// 存储：下载目录与用量、清理缓存、删除全部数据。
+  /// 「目录与空间」原来挂在下载分组里，和「同时下载数量」这类偏好混在一起；
+  /// 它本质是磁盘管理，单独成组更符合用户找它的路径。
+  List<Widget> _storage(BuildContext context) => [
+    if (!store.canDownload) const _Note(_noDownload),
+    StorageView(store: store),
   ];
 
   List<Widget> _sources(BuildContext context) {

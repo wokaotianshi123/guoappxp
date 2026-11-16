@@ -105,8 +105,8 @@ class _SettingsPageState extends State<SettingsPage> {
       ].join(' · '),
       SettingsGroup.playback => '倍速、清晰度、连播与弹幕',
       SettingsGroup.danmaku => '字号、颜色、显示区域与屏蔽词',
-      SettingsGroup.download => '默认画质、目录与空间、同时下载数量',
-      SettingsGroup.cache => '播放临时文件与空间占用',
+      SettingsGroup.download => '默认画质、同时下载数量',
+      SettingsGroup.storage => '下载目录、清理缓存、删除全部数据',
       SettingsGroup.sources =>
         allSourcesEnabled
             ? '站源开关、站源账号、自定义源、模块、目录请求间隔'

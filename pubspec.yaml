@@ -46,6 +46,12 @@ dev_dependencies:
 dependency_overrides:
   media_kit_libs_windows_video:
     path: packages/media_kit_libs_windows_video
+  # Windows 上退出播放页几秒后闪退（#116）：原版在纹理注销之后才异步释放
+  # mpv render context，Render / CheckAndResize 回调会打到已释放的对象上。
+  # 覆盖包按「先释放画面输出、再注销纹理」的顺序收尾，并把 VideoOutput 的
+  # 创建 / 改尺寸 / 销毁串到同一条操作队列上，避免并发窗口。
+  media_kit_video:
+    path: packages/media_kit_video
 
 flutter:
   config:

@@ -117,15 +117,29 @@ var sourceRegistry = struct {
 	factories   map[string]ProviderFactory
 	descriptors map[string]SourceDescriptor
 	order       []string
+	// generation 每次注册 / 注销都自增。依赖注册表内容的派生缓存（例如
+	// 浏览器指纹的 host 表）靠它判断是否需要重建：模块装上或卸掉后，
+	// 指纹表必须跟着变，否则新装的模块声明了 browserFingerprint 也不生效。
+	generation int
 }{
 	factories:   map[string]ProviderFactory{},
 	descriptors: map[string]SourceDescriptor{},
+}
+
+// sourceRegistryGeneration 返回当前注册表代数，供派生缓存做失效判断。
+func sourceRegistryGeneration() int {
+	sourceRegistry.RLock()
+	defer sourceRegistry.RUnlock()
+	return sourceRegistry.generation
 }
 
 // unregisterSource 只给测试用：正式构建的站源集合是编译期固定的，运行期不卸载。
 func unregisterSource(id string) {
 	sourceRegistry.Lock()
 	defer sourceRegistry.Unlock()
+	if _, exists := sourceRegistry.factories[id]; !exists {
+		return
+	}
 	delete(sourceRegistry.factories, id)
 	delete(sourceRegistry.descriptors, id)
 	for index, value := range sourceRegistry.order {
@@ -134,6 +148,7 @@ func unregisterSource(id string) {
 			break
 		}
 	}
+	sourceRegistry.generation++
 }
 
 // Unregister 摘掉一个运行期注册的站源。只有站源模块会用到：卸载与更新模块时
