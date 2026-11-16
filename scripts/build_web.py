@@ -1,15 +1,12 @@
 """构建小果影视本地服务版。
 
-单版本，与 App 同名，不内置任何站源：站源从站源页的模块商店安装。
+只出一个 Windows 包，不内置任何站源（站源从站源页的模块商店安装）：
 
-产物名与 Release 说明里的 *-web-* 对应：
-    guoapp-<版本>-web-windows-amd64.zip   Windows：guoapp-web.exe + ffmpeg.exe + start.bat
-    guoapp-<版本>-web-linux-amd64
-    guoapp-<版本>-web-macos-arm64
-    guoapp-<版本>-web-macos-amd64
+    guoapp-<版本>-web-windows-amd64.zip
+        解压后双击 start.bat，内含 guoapp-web.exe + ffmpeg.exe + README.txt
 
-Windows 单独打 zip：红果等加密 H.265 站源要靠服务端的 ffmpeg 解密转码才能播，
-而单文件装不下 ffmpeg（静态版约 90 MB）；macOS / Linux 用系统自带的。
+红果等加密 H.265 站源要靠服务端的 ffmpeg 解密转码才能播，而单文件装不下
+ffmpeg（静态版约 90 MB），所以 Windows 用 zip 而不是裸 exe。
 """
 
 import os
@@ -46,12 +43,7 @@ bootstrap['GOSUMDB'] = os.environ.get('GOSUMDB', 'sum.golang.org')
 toolchain = subprocess.check_output([go, 'env', 'GOROOT'], cwd=native, env=bootstrap, text=True).strip()
 go = str(Path(toolchain) / 'bin' / ('go.exe' if platform.system() == 'Windows' else 'go'))
 
-targets = [
-    ('windows', 'amd64'),
-    ('linux', 'amd64'),
-    ('darwin', 'arm64'),
-    ('darwin', 'amd64'),
-]
+targets = [('windows', 'amd64')]
 
 
 def artifact_name(goos, goarch):
@@ -300,11 +292,5 @@ output_directory.mkdir(parents=True)
 
 for goos, goarch in targets:
     built = build_binary(goos, goarch, root / 'build' / 'web' / artifact_name(goos, goarch))
-    if goos == 'windows':
-        package_windows(built)
-        built.unlink(missing_ok=True)
-    else:
-        destination = output_directory / artifact_name(goos, goarch)
-        shutil.copy2(built, destination)
-        destination.chmod(0o755)
-        built.unlink(missing_ok=True)
+    package_windows(built)
+    built.unlink(missing_ok=True)

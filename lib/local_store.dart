@@ -316,8 +316,8 @@ class LocalStore extends ChangeNotifier {
       _customSources = [];
     }
   }
-  List<CustomSourceSite> get customSources =>
-      List.unmodifiable(_customSources);
+
+  List<CustomSourceSite> get customSources => List.unmodifiable(_customSources);
 
   /// 把核心返回的自定义源列表落到内存并持久化。
   /// 写盘失败也要让内存里的列表生效：源栏、搜索都靠它拿到自定义源 id，
@@ -399,10 +399,13 @@ class LocalStore extends ChangeNotifier {
     return leftover;
   }
 
+  /// 自定义源（MacCMS / XBPQ 规则）不在核心的注册源列表里，因此不能拿
+  /// [SourceSite.isAvailable] 去卡它们，也不参与用户级源权限判定：谁加的源
+  /// 谁自己看，只看各自的显示开关。其余源仍按核心列表 + 用户权限判定。
   bool allowsSource(String source) =>
       !locked &&
-      SourceSite.isAvailable(source) &&
-      profile.allows(source) &&
+      (SourceSite.isCustomId(source) ||
+          (SourceSite.isAvailable(source) && profile.allows(source))) &&
       sourceEnabled(source);
   List<SourceSite> get sources => [
     ...SourceSite.values.where((site) => allowsSource(site.id)),
@@ -561,9 +564,10 @@ class LocalStore extends ChangeNotifier {
 
   List<String> get recentSearches {
     if (locked) return const [];
-    return _list(
-      _userSettings['recentSearches'],
-    ).whereType<String>().take(20).toList();
+    return _list(_userSettings['recentSearches'])
+        .whereType<String>()
+        .take(20)
+        .toList();
   }
 
   Future<void> _saveSettings(Map<String, Object?> settings) async {
@@ -1291,9 +1295,8 @@ class LocalStore extends ChangeNotifier {
         if (_configurationError == null) throw StateError('请从设置中恢复备份');
         final data = validateBackup(content);
         final originalAdmin = await _originalAdmin();
-        final backupAdmin = _readProfiles(
-          data['profiles'],
-        ).firstWhere((profile) => profile.admin);
+        final backupAdmin = _readProfiles(data['profiles'])
+            .firstWhere((profile) => profile.admin);
         final verifier = originalAdmin?.protected == true
             ? originalAdmin!
             : backupAdmin;
