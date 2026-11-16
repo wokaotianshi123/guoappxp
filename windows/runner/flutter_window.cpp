@@ -195,7 +195,7 @@ bool FlutterWindow::OnCreate() {
         result->Success(flutter::EncodableValue(values));
       });
   SetChildContent(flutter_controller_->view()->GetNativeWindow());
-  ime_repair_.Attach(flutter_controller_->view()->GetNativeWindow());
+  ime_repair_->Attach(flutter_controller_->view()->GetNativeWindow());
   SetWindowSubclass(flutter_controller_->view()->GetNativeWindow(),
                     ViewMessageProc, 0,
                     reinterpret_cast<DWORD_PTR>(ime_repair_.get()));
