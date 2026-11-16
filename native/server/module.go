@@ -29,7 +29,6 @@ type moduleInfo struct {
 	Description  string   `json:"description"`
 	Capabilities []string `json:"capabilities"`
 	Adult        bool     `json:"adult"`
-	SourceID     string   `json:"sourceId"`
 	Error        string   `json:"error"`
 }
 
@@ -54,12 +53,14 @@ func moduleItems() []moduleInfo {
 
 // moduleSourceNames 返回模块提供的站源：(站源 ID → 显示名)。
 //
-// 站源 ID 与模块标识同名时带 mod- 前缀（核心侧改名，见 core.moduleSourceID），
+// 模块注册的站源 ID 就是模块标识本身——核心 core.jsModule.descriptor() 拿
+// manifest.ID 当 SourceDescriptor.ID，并不额外下发 sourceId 字段（曾经按
+// sourceId 取，取到的永远是空串，于是模块源在站源列表和源显示里都不出现）。
 // 显示名统一带「（模块）」标注，与同名的本体源区分开。
 func moduleSourceNames() map[string]string {
 	names := map[string]string{}
 	for _, item := range moduleItems() {
-		source := strings.TrimSpace(item.SourceID)
+		source := strings.TrimSpace(item.ID)
 		if source == "" || strings.TrimSpace(item.Error) != "" {
 			continue
 		}

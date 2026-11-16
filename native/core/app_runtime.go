@@ -448,6 +448,11 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 只返回规则文本与诊断说明，不写盘；是否保存仍由用户在表单里点「保存」决定。
 	case "analyzeCustomSourceSite":
 		return engine.downloader.analyzeCustomSourceSite(ctx, input.Base)
+	// sourceStatus：本地服务版（native/server）用它判断某个站源在当前构建里是否存在。
+	// 授权阶段已用 nativeSourceAvailable 拦掉未编译进来的源，能走到这里即代表可用；
+	// 这里不返回 Flutter 端那套任务进度字段。
+	case "sourceStatus":
+		return map[string]any{"source": canonicalProviderSource(input.Source), "available": true}, nil
 	case "addCustomSource":
 		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
 		if err != nil {
