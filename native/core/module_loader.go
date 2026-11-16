@@ -90,6 +90,19 @@ var loadedModules = struct {
 	ids map[string]bool
 }{ids: map[string]bool{}}
 
+// nativeModuleSource 判断某个站源是不是由站源模块提供的。
+//
+// 模块注册的站源 ID 就是模块标识本身（jsModule.descriptor() 拿 manifest.ID 当
+// SourceDescriptor.ID），所以查 loadedModules.ids 即可。
+//
+// 前端用它区分「模块源」与「编进包里的源」：模块源和自定义源一样属于
+// 「谁用谁配」的本机内容，装上就属于这台设备，不参与用户级源权限判定。
+func nativeModuleSource(id string) bool {
+	loadedModules.Lock()
+	defer loadedModules.Unlock()
+	return loadedModules.ids[id]
+}
+
 func readModule(directory string) (*jsModule, error) {
 	raw, err := os.ReadFile(filepath.Join(directory, moduleManifest))
 	if err != nil {

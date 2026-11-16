@@ -22,10 +22,20 @@ class _UserEditorState extends State<UserEditor> {
   late final _name = TextEditingController(text: widget.profile?.name ?? '');
   final _pin = TextEditingController();
   final _confirm = TextEditingController();
+
+  /// 「允许访问的站源」只管得住靠用户权限控制的源。
+  ///
+  /// 自定义源不在核心的注册列表里，站源模块则属于「谁用谁配」的本机内容
+  /// （见 [LocalStore.allowsSource]），两者都不受这份清单管辖，因此都不列出来
+  /// ——否则勾选框点了没反应，成了摆设。
+  static List<SourceSite> get _controllable => [
+    for (final site in SourceSite.values)
+      if (!site.module) site,
+  ];
   late final _sources = {
     ...?widget.profile?.sources,
     if (widget.profile == null)
-      for (final site in SourceSite.values) site.id,
+      for (final site in _controllable) site.id,
   };
   late var _download = widget.profile?.download ?? true;
   var _clearPin = false;
@@ -221,7 +231,7 @@ class _UserEditorState extends State<UserEditor> {
                       ),
                     ),
                     Text(
-                      '已选 ${SourceSite.values.where((site) => _sources.contains(site.id)).length} 个',
+                      '已选 ${_controllable.where((site) => _sources.contains(site.id)).length} 个',
                       style: theme.textTheme.bodySmall?.copyWith(
                         fontSize: 13,
                         color: colors.onSurfaceVariant,
@@ -238,7 +248,7 @@ class _UserEditorState extends State<UserEditor> {
                       1,
                       4,
                     );
-                    final sites = SourceSite.values;
+                    final sites = _controllable;
                     return Column(
                       children: [
                         for (var row = 0; row < sites.length; row += columns)
@@ -423,9 +433,8 @@ class _SourceCheck extends StatelessWidget {
                     name,
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
-                    style: Theme.of(
-                      context,
-                    ).textTheme.bodyLarge?.copyWith(fontSize: 15),
+                    style: Theme.of(context).textTheme.bodyLarge
+                        ?.copyWith(fontSize: 15),
                   ),
                 ),
               ],

@@ -134,22 +134,30 @@ func (engine *nativeEngine) installModule(token string) (map[string]any, error) 
 		return nil, err
 	}
 	d := engine.downloader
-	loadedModules.Lock()
-	defer loadedModules.Unlock()
-	if err := moduleConflict(module.manifest); err != nil {
+	// 持锁段只包到「写入 + 重新加载」为止。sourceList() 要读 loadedModules 判断
+	// 哪些源来自模块，同一把锁不可重入，持锁调用会直接死锁。
+	id, err := func() (string, error) {
+		loadedModules.Lock()
+		defer loadedModules.Unlock()
+		if err := moduleConflict(module.manifest); err != nil {
+			return "", err
+		}
+		id := module.manifest.ID
+		if err := d.writeModuleLocked(id, manifest, code); err != nil {
+			return "", err
+		}
+		if err := d.markBundledRemoved(id, false); err != nil {
+			return "", err
+		}
+		_ = os.Remove(staged)
+		d.reloadModuleLocked(id)
+		if !registeredProviderSource(id) {
+			return "", errors.New("模块已写入但未能加载，详见诊断日志")
+		}
+		return id, nil
+	}()
+	if err != nil {
 		return nil, err
-	}
-	id := module.manifest.ID
-	if err := d.writeModuleLocked(id, manifest, code); err != nil {
-		return nil, err
-	}
-	if err := d.markBundledRemoved(id, false); err != nil {
-		return nil, err
-	}
-	_ = os.Remove(staged)
-	d.reloadModuleLocked(id)
-	if !registeredProviderSource(id) {
-		return nil, errors.New("模块已写入但未能加载，详见诊断日志")
 	}
 	return map[string]any{"source": id, "sources": engine.sourceList()}, nil
 }
@@ -159,15 +167,21 @@ func (engine *nativeEngine) uninstallModule(name string) (map[string]any, error)
 		return nil, errors.New("模块标识无效")
 	}
 	d := engine.downloader
-	loadedModules.Lock()
-	defer loadedModules.Unlock()
-	if err := os.RemoveAll(filepath.Join(d.moduleRoot(), name)); err != nil {
+	// 与 installModule 同理：持锁段不能延伸到 sourceList()。
+	if err := func() error {
+		loadedModules.Lock()
+		defer loadedModules.Unlock()
+		if err := os.RemoveAll(filepath.Join(d.moduleRoot(), name)); err != nil {
+			return err
+		}
+		if err := d.markBundledRemoved(name, true); err != nil {
+			return err
+		}
+		d.reloadModuleLocked(name)
+		return nil
+	}(); err != nil {
 		return nil, err
 	}
-	if err := d.markBundledRemoved(name, true); err != nil {
-		return nil, err
-	}
-	d.reloadModuleLocked(name)
 	return map[string]any{"sources": engine.sourceList()}, nil
 }
 

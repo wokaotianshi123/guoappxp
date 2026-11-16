@@ -22,6 +22,7 @@ class SourceSite {
     this.metadata = false,
     this.adult = false,
     this.vipPrompt = true,
+    this.module = false,
   });
   factory SourceSite.fromJson(Map<String, dynamic> json) => SourceSite(
     json['id'] as String? ?? '',
@@ -40,6 +41,7 @@ class SourceSite {
     metadata: json['metadata'] == true,
     adult: json['adult'] == true,
     vipPrompt: json['vipPrompt'] != false,
+    module: json['module'] == true,
   );
   final String id;
   final String name;
@@ -57,6 +59,10 @@ class SourceSite {
   final bool metadata;
   final bool adult;
   final bool vipPrompt;
+
+  /// 这个源由站源模块提供（不是编进包里的）。模块源与自定义源一样属于
+  /// 「谁用谁配」的本机内容，见 [LocalStore.allowsSource]。
+  final bool module;
   bool get onlineSearch => pagedSearch;
   String get groupId => group.isEmpty ? id : group;
   String get groupName => groupLabel.isEmpty ? name : groupLabel;
@@ -73,6 +79,10 @@ class SourceSite {
   static List<SourceSite> get allValues => _all;
   static List<SourceSite> get values => _available;
   static bool isCustomId(String id) => id.startsWith('custom:');
+
+  /// 该 id 对应的源是否由站源模块提供。未知 id 一律为假。
+  static bool isModule(String id) =>
+      _available.any((site) => site.id == id && site.module);
   static bool isAvailable(String id) => _available.any((site) => site.id == id);
   static bool isKnown(String id) => _all.any((site) => site.id == id);
   static bool isAdult(String id) =>

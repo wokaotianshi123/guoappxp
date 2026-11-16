@@ -400,12 +400,14 @@ class LocalStore extends ChangeNotifier {
   }
 
   /// 自定义源（MacCMS / XBPQ 规则）不在核心的注册源列表里，因此不能拿
-  /// [SourceSite.isAvailable] 去卡它们，也不参与用户级源权限判定：谁加的源
-  /// 谁自己看，只看各自的显示开关。其余源仍按核心列表 + 用户权限判定。
+  /// [SourceSite.isAvailable] 去卡它们；它和站源模块一样属于「谁用谁配」的
+  /// 本机内容——谁加的源谁自己看，装上就属于这台设备——两者都不参与用户级源
+  /// 权限判定，只看各自的显示开关。其余源仍按核心列表 + 用户权限判定。
   bool allowsSource(String source) =>
       !locked &&
       (SourceSite.isCustomId(source) ||
-          (SourceSite.isAvailable(source) && profile.allows(source))) &&
+          (SourceSite.isAvailable(source) &&
+              (SourceSite.isModule(source) || profile.allows(source)))) &&
       sourceEnabled(source);
   List<SourceSite> get sources => [
     ...SourceSite.values.where((site) => allowsSource(site.id)),
@@ -414,7 +416,7 @@ class LocalStore extends ChangeNotifier {
   ];
   List<SourceSite> get permittedSources => [
     for (final site in SourceSite.values)
-      if (!locked && profile.allows(site.id)) site,
+      if (!locked && (site.module || profile.allows(site.id))) site,
     for (final site in _customSources)
       if (!locked) site.asSourceSite,
   ];

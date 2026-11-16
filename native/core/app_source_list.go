@@ -17,6 +17,9 @@ type nativeSourceInfo struct {
 	Metadata        bool   `json:"metadata"`
 	Adult           bool   `json:"adult"`
 	VIPPrompt       bool   `json:"vipPrompt"`
+	// Module 为真表示这个源由站源模块提供（不是编进包里的）。前端据此把模块源
+	// 当成「谁用谁配」的本机内容，不参与用户级源权限判定。
+	Module bool `json:"module"`
 }
 
 func (engine *nativeEngine) sourceList() []nativeSourceInfo {
@@ -32,6 +35,7 @@ func (engine *nativeEngine) sourceList() []nativeSourceInfo {
 			ID: id, Name: descriptor.Name, Description: descriptor.Description,
 			Group: descriptor.Group, GroupName: descriptor.GroupName, EntryName: descriptor.EntryName,
 			Available: nativeSourceAvailable(id), VIPPrompt: !descriptor.SkipVIPPrompt, Adult: descriptor.Adult,
+			Module: nativeModuleSource(id),
 		}
 		_, search := providerAs[Searcher](p)
 		_, warningSearch := providerAs[WarningSearcher](p)
