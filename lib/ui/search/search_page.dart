@@ -433,14 +433,18 @@ class _SearchPageState extends State<SearchPage> {
 
   /// 站源勾选条：「全部源」一键全选，后面逐个列出已开启的站源。
   /// 勾一个就是单源搜索，勾多个并发搜索并去重。电视端用遥控左右键也能选。
+  ///
+  /// 用 Wrap 流式排布而不是横向滚动列表：站源一多（模块商店装完有十几个）
+  /// 横排会被挤出屏幕，得先横向滑动才能点到，桌面端尤其难用。流式换行后
+  /// 每个站源都在视野里，点起来直接。
   Widget _sourceBar(BuildContext context, double? inset) {
     final sources = widget.store.sources;
     final all = _picked.length == sources.length;
-    return SizedBox(
-      height: 48,
-      child: ListView(
-        scrollDirection: Axis.horizontal,
-        padding: EdgeInsets.fromLTRB(inset ?? 16, 8, inset ?? 16, 0),
+    return Padding(
+      padding: EdgeInsets.fromLTRB(inset ?? 16, 8, inset ?? 16, 0),
+      child: Wrap(
+        spacing: 8,
+        runSpacing: 8,
         children: [
           FocusRing(
             radius: 999,
@@ -455,8 +459,7 @@ class _SearchPageState extends State<SearchPage> {
               visualDensity: VisualDensity.compact,
             ),
           ),
-          for (final site in sources) ...[
-            const SizedBox(width: 8),
+          for (final site in sources)
             FocusRing(
               radius: 999,
               child: FilterChip(
@@ -466,7 +469,6 @@ class _SearchPageState extends State<SearchPage> {
                 visualDensity: VisualDensity.compact,
               ),
             ),
-          ],
         ],
       ),
     );

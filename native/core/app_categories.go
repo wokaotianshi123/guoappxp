@@ -23,7 +23,17 @@ func ValidNativeCategory(source, category string) bool {
 	if category == "" {
 		return true
 	}
-	if len(category) > 128 || strings.ContainsAny(category, "|/\\\x00\r\n") {
+	// 这一道只挡缓存键分隔符、反斜杠与控制字符，刻意不含 "/"：自定义源的分类 ID
+	// 本来就是路径形式，得留到下面单独放行。
+	if len(category) > 128 || strings.ContainsAny(category, "|\\\x00\r\n") {
+		return false
+	}
+	if isCustomMaccmsSource(source) {
+		// 自定义 MacCMS 源的分类 ID 允许是路径形式（/fenlei/1、/listnews/2 等），
+		// 上面已排除缓存键分隔符 |、反斜杠与控制字符，这里直接放行。
+		return true
+	}
+	if strings.Contains(category, "/") {
 		return false
 	}
 	if descriptor, ok := registeredDescriptor(source); ok {

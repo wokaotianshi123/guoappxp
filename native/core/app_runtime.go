@@ -660,7 +660,9 @@ func nativeDispatch(input nativeInput) (any, error) {
 
 func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput) (nativeCatalogResult, error) {
 	source := canonicalProviderSource(input.Source)
-	if !registeredProviderSource(source) {
+	// 自定义源不进 provider 注册表，但它由 downloader 的 maccms 分支处理分类与目录，
+	// 不能只认注册表，否则一进目录就报「请选择有效站源」。
+	if !registeredProviderSource(source) && !isCustomMaccmsSource(source) {
 		return nativeCatalogResult{}, errors.New("请选择有效站源")
 	}
 	category := strings.TrimSpace(input.Category)

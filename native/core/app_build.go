@@ -5,8 +5,15 @@ import "errors"
 var errNativeBuildSource = errors.New("当前版本不包含此站源")
 
 func nativeSourceAvailable(source string) bool {
-	_, ok := registeredDescriptor(canonicalProviderSource(source))
-	return ok
+	source = canonicalProviderSource(source)
+	if _, ok := registeredDescriptor(source); ok {
+		return true
+	}
+	// 自定义源（MacCMS 站点 / XBPQ 规则）不进 provider 注册表，它存在引擎自己的
+	// 自定义源清单里。只查注册表会把它们一律判成 false，表现为「站源名能显示，
+	// 一点就报当前版本不包含此站源」。这里与 nativeSourceSupportsSearch 的兜底
+	// 写法保持一致：注册表命中，或者是个自定义源。
+	return isCustomMaccmsSource(source)
 }
 
 func nativeDramaAvailable(drama LibraryDrama) bool {

@@ -290,7 +290,22 @@ func ProviderChapterID(source, sourceID, chapterKey string) string {
 }
 
 func SplitProviderDramaID(id string) (source, sourceID string, ok bool) {
-	source, sourceID, ok = strings.Cut(strings.TrimSpace(id), ":")
+	trimmed := strings.TrimSpace(id)
+	// 自定义源 ID 形如 custom:<hash>:<源内 ID>，站源 ID 本身含冒号，必须按第二个
+	// 冒号拆分；否则会被切成 source="custom"，站点一切到详情或取流就被判成
+	// 「当前版本不包含此站源」。
+	if strings.HasPrefix(trimmed, customSourcePrefix) {
+		rest, tail, found := strings.Cut(strings.TrimPrefix(trimmed, customSourcePrefix), ":")
+		if !found || strings.TrimSpace(rest) == "" || strings.TrimSpace(tail) == "" {
+			return "", "", false
+		}
+		source = customSourcePrefix + rest
+		if !isCustomMaccmsSource(source) {
+			return "", "", false
+		}
+		return source, strings.TrimSpace(tail), true
+	}
+	source, sourceID, ok = strings.Cut(trimmed, ":")
 	source = canonicalProviderSource(source)
 	if !ok || strings.TrimSpace(sourceID) == "" || !registeredProviderSource(source) {
 		return "", "", false
