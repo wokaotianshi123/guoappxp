@@ -171,6 +171,31 @@ class FanqieBook {
   /// 归属榜单：0 男生听书榜、1 女生听书榜。官方书城按 gender 归类，
   /// 榜单/搜索来源默认 0（它们本来就在当前榜里展示）。
   final int board;
+
+  /// 落盘用（首屏快照只留展示与播放需要的字段）。
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'title': title,
+    'author': author,
+    'category': category,
+    'cover': cover,
+    'intro': intro,
+    'anchor': anchor,
+    'board': board,
+    'source': source,
+  };
+
+  static FanqieBook fromJson(Map<String, dynamic> json) => FanqieBook(
+    id: '${json['id'] ?? ''}',
+    title: '${json['title'] ?? ''}',
+    author: '${json['author'] ?? ''}',
+    category: '${json['category'] ?? ''}',
+    cover: '${json['cover'] ?? ''}',
+    intro: '${json['intro'] ?? ''}',
+    anchor: '${json['anchor'] ?? ''}',
+    board: (json['board'] as num?)?.toInt() ?? 0,
+    source: '${json['source'] ?? 'fanqie'}',
+  );
 }
 
 class FanqieChapter {
@@ -286,10 +311,7 @@ class FanqieAudiobookApi {
   /// 实时拉取官方书城某个一级分类（tab_type）。
   Future<FanqieOfficialPage> officialTab(int tabType) async {
     final url = '$novelfmBookmallUrl?$novelfmCommonQuery&tab_type=$tabType';
-    return fanqieOfficialPage(
-      jsonDecode(await _fetch(url)),
-      tabType: tabType,
-    );
+    return fanqieOfficialPage(jsonDecode(await _fetch(url)), tabType: tabType);
   }
 
   Future<FanqieOfficialPage> _officialTabSafe(int tabType) async {
@@ -306,9 +328,11 @@ class FanqieAudiobookApi {
   Future<FanqieOfficialResult> officialAll({int rounds = 3}) async {
     final pages = <FanqieOfficialPage>[];
     for (var round = 0; round < rounds; round++) {
-      pages.addAll(await Future.wait<FanqieOfficialPage>([
-        for (final tab in novelfmTabTypes) _officialTabSafe(tab),
-      ]));
+      pages.addAll(
+        await Future.wait<FanqieOfficialPage>([
+          for (final tab in novelfmTabTypes) _officialTabSafe(tab),
+        ]),
+      );
     }
     final books = <FanqieBook>[];
     final seenBooks = <String>{};

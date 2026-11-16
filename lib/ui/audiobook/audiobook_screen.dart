@@ -7,6 +7,7 @@ import 'package:flutter/services.dart';
 
 import 'audiobook_download.dart';
 import 'audiobook_fanqie.dart';
+import 'audiobook_pool_snapshot.dart';
 import 'audiobook_session.dart';
 import 'audiobook_store.dart';
 import '../../core_bridge.dart';
@@ -157,7 +158,11 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         // 两次都要走设备签名并挤同一个 host 限流队列，Android 上切换书源
         // 时表现为明显卡顿甚至假死；番茄命中本地缓存则是 0 请求，所以只有
         // 红果这一侧慢。现在切书源最多一个前台请求，用完即停。
+        //
+        // 首屏那一个请求本身就要 4~5 秒（单次响应约 500KB），所以先把上一次
+        // 落盘的快照渲染出来再刷新：用户立刻有书可看，刷新完成后原地替换。
         final channel = _hongguoChannel;
+        await _restoreHongguoSnapshot(channel, token);
         final first = await _api.hongguoCatalogPage(channel);
         if (!mounted || token != _poolGeneration) return;
         setState(() {
@@ -175,6 +180,13 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           _rebuildSearch();
           _error = _pool.isEmpty ? '红果听书暂时没有书' : null;
         });
+        unawaited(
+          AudiobookPoolSnapshot.write(
+            channel,
+            first.books,
+            hasMore: first.hasMore,
+          ),
+        );
         _rememberPool(origin);
         // 没有 stillLoading，也没有轮询：书库首到这里就静止，等用户翻页。
         return;
@@ -225,6 +237,38 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         _error = _pool.isEmpty ? '$error' : null;
       });
     }
+  }
+
+  /// 用上一次落盘的首屏快照先把列表填上。
+  ///
+  /// 首屏请求要 4~5 秒起（响应约 500KB），站点抖动或触发重试时会到十几秒，
+  /// 期间界面只有一个加载圈，用户看到的就像「点了没反应」。快照命中时立刻
+  /// 渲染内容，同时**保持加载态**：底部翻页条会显示「正在加载」，用户既已经
+  /// 看到书，也知道后台还在刷新，刷新完成后原地替换。
+  ///
+  /// 没有快照（首次打开）或快照不可用时什么都不做，照常显示加载态。
+  Future<void> _restoreHongguoSnapshot(String channel, int token) async {
+    final snapshot = await AudiobookPoolSnapshot.read(channel);
+    if (snapshot == null) return;
+    if (!mounted ||
+        token != _poolGeneration ||
+        _origin != 0 ||
+        _hongguoLoadedPages.containsKey(channel)) {
+      return;
+    }
+    setState(() {
+      if (channel == 'listen') {
+        _malePool = snapshot.books;
+      } else {
+        _femalePool = snapshot.books;
+      }
+      _poolDone = true;
+      _hongguoLoadedPages[channel] = 1;
+      _hongguoHasMore[channel] = snapshot.hasMore;
+      _rebuildSearch();
+      _error = null;
+    });
+    _rememberPool(0);
   }
 
   /// 两个书源各自缓存一份书池：来回切换时直接复用，不重新翻页。
@@ -296,6 +340,8 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     final token = _poolGeneration;
     _hongguoChannelLoading = true;
     try {
+      // 切频道同样先吃快照：与进页面时的首屏是同一条请求，值得先显示再刷新。
+      await _restoreHongguoSnapshot(channel, token);
       final first = await _api.hongguoCatalogPage(channel);
       if (!mounted ||
           token != _poolGeneration ||
@@ -313,6 +359,13 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         _hongguoHasMore[channel] = first.hasMore;
         _rebuildSearch();
       });
+      unawaited(
+        AudiobookPoolSnapshot.write(
+          channel,
+          first.books,
+          hasMore: first.hasMore,
+        ),
+      );
       _rememberPool(0);
     } catch (_) {
       // 单频道失败不影响另一个频道与已显示内容，不重试、不后台续抓。
@@ -524,9 +577,12 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   /// 红果听书按需加载时，只要上游还有更多就允许继续翻（数据不够会现取）；
   /// 正在取下一页时先禁用，避免连点重复发请求。用 [_poolLoading] 判断，
   /// 它由 setState 维护，按钮状态才能随请求结束及时恢复。
+  ///
+  /// 例外：书池已经由快照填上内容、只是后台还在刷新时不禁用——用户看得见书，
+  /// 就该能翻；快照本身就是整页数据，翻这几页不需要任何请求。
   bool get _canNext {
     if (_hongguoPaging) {
-      if (_poolLoading) return false;
+      if (_poolLoading && _pool.isEmpty) return false;
       if (_hongguoHasMore[_hongguoChannel] ?? false) return true;
     }
     return _page < _totalPages;
@@ -596,8 +652,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     return fanqieAudiobookBoards[index].name;
   }
 
-  String get _searchHint =>
-      _origin == 0 ? '搜索红果听书 / 小说' : '搜索番茄畅听全库';
+  String get _searchHint => _origin == 0 ? '搜索红果听书 / 小说' : '搜索番茄畅听全库';
 
   /// 分类条与「发现」页视频分类共用同一套横向 tab：榜单是「全部」入口，
   /// 其后是书池里真实存在的分类，再后面是搜索热词。三者用前缀区分，
@@ -801,9 +856,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           // 「全部分类」入口，点开是列出所有真实分类的网格面板。
           CategoryTabs<String>(
             options: [
-              for (var index = 0;
-                  index < fanqieAudiobookBoards.length;
-                  index++)
+              for (var index = 0; index < fanqieAudiobookBoards.length; index++)
                 ChoiceOption('b:$index', _boardLabel(index)),
               for (final category in _categories)
                 ChoiceOption('c:$category', category),
@@ -923,7 +976,22 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     }
     // 书池首批还没回来时转圈；之后列表边加载边显示，不再整页等待。
     if (_pool.isEmpty && _poolLoading && _query.isEmpty) {
-      return const Center(child: CircularProgressIndicator());
+      return Center(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const CircularProgressIndicator(),
+            const SizedBox(height: 14),
+            Text(
+              // 红果首屏单次响应约 500KB、实测 4~5 秒；番茄要翻榜单。都说清
+              // 「要等一会儿」，免得用户以为点了没反应。
+              _origin == 0 ? '正在取回红果书城的书单，首次打开需要几秒…' : '正在取回番茄畅听的榜单…',
+              style: const TextStyle(fontSize: 13),
+              textAlign: TextAlign.center,
+            ),
+          ],
+        ),
+      );
     }
     if (_searchLoading && _visibleBooks.isEmpty) {
       return const Center(child: CircularProgressIndicator());

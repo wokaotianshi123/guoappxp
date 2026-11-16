@@ -33,6 +33,21 @@ const (
 	audiobookHongguoPlayInfoPath = "/reading/reader/audio/playinfo/"
 	audiobookHongguoSearchPath   = "/reading/bookapi/search/tab/v1/"
 	audiobookHongguoSearchSize   = 10
+
+	// audiobookHongguoLane 是听书首屏与翻页共用的限流 lane。
+	//
+	// 书城接口与红果短剧共用同一个 host，共用 gate 时近百页翻页会把短剧首页 /
+	// 详情一起堵住（用户感知是「刚打开软件就卡」）；反过来同一 host 上的详情 /
+	// 取流 / 搜索这些慢请求也会把听书首屏堵在后面。听书单独一条 lane 后两边各走
+	// 各的节奏，互不阻塞；全局并发上限（3）与每 lane 250ms 的间隔仍然生效。
+	audiobookHongguoLane = "hongguo-audiobook"
+
+	// audiobookHongguoFeedSlowLog 是首屏请求的「慢」阈值：超过就写一条诊断日志。
+	// 首屏正常 4~5 秒，用户体感明显，出问题时必须能从日志里看出卡在哪一步。
+	audiobookHongguoFeedSlowLog = 1500 * time.Millisecond
+
+	// audiobookHongguoFeedMetaTTL 是首屏翻页元数据（cell_id / session_id）的缓存时长。
+	audiobookHongguoFeedMetaTTL = 10 * time.Minute
 )
 
 // audiobookHongguoCategory 是听书页的两个频道。
@@ -169,7 +184,13 @@ func audiobookHongguoBooksOf(value any) []map[string]any {
 }
 
 // audiobookHongguoFeed 取一批书城推荐流（offset=0 的首页）。
+//
+// 这条请求与 cell/change 走同一个 lane：书城首屏单次响应约 500KB、实测 4~5 秒，
+// 用户点开听书页等的就是它。不单独一条 lane 的话，它会和同一 host 上的详情 /
+// 取流 / 搜索请求挤同一个 gate（同一时刻只允许一个在飞），被别人的慢请求堵住
+// 时首屏会更久；分 lane 后听书首屏与其它接口互不阻塞（全局并发上限仍然生效）。
 func (d *Downloader) audiobookHongguoFeed(ctx context.Context, category audiobookHongguoCategory, offset int) ([]map[string]any, string, string, string, bool, error) {
+	ctx = context.WithValue(ctx, requestLaneKey{}, audiobookHongguoLane)
 	requestType := "1"
 	if offset > 0 {
 		requestType = "2"
@@ -209,7 +230,7 @@ func (d *Downloader) audiobookHongguoCellPage(ctx context.Context, category audi
 	// 听书翻页单独一条 lane：书城接口与红果短剧共用同一个 host，
 	// 共用 gate 时翻近百页会把短剧首页/详情一起堵住（用户感知就是「刚打开
 	// 软件就卡」）。分 lane 后两边各走各的节奏，互不阻塞。
-	ctx = context.WithValue(ctx, requestLaneKey{}, "hongguo-audiobook")
+	ctx = context.WithValue(ctx, requestLaneKey{}, audiobookHongguoLane)
 	extra := url.Values{
 		"cell_id":         {cellID},
 		"change_type":     {"0"},
@@ -235,9 +256,108 @@ func (d *Downloader) audiobookHongguoCellPage(ctx context.Context, category audi
 	return books, hasMore, next, nil
 }
 
+// audiobookHongguoFeedMeta 是首屏里与翻页有关的那部分信息。
+//
+// 书城是「首屏给 cell_id / session_id，翻页全在 cell/change 上」的两段式，
+// 原来的实现每次翻页都先重取一次首屏才能拿到这两个值，于是「下一页」要等
+// 两个请求（单次首屏就有 500KB、实测 4~5 秒），实测点一下要 5~10 秒。
+// 这份元数据在一次会话里几乎不变，按频道短时缓存，翻页只发 cell/change
+// 一个请求；缓存过期或翻页失败时再回退到「重新取首屏」的老路径。
+type audiobookHongguoFeedMeta struct {
+	cellID   string
+	showType string
+	session  string
+	at       time.Time
+}
+
+var audiobookHongguoFeedMetas = struct {
+	sync.Mutex
+	entries map[string]audiobookHongguoFeedMeta
+}{entries: map[string]audiobookHongguoFeedMeta{}}
+
+func audiobookHongguoRememberFeedMeta(spec audiobookHongguoCategory, meta audiobookHongguoFeedMeta) {
+	if meta.cellID == "" {
+		return
+	}
+	meta.at = time.Now()
+	cache := &audiobookHongguoFeedMetas
+	cache.Lock()
+	defer cache.Unlock()
+	cache.entries[spec.ID] = meta
+}
+
+func audiobookHongguoFeedMetaFor(spec audiobookHongguoCategory) (audiobookHongguoFeedMeta, bool) {
+	cache := &audiobookHongguoFeedMetas
+	cache.Lock()
+	defer cache.Unlock()
+	meta, ok := cache.entries[spec.ID]
+	if !ok || time.Since(meta.at) >= audiobookHongguoFeedMetaTTL {
+		return audiobookHongguoFeedMeta{}, false
+	}
+	return meta, true
+}
+
+// audiobookHongguoFeedPage 取首屏，并把翻页元数据缓存下来。
+func (d *Downloader) audiobookHongguoFeedPage(ctx context.Context, spec audiobookHongguoCategory) ([]map[string]any, bool, error) {
+	started := time.Now()
+	first, cellID, showType, session, hasMore, err := d.audiobookHongguoFeed(ctx, spec, 0)
+	if err != nil {
+		d.audiobookHongguoRecordFeed(spec, 1, started, 0, err)
+		return nil, false, err
+	}
+	audiobookHongguoRememberFeedMeta(spec, audiobookHongguoFeedMeta{cellID: cellID, showType: showType, session: session})
+	d.audiobookHongguoRecordFeed(spec, 1, started, len(first), nil)
+	return first, hasMore, nil
+}
+
+// audiobookHongguoCellPageCached 翻页：优先用缓存的 cell 元数据，命中不了再取首屏。
+//
+// 缓存命中但翻页拿不到内容时（session 过期后上游会回 200 + 空列表）也回退到
+// 重取首屏，避免把「空页」当成「到底了」。
+func (d *Downloader) audiobookHongguoCellPageCached(ctx context.Context, spec audiobookHongguoCategory, offset int) ([]map[string]any, bool, error) {
+	if meta, ok := audiobookHongguoFeedMetaFor(spec); ok {
+		books, hasMore, _, err := d.audiobookHongguoCellPage(ctx, spec, meta.cellID, meta.showType, meta.session, offset)
+		if err == nil && len(books) > 0 {
+			return books, hasMore, nil
+		}
+	}
+	// 缓存没命中（或缓存里的 session 已经失效）才重取首屏拿新的 cell 元数据。
+	started := time.Now()
+	_, cellID, showType, session, _, err := d.audiobookHongguoFeed(ctx, spec, 0)
+	if err != nil {
+		d.audiobookHongguoRecordFeed(spec, 0, started, 0, err)
+		return nil, false, err
+	}
+	audiobookHongguoRememberFeedMeta(spec, audiobookHongguoFeedMeta{cellID: cellID, showType: showType, session: session})
+	if cellID == "" {
+		return nil, false, errors.New("红果听书频道未返回可翻页的栏目")
+	}
+	books, hasMore, _, err := d.audiobookHongguoCellPage(ctx, spec, cellID, showType, session, offset)
+	return books, hasMore, err
+}
+
+// audiobookHongguoRecordFeed 把首屏请求的耗时写进诊断日志（logs/app.log）。
+//
+// 首屏是听书页唯一需要用户等的东西：单次响应约 500KB、正常 4~5 秒，站点抖动
+// 或限流排队时会更久，用户看到的就是「点了半天没反应」。记录耗时与拿到的书数，
+// 慢的时候能直接判断是上游慢、还是被限流排队拖住，不用再靠猜。
+func (d *Downloader) audiobookHongguoRecordFeed(spec audiobookHongguoCategory, page int, started time.Time, books int, err error) {
+	elapsed := time.Since(started)
+	if err == nil && elapsed < audiobookHongguoFeedSlowLog {
+		return
+	}
+	level := "info"
+	message := fmt.Sprintf("channel=%s page=%d elapsed=%dms books=%d", spec.ID, page, elapsed.Milliseconds(), books)
+	if err != nil {
+		level = "error"
+		message += " error=" + err.Error()
+	}
+	d.recordDiagnostic(diagnosticEvent{Level: level, Event: "audiobook.feed", Source: "hongguo", Message: message})
+}
+
 // audiobookHongguoCatalog 返回一页书单。
 //
-// 书城是「一个 cell 无限往下翻」的形态：page 1 是首屏（12 本），之后每页
+// 书城是「一个 cell 无限往下翻」的形态：page 1 是首屏（几十本），之后每页
 // 对应 cell/change 的一次 offset 步进（10）。known 由调用方传入已展示的 ID，
 // 用来过滤相邻页重叠的部分。
 func (d *Downloader) audiobookHongguoCatalog(ctx context.Context, category string, page int, known map[string]bool) ([]map[string]any, bool, error) {
@@ -248,24 +368,22 @@ func (d *Downloader) audiobookHongguoCatalog(ctx context.Context, category strin
 	if page < 1 {
 		page = 1
 	}
-	first, cellID, showType, session, _, err := d.audiobookHongguoFeed(ctx, spec, 0)
-	if err != nil {
-		return nil, false, err
-	}
 	var raw []map[string]any
 	hasMore := true
 	if page == 1 {
-		raw = first
-	} else {
-		if cellID == "" {
-			return nil, false, errors.New("红果听书频道未返回可翻页的栏目")
-		}
-		// 第 N 页对应 offset=(N-1)*10；cell/change 的 next_offset 与步进一致。
-		offset := (page - 1) * 10
-		raw, hasMore, _, err = d.audiobookHongguoCellPage(ctx, spec, cellID, showType, session, offset)
+		first, more, err := d.audiobookHongguoFeedPage(ctx, spec)
 		if err != nil {
 			return nil, false, err
 		}
+		raw, hasMore = first, more
+	} else {
+		// 第 N 页对应 offset=(N-1)*10；cell/change 的 next_offset 与步进一致。
+		offset := (page - 1) * 10
+		books, more, err := d.audiobookHongguoCellPageCached(ctx, spec, offset)
+		if err != nil {
+			return nil, false, err
+		}
+		raw, hasMore = books, more
 	}
 	out := make([]map[string]any, 0, len(raw))
 	seen := map[string]bool{}

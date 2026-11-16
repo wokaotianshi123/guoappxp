@@ -243,6 +243,13 @@ func (body *limitedResponseBody) Close() error {
 	return err
 }
 
+// catalogLimiterSlowLog 是「在限流队列里等太久」的阈值。
+//
+// 同一 host 每 250ms 只允许一个请求在飞，正常排队最多等一个间隔；超过 1 秒
+// 说明前面压着别人的慢请求（同一个 gate 的串行等待会成倍放大用户感知的等待）。
+// 记进诊断日志后，「点了半天没反应」到底卡在网络还是卡在排队一眼能分开。
+const catalogLimiterSlowLog = time.Second
+
 func (d *Downloader) doCatalogRequestWithTimeout(request *http.Request, timeout time.Duration) (*http.Response, error) {
 	return d.doPreparedCatalogRequest(request, timeout, nil)
 }
@@ -251,9 +258,19 @@ func (d *Downloader) doPreparedCatalogRequest(request *http.Request, timeout tim
 	if background, _ := request.Context().Value(backgroundCatalogKey{}).(bool); background && (timeout <= 0 || timeout > 8*time.Second) {
 		timeout = 8 * time.Second
 	}
+	queued := time.Now()
 	release, err := d.limiter.acquire(request.Context(), request)
 	if err != nil {
 		return nil, err
+	}
+	if waited := time.Since(queued); waited >= catalogLimiterSlowLog {
+		d.recordDiagnostic(diagnosticEvent{
+			Level: "info",
+			Event: "network.limiter_wait",
+			Host:  strings.ToLower(request.URL.Hostname()),
+			// path 不带查询串：query 里含设备标识与签名。
+			Message: fmt.Sprintf("waited=%dms path=%s", waited.Milliseconds(), request.URL.Path),
+		})
 	}
 	cancel := func() {}
 	if timeout > 0 {
