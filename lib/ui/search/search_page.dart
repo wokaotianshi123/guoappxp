@@ -47,8 +47,22 @@ class _SearchPageState extends State<SearchPage> {
   final _shownSuggestions = <Object>{};
   bool _ready = false;
 
-  /// 「全部源」：并发搜索所有已开启的站源。偏好存在本机，下次打开沿用。
-  bool _allSources = false;
+  /// 参与搜索的站源 id。默认只勾当前源；点「全部源」把所有已开启的站源都勾上。
+  /// 是否全选这个偏好存在本机，下次打开沿用。
+  List<String> _picked = const [];
+
+  List<String> get _allSourceIds => [
+    for (final site in widget.store.sources) site.id,
+  ];
+
+  /// 走跨源搜索的条件：勾了多个源，或者勾了单个但不是当前源。
+  bool get _crossMode =>
+      _picked.length > 1 ||
+      (_picked.length == 1 && _picked.first != widget.source.id);
+
+  String get _hint => _crossMode
+      ? '搜索已选的 ${_picked.length} 个站源'
+      : '在 ${widget.source.name} 中搜索';
 
   // 全部源搜索的流式状态：核心那边每返回一个站源就更新一次快照。
   SearchProgress? _cross;
@@ -65,7 +79,10 @@ class _SearchPageState extends State<SearchPage> {
     _ready = true;
     _repository = AppScope.of(context).repository;
     _catalog = SourceCatalog(_repository, widget.source);
-    _allSources = widget.store.searchAllSources && _allSourceToggle;
+    final ids = _allSourceIds;
+    _picked = widget.store.searchAllSources && ids.length > 1
+        ? ids
+        : [widget.source.id];
     if (widget.query.trim().isNotEmpty) _submit(widget.query);
   }
 
@@ -101,7 +118,7 @@ class _SearchPageState extends State<SearchPage> {
     _debounce?.cancel();
     _suggestion++;
     unawaited(widget.store.rememberSearch(query).catchError((Object _) {}));
-    if (_allSources) {
+    if (_crossMode) {
       _startCross(query);
       return;
     }
@@ -124,7 +141,7 @@ class _SearchPageState extends State<SearchPage> {
     _results = null;
     final generation = ++_generation;
     _stopPolling(cancelRemote: true);
-    final sources = [for (final site in widget.store.sources) site.id];
+    final sources = _picked.isEmpty ? [widget.source.id] : _picked;
     setState(() {
       _submitted = query;
       _suggestions = const [];
@@ -200,12 +217,41 @@ class _SearchPageState extends State<SearchPage> {
     if (_cross != null) setState(() => _cross = null);
   }
 
+  /// 「全部源」：把所有已开启的站源都勾上；再点一次回到只搜当前源。
   void _toggleAllSources(bool value) {
-    setState(() => _allSources = value);
+    final ids = _allSourceIds;
+    setState(() => _picked = value ? ids : [widget.source.id]);
     unawaited(
       widget.store.setSearchAllSources(value).catchError((Object _) {}),
     );
-    // 已经搜过一次的话，立刻按新模式重搜，不用让用户再敲一遍回车。
+    _research();
+  }
+
+  /// 单个站源的勾选。至少留一个：全不勾就等于搜不了，没必要让用户走到那一步。
+  void _toggleSource(String id, bool value) {
+    final next = [..._picked];
+    if (value) {
+      if (next.contains(id)) return;
+      next.add(id);
+    } else {
+      if (next.length <= 1 || !next.contains(id)) return;
+      next.remove(id);
+    }
+    next.sort(
+      (a, b) => _allSourceIds.indexOf(a).compareTo(_allSourceIds.indexOf(b)),
+    );
+    setState(() => _picked = next);
+    // 手动勾选就不再是「全选」，把偏好同步回去，下次打开按这个状态恢复。
+    unawaited(
+      widget.store
+          .setSearchAllSources(next.length == _allSourceIds.length)
+          .catchError((Object _) {}),
+    );
+    _research();
+  }
+
+  /// 已经搜过一次的话，立刻按新的勾选重搜，不用让用户再敲一遍回车。
+  void _research() {
     final query = _submitted;
     if (query.isNotEmpty) _submit(query);
   }
@@ -236,7 +282,7 @@ class _SearchPageState extends State<SearchPage> {
   @override
   Widget build(BuildContext context) {
     final field = SearchField(
-      hint: '在 ${widget.source.name} 中搜索',
+      hint: _hint,
       controller: _controller,
       focusNode: _focus,
       autofocus: widget.query.isEmpty,
@@ -260,7 +306,7 @@ class _SearchPageState extends State<SearchPage> {
               ),
               child: field,
             ),
-            if (_allSourceToggle) _allSourceBar(context, televisionInset),
+            if (_allSourceToggle) _sourceBar(context, televisionInset),
             Expanded(child: FadeSwitcher(child: _body(context))),
           ],
         ),
@@ -276,7 +322,7 @@ class _SearchPageState extends State<SearchPage> {
         bottom: false,
         child: Column(
           children: [
-            if (_allSourceToggle) _allSourceBar(context, null),
+            if (_allSourceToggle) _sourceBar(context, null),
             Expanded(child: FadeSwitcher(child: _body(context))),
           ],
         ),
@@ -286,7 +332,7 @@ class _SearchPageState extends State<SearchPage> {
 
   Widget _body(BuildContext context) {
     final television = AppScope.of(context).television;
-    if (_allSources) return _crossBody(context);
+    if (_crossMode) return _crossBody(context);
     if (_suggestions.isNotEmpty && _controller.text.trim() != _submitted) {
       return ListView(
         key: const ValueKey('suggest'),
@@ -385,42 +431,42 @@ class _SearchPageState extends State<SearchPage> {
     );
   }
 
-  /// 「全部源」开关 + 一句话说明。电视端用遥控左右键也能选中。
-  Widget _allSourceBar(BuildContext context, double? inset) {
-    final theme = Theme.of(context);
-    final caption = theme.textTheme.bodySmall?.copyWith(
-      color: theme.colorScheme.onSurfaceVariant,
-    );
-    return Padding(
-      padding: EdgeInsets.fromLTRB(inset ?? 16, 8, inset ?? 16, 0),
-      child: Row(
+  /// 站源勾选条：「全部源」一键全选，后面逐个列出已开启的站源。
+  /// 勾一个就是单源搜索，勾多个并发搜索并去重。电视端用遥控左右键也能选。
+  Widget _sourceBar(BuildContext context, double? inset) {
+    final sources = widget.store.sources;
+    final all = _picked.length == sources.length;
+    return SizedBox(
+      height: 48,
+      child: ListView(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.fromLTRB(inset ?? 16, 8, inset ?? 16, 0),
         children: [
           FocusRing(
             radius: 999,
             child: FilterChip(
               avatar: Icon(
-                _allSources
-                    ? Icons.travel_explore_rounded
-                    : Icons.public_rounded,
+                all ? Icons.travel_explore_rounded : Icons.public_rounded,
                 size: 16,
               ),
               label: const Text('全部源'),
-              selected: _allSources,
+              selected: all,
               onSelected: _toggleAllSources,
               visualDensity: VisualDensity.compact,
             ),
           ),
-          const SizedBox(width: 10),
-          Expanded(
-            child: Text(
-              _allSources
-                  ? '同时搜索所有已开启的站源，结果边搜边出'
-                  : '只搜索 ${widget.source.name}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: caption,
+          for (final site in sources) ...[
+            const SizedBox(width: 8),
+            FocusRing(
+              radius: 999,
+              child: FilterChip(
+                label: Text(site.name),
+                selected: _picked.contains(site.id),
+                onSelected: (value) => _toggleSource(site.id, value),
+                visualDensity: VisualDensity.compact,
+              ),
             ),
-          ),
+          ],
         ],
       ),
     );

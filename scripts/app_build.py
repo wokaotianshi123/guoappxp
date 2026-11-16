@@ -63,11 +63,6 @@ def prepare_bundled_modules(extra=()):
         print(f'内置模块：{manifest["id"]} {manifest.get("version", "")}', flush=True)
 
 
-def add_variant_argument(parser):
-    parser.add_argument('--all-sources', action='store_true',
-                        help='构建包含全部站源的真果鉴；默认构建仅红果的红果鉴')
-
-
 # Go 核心已不含 BT 依赖，保留统一入口以便各平台构建脚本共用。
 def go_build_tag_args():
     return []

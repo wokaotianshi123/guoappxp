@@ -35,16 +35,14 @@ import (
 )
 
 var (
-	editionSlug = "hongguojian"
+	editionSlug = "guoapp"
 	appVersion  = "dev"
 )
 
 // 名称由 slug 推导，避免通过 -X 传入中文在 Windows 上被系统编码破坏。
+// 本地服务版与 App 同名，只有一个版本，不再分「红果鉴 / 真果鉴」。
 func editionName() string {
-	if editionSlug == "zhenguojian" {
-		return "真果鉴"
-	}
-	return "红果鉴"
+	return "小果影视"
 }
 
 //go:embed web
@@ -1084,7 +1082,15 @@ func main() {
 	setLibraryDirectory(directory)
 	setVisibilityDirectory(directory)
 	setLiveWebDirectory(directory)
-	encoded, err := json.Marshal(map[string]any{"action": "initialize", "directory": directory})
+	// 核心要求缓存目录也是绝对路径，缺了会直接报「应用缓存目录无效」进不去。
+	// 服务版没有系统级缓存目录，跟便携版一致放到数据目录下的 cache，
+	// 删数据目录时一并带走。
+	cacheDirectory := filepath.Join(directory, "cache")
+	encoded, err := json.Marshal(map[string]any{
+		"action":    "initialize",
+		"directory": directory,
+		"cache":     cacheDirectory,
+	})
 	if err != nil {
 		log.Fatalf("初始化请求编码失败：%v", err)
 	}
@@ -1095,10 +1101,7 @@ func main() {
 	if err := json.Unmarshal([]byte(core.NativeRequest(string(encoded))), &answer); err != nil || !answer.OK {
 		log.Fatalf("本地核心初始化失败：%s", answer.Error)
 	}
-	// 番茄站源依赖本机的 Rust 引擎；随包没有引擎产物时这里静默跳过，
-	// 番茄源仍会列出，播放时给出「引擎未就绪」的提示，其余站源不受影响。
-	stopFanqieEngine := startFanqieEngine(directory)
-	defer stopFanqieEngine()
+	// 本地服务版只编入红果站源，不带番茄，因此不再拉起番茄内容引擎。
 
 	site, err := fs.Sub(webAssets, "web")
 	if err != nil {
