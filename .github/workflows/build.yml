@@ -373,7 +373,7 @@ jobs:
         run: |
           set -euo pipefail
           cat > notes.md <<EOF
-          版本 ${VERSION}。安装包内置红果站源，其余站源在 设置 › 站源 › 模块管理 的模块商店安装。
+          版本 ${VERSION}。安装包内置红果站源，其余站源在 我的 › 站源 › 模块 的模块商店安装。
 
           Android：
           - *-arm64-v8a.apk：适用于较新的安卓设备
