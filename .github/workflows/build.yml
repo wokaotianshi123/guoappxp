@@ -33,7 +33,9 @@ concurrency:
 env:
   GOPROXY: https://proxy.golang.org,direct
   GOSUMDB: sum.golang.org
-  UPDATE_SERVER_URL: ${{ vars.UPDATE_SERVER_URL }}
+  # 安卓包名单独一个变量：PACKAGE_NAME 会同时影响 Windows / iOS / macOS 的
+  # bundle id 与 Windows 的 userdata 目录，不能拿来单独改安卓。
+  ANDROID_PACKAGE_NAME: ${{ vars.ANDROID_PACKAGE_NAME }}
   PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
   # 内置站源模块目录。私有仓库拿不到时留空，构建出「不含内置模块」的包，
   # 站源改从站源页的模块商店安装。

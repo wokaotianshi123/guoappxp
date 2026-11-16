@@ -18,7 +18,6 @@ import 'catalog_updates.dart';
 import 'download_collections.dart';
 import 'resource_settings.dart';
 import 'diary_service.dart';
-import 'app_update.dart';
 import 'sorani_account.dart';
 import 'source_modules.dart';
 
@@ -224,8 +223,6 @@ abstract class AppRepository {
     int quality = 0,
     bool adBlock = true,
   }) => resolve(drama, episode, quality: quality, adBlock: adBlock);
-  Future<AppUpdate?> checkUpdate(String version) async => null;
-  Future<void> reportUsage(String version) async {}
   Future<bool> sourceDevices(String source, {bool register = false}) async =>
       true;
   Future<SoraniAccount> soraniAccount() async => const SoraniAccount();
@@ -695,22 +692,6 @@ class NativeRepository extends AppRepository {
   int _playbackSequence = DateTime.now().microsecondsSinceEpoch;
   (String, List<DownloadJob>) _downloadCache = ('', const []);
   List<DownloadJob> _visibleDownloads = const [];
-
-  @override
-  Future<AppUpdate?> checkUpdate(String version) async {
-    final result = await _call({'action': 'checkUpdate', 'version': version});
-    return result['available'] == true
-        ? AppUpdate(
-            version: result['version'] as String,
-            url: result['url'] as String,
-          )
-        : null;
-  }
-
-  @override
-  Future<void> reportUsage(String version) async {
-    await _call({'action': 'reportUsage', 'version': version});
-  }
 
   @override
   Future<bool> sourceDevices(String source, {bool register = false}) async =>

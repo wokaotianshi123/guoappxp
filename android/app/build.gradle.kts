@@ -5,7 +5,11 @@ plugins {
     id("dev.flutter.flutter-gradle-plugin")
 }
 
-val appPackageName = System.getenv("PACKAGE_NAME")?.trim()?.takeIf { it.isNotEmpty() } ?: "com.guoapp.app"
+// 安卓包名走单独入口，不复用 PACKAGE_NAME：后者同时决定 Windows / iOS / macOS 的
+// bundle id 与 Windows 的 userdata 目录，改它会把老用户的本地数据“搬走”。
+// 需要换包名时设 ANDROID_PACKAGE_NAME，或直接改下面的默认值。
+val appPackageName = System.getenv("ANDROID_PACKAGE_NAME")?.trim()?.takeIf { it.isNotEmpty() }
+    ?: "com.guoguo.app"
 
 val releaseKey = rootProject.file("key.properties")
 val releaseProperties = Properties()

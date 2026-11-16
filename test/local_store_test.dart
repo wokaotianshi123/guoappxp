@@ -86,7 +86,6 @@ void main() {
         'themeColor': 'teal',
         'followSystemColor': false,
         'autoExport': true,
-        'checkUpdates': false,
         'sideBarExpanded': false,
         'followChecks.default': jsonEncode({
           first.id: [1000, 2],
@@ -107,7 +106,6 @@ void main() {
       expect(store.themeColor, ThemeColor.teal);
       expect(store.followSystemColor, isFalse);
       expect(store.autoExport, isTrue);
-      expect(store.checkUpdates, isFalse);
       expect(store.sideBarExpanded, isFalse);
 
       expect(store.preferences.getKeys(), {'sideBarExpanded', 'plugin_secret'});
@@ -397,7 +395,6 @@ void main() {
       await store.setFollowSystemColor(false);
       await store.setThemeColor(ThemeColor.violet);
       await store.setAutoExport(true);
-      await store.setShareUsage(false);
       final backup = await store.exportBackup();
       expect(backup, isNot(contains('stays-local')));
 
@@ -407,7 +404,6 @@ void main() {
       await store.setFollowSystemColor(true);
       await store.setThemeColor(ThemeColor.blue);
       await store.setAutoExport(false);
-      await store.setShareUsage(true);
       await store.importBackup(backup);
 
       final restarted = await restartStore(store);
@@ -417,7 +413,6 @@ void main() {
       expect(restarted.followSystemColor, isFalse);
       expect(restarted.themeColor, ThemeColor.violet);
       expect(restarted.autoExport, isTrue);
-      expect(restarted.shareUsage, isFalse);
       expect(restarted.preferences.getString('plugin_secret'), 'stays-local');
     });
 
@@ -506,7 +501,7 @@ void main() {
       ('another app', (data) => data['app'] = 'other'),
       ('an unknown theme mode', (data) => data['themeMode'] = 'sepia'),
       ('an unknown theme color', (data) => data['themeColor'] = 'gold'),
-      ('a non-boolean setting', (data) => data['checkUpdates'] = 'yes'),
+      ('a non-boolean setting', (data) => data['pureBlack'] = 'yes'),
       (
         'a profile id with a path',
         (data) => (data['profiles'] as List).add({
@@ -691,7 +686,6 @@ void main() {
     });
     expect(leftover, ['locked.log']);
     expect(store.preferences.getKeys(), isEmpty);
-    await store.setCheckUpdates(false);
     expect(store.files.root.existsSync(), isFalse);
   });
 }

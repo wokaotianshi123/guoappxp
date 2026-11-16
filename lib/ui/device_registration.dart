@@ -5,7 +5,6 @@ import '../local_store.dart';
 import '../models.dart';
 import 'app_scope.dart';
 import 'settings/settings_page.dart';
-import 'update_prompt.dart';
 import 'widgets/focus_ring.dart';
 
 var _devicesReady = false;
@@ -42,8 +41,6 @@ class _DeviceRegistrationGateState extends State<DeviceRegistrationGate> {
     ];
     var ready = pending.isEmpty;
     if (!ready && mounted) {
-      await runStartupChecks(context, widget.store);
-      if (!mounted) return;
       ready =
           await showDialog<bool>(
             context: context,

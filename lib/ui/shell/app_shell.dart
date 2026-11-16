@@ -16,7 +16,6 @@ import '../follow/follow_page.dart';
 import '../history/history_page.dart';
 import '../audiobook/audiobook_screen.dart';
 import '../mine/mine_page.dart';
-import '../update_prompt.dart';
 import '../modules/module_install.dart';
 import '../widgets/bar_button.dart';
 import '../theme/motion.dart';
@@ -111,7 +110,6 @@ class _AppShellState extends State<AppShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       unawaited(offerRestoredModules(context, widget.store));
-      runStartupChecks(context, widget.store);
     });
   }
 

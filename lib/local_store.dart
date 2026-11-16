@@ -23,17 +23,13 @@ const _themeModes = {'light', 'dark', 'system'};
 const coverBlurLaunchModes = {'off': '关闭', 'adult': '仅限制级', 'all': '全部'};
 const _movedFlags = {
   'followSystemColor': 'followSystemColor',
-  'checkUpdates': 'checkUpdates',
-  'shareUsage': 'shareUsage',
   'autoExport': 'exportAfterDownload',
   'deleteAfterAutoExport': 'deleteAfterAutoExport',
   'deleteAfterManualExport': 'deleteAfterManualExport',
   'televisionKeyboard': 'televisionKeyboard',
 };
-const _movedTexts = {'themeColor', 'ignoredUpdate'};
+const _movedTexts = {'themeColor'};
 const _backupFlags = {
-  'checkUpdates',
-  'shareUsage',
   'exportAfterDownload',
   'deleteAfterAutoExport',
   'deleteAfterManualExport',
@@ -529,15 +525,9 @@ class LocalStore extends ChangeNotifier {
     _ => _flag('blurCoversOnLaunch', false) ? 'all' : 'off',
   };
   bool get blurAllCovers => _flag('blurAllCovers', true);
-  bool get checkUpdates => _flag('checkUpdates', true);
   bool get autoExport => _flag('exportAfterDownload', false);
   bool get deleteAfterAutoExport => _flag('deleteAfterAutoExport', false);
   bool get deleteAfterManualExport => _flag('deleteAfterManualExport', false);
-  bool get shareUsage => _flag('shareUsage', true);
-  String get ignoredUpdate => switch (_settings['ignoredUpdate']) {
-    final String version => version,
-    _ => '',
-  };
 
   String get source {
     if (locked) return '';
@@ -676,16 +666,12 @@ class LocalStore extends ChangeNotifier {
       ? _setting('blurCoversLaunch', value)
       : Future.value();
   Future<void> setBlurAllCovers(bool value) => _setting('blurAllCovers', value);
-  Future<void> setCheckUpdates(bool value) => _setting('checkUpdates', value);
   Future<void> setAutoExport(bool value) =>
       _setting('exportAfterDownload', value);
   Future<void> setDeleteAfterAutoExport(bool value) =>
       _setting('deleteAfterAutoExport', value);
   Future<void> setDeleteAfterManualExport(bool value) =>
       _setting('deleteAfterManualExport', value);
-  Future<void> setShareUsage(bool value) => _setting('shareUsage', value);
-  Future<void> setIgnoredUpdate(String version) =>
-      _setting('ignoredUpdate', version);
   Future<void> setPlaybackPreferences(PlaybackPreferences value) {
     PlaybackPreferences.fromJson(value.toJson());
     return _userSetting('playback', value.toJson());
@@ -1100,8 +1086,6 @@ class LocalStore extends ChangeNotifier {
       'blurCoversLaunch': blurCoversLaunch,
       'blurAllCovers': blurAllCovers,
       'forceLogin': forceLogin,
-      'checkUpdates': checkUpdates,
-      'shareUsage': shareUsage,
       'exportAfterDownload': autoExport,
       'deleteAfterAutoExport': deleteAfterAutoExport,
       'deleteAfterManualExport': deleteAfterManualExport,

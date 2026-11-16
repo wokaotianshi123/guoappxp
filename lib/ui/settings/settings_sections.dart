@@ -15,7 +15,6 @@ import '../../resource_settings_editor.dart';
 import '../../window_on_top.dart';
 import '../app_scope.dart';
 import '../player/danmaku_settings.dart';
-import '../update_prompt.dart';
 import '../users/users_view.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/form_text_field.dart';
@@ -511,21 +510,6 @@ class SettingsSection extends StatelessWidget {
             title: appName,
             value: version.isEmpty ? '版本未知' : '版本 $version',
           ),
-          const _UpdateCheckTile(),
-          SwitchTile(
-            title: '启动时检查更新',
-            subtitle: '有新版本时每次启动都会提示，可在提示里忽略此版本',
-            value: store.checkUpdates,
-            onChanged: (value) =>
-                saveSetting(context, () => store.setCheckUpdates(value)),
-          ),
-          SwitchTile(
-            title: '匿名使用统计',
-            subtitle: '启动时发送随机编号、版本号、平台和所属版本，用于统计使用人数',
-            value: store.shareUsage,
-            onChanged: (value) =>
-                saveSetting(context, () => store.setShareUsage(value)),
-          ),
         ],
       ),
       for (final links in _links)
@@ -570,34 +554,6 @@ class SettingsSection extends StatelessWidget {
     ),
     _BackupCard(store: store),
   ];
-}
-
-class _UpdateCheckTile extends StatefulWidget {
-  const _UpdateCheckTile();
-
-  @override
-  State<_UpdateCheckTile> createState() => _UpdateCheckTileState();
-}
-
-class _UpdateCheckTileState extends State<_UpdateCheckTile> {
-  var _busy = false;
-
-  Future<void> _check() async {
-    setState(() => _busy = true);
-    try {
-      await checkUpdateManually(context);
-    } finally {
-      if (mounted) setState(() => _busy = false);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) => SettingsTile(
-    title: '检查更新',
-    value: _busy ? '检查中' : null,
-    enabled: !_busy,
-    onTap: _check,
-  );
 }
 
 class _BackupCard extends StatefulWidget {
