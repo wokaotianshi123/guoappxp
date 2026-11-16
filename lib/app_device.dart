@@ -160,6 +160,22 @@ class AppDevice {
       return null;
     }
   }
+
+  /// 让 Windows runner 修一次输入法上下文。
+  ///
+  /// Flutter 3.47.x 的 Windows 嵌入层在窗口失焦再回来后，子窗口的 IMM32→TSF
+  /// 会话会过期：键盘消息照常到达，但中文候选框再也不出现，表现为「只能输入
+  /// 字母」（flutter/flutter#190042）。runner 在窗口重新获得焦点时已经会修，
+  /// 这里再补一次「输入框拿到焦点」的触发，覆盖窗口一直有焦点、只是应用内换了
+  /// 输入框的场景。其它平台没有这个方法，调用失败直接忽略。
+  static Future<void> repairIme() async {
+    if (defaultTargetPlatform != TargetPlatform.windows) return;
+    try {
+      await channel.invokeMethod<void>('repairIme');
+    } catch (_) {
+      // 旧版 runner 没有这个方法，或当前不是 Windows 原生宿主，忽略即可。
+    }
+  }
 }
 
 enum PlayerOrientation {
