@@ -177,6 +177,29 @@ class _ChoicePanel<T> extends StatelessWidget {
             ],
           ),
         ),
+        // 附加操作放在右上角（原来在面板底部，手机上正好压在系统返回手势 /
+        // 导航条上方，容易误触），手机只显示图标，其余形态带上文字。
+        if (action case final action?)
+          FocusRing(
+            radius: 999,
+            child: form == FormFactor.phone
+                ? IconButton(
+                    tooltip: action.label,
+                    onPressed: () {
+                      Navigator.pop(context);
+                      action.onPressed();
+                    },
+                    icon: Icon(action.icon),
+                  )
+                : TextButton.icon(
+                    onPressed: () {
+                      Navigator.pop(context);
+                      action.onPressed();
+                    },
+                    icon: Icon(action.icon, size: 18),
+                    label: Text(action.label),
+                  ),
+          ),
         if (form == FormFactor.phone)
           IconButton(
             tooltip: '关闭',
@@ -225,21 +248,6 @@ class _ChoicePanel<T> extends StatelessWidget {
               ),
             ),
           ),
-          if (action case final action?)
-            Padding(
-              padding: const EdgeInsets.only(top: 8),
-              child: FocusRing(
-                radius: 999,
-                child: TextButton.icon(
-                  onPressed: () {
-                    Navigator.pop(context);
-                    action.onPressed();
-                  },
-                  icon: Icon(action.icon),
-                  label: Text(action.label),
-                ),
-              ),
-            ),
         ],
       ),
     );

@@ -303,18 +303,23 @@ class LocalStore extends ChangeNotifier {
   List<CustomSourceSite> _customSources = [];
   void _restoreCustomSources() {
     final raw = _settings['customSources'];
-    if (raw is! String || raw.isEmpty) return;
-    try {
-      final rows = jsonDecode(raw);
-      if (rows is! List) return;
-      _customSources = [
-        for (final row in rows)
-          if (row is Map)
-            CustomSourceSite.fromJson(Map<String, dynamic>.from(row)),
-      ];
-    } catch (_) {
-      _customSources = [];
+    if (raw is String && raw.isNotEmpty) {
+      try {
+        final rows = jsonDecode(raw);
+        if (rows is List) {
+          _customSources = [
+            for (final row in rows)
+              if (row is Map)
+                CustomSourceSite.fromJson(Map<String, dynamic>.from(row)),
+          ];
+        }
+      } catch (_) {
+        _customSources = [];
+      }
     }
+    // 自定义源不在核心注册表里，显示名只能靠这张表（详情页 / 播放页 /
+    // 搜索副标题都走 SourceSite.byId）。
+    SourceSite.installCustom(_customSources.map((site) => site.asSourceSite));
   }
 
   List<CustomSourceSite> get customSources => List.unmodifiable(_customSources);
@@ -335,6 +340,7 @@ class LocalStore extends ChangeNotifier {
       failure = error is Error ? error : StateError('$error');
     }
     _customSources = sorted;
+    SourceSite.installCustom(sorted.map((site) => site.asSourceSite));
     _notify();
     if (failure != null) throw failure;
   }

@@ -440,36 +440,42 @@ class _SearchPageState extends State<SearchPage> {
   Widget _sourceBar(BuildContext context, double? inset) {
     final sources = widget.store.sources;
     final all = _picked.length == sources.length;
+    final pad = inset ?? 16;
+    // 一行横向滚动，不换行：源一多（内置 + 模块 + 自定义）Wrap 会往上长，
+    // 把下面的结果区挤成 0 高度，看着就是「整页不能上下滑、结果出不来」。
     return Padding(
-      padding: EdgeInsets.fromLTRB(inset ?? 16, 8, inset ?? 16, 0),
-      child: Wrap(
-        spacing: 8,
-        runSpacing: 8,
-        children: [
-          FocusRing(
-            radius: 999,
-            child: FilterChip(
-              avatar: Icon(
-                all ? Icons.travel_explore_rounded : Icons.public_rounded,
-                size: 16,
-              ),
-              label: const Text('全部源'),
-              selected: all,
-              onSelected: _toggleAllSources,
-              visualDensity: VisualDensity.compact,
-            ),
-          ),
-          for (final site in sources)
+      padding: EdgeInsets.fromLTRB(pad, 8, 0, 0),
+      child: SingleChildScrollView(
+        scrollDirection: Axis.horizontal,
+        padding: EdgeInsets.only(right: pad),
+        child: Row(
+          spacing: 8,
+          children: [
             FocusRing(
               radius: 999,
               child: FilterChip(
-                label: Text(site.name),
-                selected: _picked.contains(site.id),
-                onSelected: (value) => _toggleSource(site.id, value),
+                avatar: Icon(
+                  all ? Icons.travel_explore_rounded : Icons.public_rounded,
+                  size: 16,
+                ),
+                label: const Text('全部源'),
+                selected: all,
+                onSelected: _toggleAllSources,
                 visualDensity: VisualDensity.compact,
               ),
             ),
-        ],
+            for (final site in sources)
+              FocusRing(
+                radius: 999,
+                child: FilterChip(
+                  label: Text(site.name),
+                  selected: _picked.contains(site.id),
+                  onSelected: (value) => _toggleSource(site.id, value),
+                  visualDensity: VisualDensity.compact,
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }

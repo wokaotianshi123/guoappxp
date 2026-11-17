@@ -71,9 +71,24 @@ class SourceSite {
   static List<SourceSite> _all = const [];
   static List<SourceSite> _available = const [];
 
+  /// 自定义源（`custom:` 前缀）由本机配置，不在核心的注册源表里。但详情页、
+  /// 播放页、追剧 / 历史 / 搜索结果都用 [byId] 取显示名，没有这张表就会把
+  /// `custom:3f2a…` 原样显示给用户。LocalStore 加载 / 同步自定义源后写进来。
+  static final Map<String, SourceSite> _custom = {};
+
   static void install(Iterable<SourceSite> sites) {
     _all = List.unmodifiable(sites.where((site) => site.id.isNotEmpty));
     _available = List.unmodifiable(_all.where((site) => site.available));
+  }
+
+  static void installCustom(Iterable<SourceSite> sites) {
+    final custom = {
+      for (final site in sites)
+        if (site.id.isNotEmpty) site.id: site,
+    };
+    _custom
+      ..clear()
+      ..addAll(custom);
   }
 
   static List<SourceSite> get allValues => _all;
@@ -92,10 +107,14 @@ class SourceSite {
   static bool isKnown(String id) => _all.any((site) => site.id == id);
   static bool isAdult(String id) =>
       _all.any((site) => site.id == id && site.adult);
-  static SourceSite byId(String id) => _all.firstWhere(
-    (site) => site.id == id,
-    orElse: () => SourceSite(id, id, '', available: false),
-  );
+  static SourceSite byId(String id) {
+    for (final site in _all) {
+      if (site.id == id) return site;
+    }
+    // 自定义源没有注册进核心，但显示名要从本机配置里取；
+    // 都不认识时才退化成把 id 当名字。
+    return _custom[id] ?? SourceSite(id, id, '', available: false);
+  }
 }
 
 class SourceGroup {

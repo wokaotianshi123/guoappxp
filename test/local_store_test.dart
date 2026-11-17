@@ -728,6 +728,10 @@ void main() {
       ),
     ]);
     expect(store.sources.map((site) => site.id), contains(customId));
+    // 详情页 / 播放页 / 搜索副标题都靠 SourceSite.byId 取显示名，
+    // 自定义源没注册进核心，必须能从本机配置里解析出真名，而不是 custom:xxx。
+    expect(SourceSite.byId(customId).name, 'XBPQ 测试源');
+    expect(SourceSite.byId(customId).available, isTrue);
     final missing = store.missingSourceRecords();
     expect(missing.follows, isEmpty);
     expect(missing.history, isEmpty);

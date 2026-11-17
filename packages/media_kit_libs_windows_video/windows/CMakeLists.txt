@@ -74,6 +74,20 @@ duanju_native_archive(
 )
 file(COPY "${LIBMPV_SRC}/include/mpv/" DESTINATION "${LIBMPV_SRC}/include")
 
+# libmpv 自 2026-08 起的官方构建把 Vulkan loader 静态写进导入表，
+# 缺少 vulkan-1.dll 时 libmpv-2.dll 根本加载不起来（进程启动即报
+# 「找不到 vulkan-1.dll」，随后 guoapp.exe 直接退出）。以前这个 DLL 是由
+# 一起打包的 ANGLE 顺带提供的，去掉 ANGLE 之后必须自己带上。
+# 显卡驱动通常会装它，但旧卡 / 微软基本显示驱动没有，所以随包发一份。
+set(VULKAN_SRC "${CMAKE_BINARY_DIR}/vulkan")
+duanju_native_archive(
+  "ANGLE-v1.0.1.7z"
+  "https://github.com/Xanerix/guoapp/releases/download/windows-native-deps/ANGLE-v1.0.1.7z"
+  "cc5911bb15d596fd5a2b362613ad35b7093b427117269a7359054a65746a5f9a"
+  "${VULKAN_SRC}"
+  "vulkan-1.dll"
+)
+
 set(PLUGIN_NAME "media_kit_libs_windows_video_plugin")
 add_library(${PLUGIN_NAME} SHARED
   "include/media_kit_libs_windows_video/media_kit_libs_windows_video_plugin_c_api.h"
@@ -87,5 +101,6 @@ target_link_libraries(${PLUGIN_NAME} PRIVATE flutter flutter_wrapper_plugin)
 
 set(media_kit_libs_windows_video_bundled_libraries
   "${LIBMPV_SRC}/libmpv-2.dll"
+  "${VULKAN_SRC}/vulkan-1.dll"
   PARENT_SCOPE
 )
