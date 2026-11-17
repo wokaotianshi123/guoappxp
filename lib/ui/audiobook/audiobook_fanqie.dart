@@ -25,9 +25,8 @@ const fanqieAudiobookBoards = [
   FanqieAudiobookBoard('女生听书', 17, 0),
 ];
 
-/// 听书页顶部的两个书源。红果听书和番茄畅听是同一后端（红果专辑在
-/// `api.novelfm.com` 上按同一 `book_id` 可直接查详情与目录），区别在于
-/// 红果听书吃官方书城的听书专辑（带主播、集数、评分），番茄听书吃榜单。
+/// 听书页的书源（番茄听书）。`type` 沿用旧值 1，保证书签、进度、
+/// 下载等本地数据与既有逻辑兼容。
 class FanqieAudiobookOrigin {
   const FanqieAudiobookOrigin(this.name, this.type);
 
@@ -36,7 +35,6 @@ class FanqieAudiobookOrigin {
 }
 
 const fanqieAudiobookOrigins = [
-  FanqieAudiobookOrigin('红果听书', 0),
   FanqieAudiobookOrigin('番茄听书', 1),
 ];
 
@@ -151,10 +149,8 @@ class FanqieBook {
   final String author;
   final String category;
 
-  /// 书源：`hongguo` = 红果听书（听书 / 小说），其余按番茄听书处理。
+  /// 书源标识，恒为 `fanqie`。保留字段以兼容既有落盘数据。
   final String source;
-
-  bool get isHongguo => source == 'hongguo';
 
   /// 有声书主播名；为空说明这条没有真人录制。
   final String anchor;
@@ -259,29 +255,6 @@ class FanqieOfficialResult {
   final List<String> tabs;
 }
 
-/// 红果书城全量书池的一次返回。
-///
-/// 全量翻页很慢（近百次请求、受站点限流约 70 秒），core 侧因此带缓存：
-/// [loading] 表示后台正在抓（此时 [books] 可能是空或旧数据），
-/// [stale] 表示返回的是过期缓存、正在后台刷新。
-class FanqieBookPool {
-  const FanqieBookPool({
-    required this.books,
-    this.loading = false,
-    this.stale = false,
-    this.total = 0,
-  });
-
-  final List<FanqieBook> books;
-  final bool loading;
-  final bool stale;
-
-  /// 服务端书池的完整长度（[books] 是增量时它比 books.length 大）。
-  final int total;
-
-  bool get isEmpty => books.isEmpty;
-}
-
 class FanqieChapterPage {
   const FanqieChapterPage({
     required this.chapters,
@@ -303,10 +276,6 @@ class FanqieAudiobookApi {
   /// 未注入仓库时（单测或独立工具）才回落到 Dart 直连。
   final AppRepository? repository;
   final Map<String, List<FanqieChapter>> _chapters = {};
-
-  /// 红果书城按页请求的单飞表：同一 category+page 在途时复用同一个 Future。
-  final Map<String, Future<FanqieSearchPage>> _catalogInflight = {};
-  final Map<String, _HongguoCatalogCache> _catalogCache = {};
 
   /// 实时拉取官方书城某个一级分类（tab_type）。
   Future<FanqieOfficialPage> officialTab(int tabType) async {
@@ -447,141 +416,10 @@ class FanqieAudiobookApi {
     return fanqieSearchPage(jsonDecode(await _fetch(url)));
   }
 
-  // —— 红果听书（听书 / 小说）：数据来自红果 App 官方书城，与短剧共用设备签名 ----
-
-  /// 拉红果书城整个频道的书池。
-  ///
-  /// 书城单页只有 12 本，靠 pool 接口一次翻到底，否则列表会停在十几本。
-  /// core 侧带进程内缓存 + 后台增量抓取。
-  ///
-  /// [since] 传调用方**已持有的书数**时只返回新增部分（配合 [FanqieBookPool.total]
-  /// 追加即可）。轮询务必用增量：上千本书含封面 / 简介，每次全量过 IPC 会拖垮界面。
-  Future<FanqieBookPool> hongguoPool(String category, {int since = 0}) async {
-    final core = repository;
-    if (core == null) {
-      return const FanqieBookPool(books: [], loading: false);
-    }
-    final reply = await core.audiobookHongguoPool(category, since: since);
-    return FanqieBookPool(
-      books: fanqieHongguoBooks(reply),
-      loading: reply['loading'] == true,
-      stale: reply['stale'] == true,
-      total: (reply['total'] as num?)?.toInt() ?? 0,
-    );
-  }
-
-  /// 红果听书**按需分页**入口：只取第 [page] 页，并带回上游的 hasMore。
-  ///
-  /// 与 [hongguoPool] 的关键区别：这个 action 不会触发 core 的后台全量翻页，
-  /// 页面停留期间也不会持续轮询。点开书源取第 1 页、用户翻页取下一页，
-  /// 取完即停，不与其他书源 / 短剧请求争抢限流资源，也不把上千本书反复
-  /// 序列化过 IPC——这是原先打开软件就卡的主因。
-  Future<FanqieSearchPage> hongguoCatalogPage(
-    String category, {
-    int page = 1,
-  }) async {
-    final core = repository;
-    if (core == null) {
-      return const FanqieSearchPage(books: [], hasMore: false);
-    }
-    final number = page < 1 ? 1 : page;
-    final key = '$category:$number';
-    // 切书源 / 连点会在 Go 核心里堆积「不可取消」的设备签名请求：
-    // ++_poolGeneration 只让 Dart 丢弃旧结果，核心那边仍在排队等限流 lane，
-    // 越切越慢直到假死。这里做单飞 + 短缓存：同一页在途时所有调用者复用
-    // 同一个 Future，两分钟内来回切源直接吃缓存，核心侧永远只跑一个请求。
-    final inflight = _catalogInflight[key];
-    if (inflight != null) return inflight;
-    final cached = _catalogCache[key];
-    if (cached != null &&
-        DateTime.now().difference(cached.time) < const Duration(minutes: 2)) {
-      return cached.page;
-    }
-    final future = () async {
-      final reply = await core.audiobookHongguoCatalog(category, number);
-      return FanqieSearchPage(
-        books: fanqieHongguoBooks(reply),
-        hasMore: reply['hasMore'] == true,
-      );
-    }();
-    _catalogInflight[key] = future;
-    try {
-      final result = await future;
-      _catalogCache[key] = _HongguoCatalogCache(result, DateTime.now());
-      return result;
-    } finally {
-      _catalogInflight.remove(key);
-    }
-  }
-
-  /// 连续取 [pages] 页（需要一次多页时用），按 book_id 去重。
-  Future<List<FanqieBook>> hongguoCatalog(
-    String category, {
-    int page = 1,
-    int pages = 1,
-  }) async {
-    final out = <FanqieBook>[];
-    final seen = <String>{};
-    for (var index = 0; index < pages; index++) {
-      final result = await hongguoCatalogPage(category, page: page + index);
-      for (final book in result.books) {
-        if (seen.add(book.id)) out.add(book);
-      }
-    }
-    return out;
-  }
-
-  Future<FanqieSearchPage> hongguoSearch(
-    String category,
-    String query, {
-    int page = 1,
-  }) async {
-    final text = query.trim();
-    final core = repository;
-    if (text.isEmpty || core == null) {
-      return const FanqieSearchPage(books: [], hasMore: false);
-    }
-    final reply = await core.audiobookHongguoSearch(category, text, page);
-    return FanqieSearchPage(
-      books: fanqieHongguoBooks(reply),
-      hasMore: reply['hasMore'] == true,
-    );
-  }
-
-  Future<List<FanqieChapter>> _hongguoChapters(String bookId) async {
-    final core = repository;
-    if (core == null) return const [];
-    final reply = await core.audiobookHongguoChapters(bookId);
-    final rows = reply['chapters'];
-    if (rows is! List) return const [];
-    final chapters = <FanqieChapter>[];
-    for (final row in rows) {
-      if (row is! Map) continue;
-      final raw = '${row['id'] ?? ''}'.trim();
-      if (raw.isEmpty) continue;
-      // 章节 ID 也要带 hg: 前缀：播放与下载都按前缀判断书源，
-      // 少了前缀会走番茄接口（红果 item_id 拿去查番茄必然拿不到地址）。
-      final id = raw.startsWith(fanqieHongguoPrefix)
-          ? raw
-          : '$fanqieHongguoPrefix$raw';
-      chapters.add(
-        FanqieChapter(
-          id: id,
-          title: '${row['title'] ?? ''}'.trim(),
-          order: (row['order'] as num?)?.toInt() ?? chapters.length + 1,
-          locked: row['locked'] == true,
-        ),
-      );
-    }
-    return chapters;
-  }
-
   Future<List<FanqieChapter>> allChapters(String bookId) async {
     final cached = _chapters[bookId];
     if (cached != null) return List<FanqieChapter>.of(cached);
-    final all = bookId.startsWith(fanqieHongguoPrefix)
-        ? await _hongguoChapters(bookId.substring(fanqieHongguoPrefix.length))
-        : await _loadChapters(bookId);
+    final all = await _loadChapters(bookId);
     _chapters[bookId] = all;
     return List<FanqieChapter>.of(all);
   }
@@ -632,40 +470,6 @@ class FanqieAudiobookApi {
     }
     return _defaultGet(url, headers: headers);
   }
-}
-
-/// 红果听书的书籍 ID 前缀：两边都是纯数字 book_id，加前缀区分书源，
-/// 书架、进度、下载目录也随之隔离。
-const fanqieHongguoPrefix = 'hg:';
-
-/// 解析红果书城 / 搜索的 `{books: [...]}` 回包。
-List<FanqieBook> fanqieHongguoBooks(Object? decoded) {
-  final root = decoded is Map ? decoded : const {};
-  final rows = root['books'];
-  if (rows is! List) return const [];
-  final books = <FanqieBook>[];
-  for (final row in rows) {
-    if (row is! Map) continue;
-    final rawId = '${row['id'] ?? ''}'.trim();
-    final title = '${row['title'] ?? ''}'.trim();
-    if (rawId.isEmpty || title.isEmpty) continue;
-    books.add(
-      FanqieBook(
-        id: rawId.startsWith(fanqieHongguoPrefix)
-            ? rawId
-            : '$fanqieHongguoPrefix$rawId',
-        title: title,
-        author: '${row['author'] ?? ''}'.trim(),
-        category: '${row['category'] ?? ''}'.trim(),
-        cover: '${row['cover'] ?? ''}'.trim(),
-        intro: '${row['intro'] ?? ''}'.trim(),
-        anchor: '${row['anchor'] ?? ''}'.trim(),
-        board: (row['board'] as num?)?.toInt() ?? 0,
-        source: 'hongguo',
-      ),
-    );
-  }
-  return books;
 }
 
 FanqieSearchPage fanqieSearchPage(Object? decoded) {
@@ -1009,26 +813,6 @@ List<String> fanqieCategoriesFrom(
   return result;
 }
 
-/// 红果听书的分类：直接按书池里真实出现的题材统计，不套番茄的固定分类表。
-///
-/// 红果的题材名（战神赘婿 / 科幻末世 / 都市高武…）与番茄畅听的分类词完全不同，
-/// 用番茄那套顺序过滤会把几乎所有题材都漏掉，分类条只剩零星几个。
-List<String> fanqieHongguoCategoriesFrom(Iterable<FanqieBook> pool) {
-  final counts = <String, int>{};
-  for (final book in pool) {
-    for (final tag in book.category.split(RegExp(r'[·,，、/\s|]+'))) {
-      final name = tag.trim();
-      if (name.isNotEmpty) counts[name] = (counts[name] ?? 0) + 1;
-    }
-  }
-  final names = counts.keys.toList()
-    ..sort((a, b) {
-      final byCount = counts[b]!.compareTo(counts[a]!);
-      return byCount != 0 ? byCount : a.compareTo(b);
-    });
-  return names.length > 40 ? names.sublist(0, 40) : names;
-}
-
 /// 在全量书池里按关键词匹配书名 / 作者 / 分类 / 简介。
 ///
 /// 服务端搜索里听书（genre=4）结果很稀疏，单页常常 0～2 本，导致搜索看起来
@@ -1127,12 +911,4 @@ Future<String> _defaultGet(String url, {Map<String, String>? headers}) async {
   } finally {
     client.close(force: true);
   }
-}
-
-/// 红果书城单页结果的短时缓存项。
-class _HongguoCatalogCache {
-  const _HongguoCatalogCache(this.page, this.time);
-
-  final FanqieSearchPage page;
-  final DateTime time;
 }

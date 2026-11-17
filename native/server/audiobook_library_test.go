@@ -160,9 +160,7 @@ func TestAbLibraryQueryPagingAndCategory(t *testing.T) {
 	}
 }
 
-// 番茄听书现在是「畅听榜单 + 官方书城听书专辑」的合并池：原来红果听书的
-// 真人剧内容并入番茄听书后，两个 tab 不再需要互斥；红果听书本身走红果接口，
-// query 层仍保留官方池作为兜底。
+// 番茄听书是「畅听榜单 + 官方书城听书专辑」的合并池。
 func TestAbLibraryQuerySeparatesOrigins(t *testing.T) {
 	store := &audiobookLibraryStore{
 		boards: map[string][]audiobookBook{
@@ -179,19 +177,6 @@ func TestAbLibraryQuerySeparatesOrigins(t *testing.T) {
 	store.rebuildLocked()
 	store.mu.Unlock()
 
-	hongguo := store.query(abOriginHongguo, 0, "", "", 1, 10)
-	if hongguo["origin"] != abOriginHongguo || hongguo["total"].(int) != 2 {
-		t.Fatalf("红果听书书池 = %v / %v", hongguo["origin"], hongguo["total"])
-	}
-	official := hongguo["books"].([]map[string]any)
-	modes := map[string]string{}
-	for _, book := range official {
-		modes[book["id"].(string)] = book["voiceMode"].(string)
-	}
-	if modes["off-1"] != "真人录音" || modes["off-2"] != "AI 朗读" {
-		t.Fatalf("有声书类型标签 = %v", modes)
-	}
-
 	fanqie := store.query(abOriginFanqie, 0, "", "", 1, 10)
 	merged := fanqie["books"].([]map[string]any)
 	if len(merged) != 3 {
@@ -204,15 +189,22 @@ func TestAbLibraryQuerySeparatesOrigins(t *testing.T) {
 	if !ids["rank-1"] || !ids["off-1"] || !ids["off-2"] {
 		t.Fatalf("番茄听书书池缺少来源：%v", ids)
 	}
+	modes := map[string]string{}
+	for _, book := range merged {
+		modes[book["id"].(string)] = book["voiceMode"].(string)
+	}
+	if modes["off-1"] != "真人录音" || modes["off-2"] != "AI 朗读" {
+		t.Fatalf("有声书类型标签 = %v", modes)
+	}
 
-	// 不传 origin 时默认红果听书。
-	if got := store.query("", 0, "", "", 1, 10)["origin"]; got != abOriginHongguo {
-		t.Fatalf("默认书源 = %v, want %v", got, abOriginHongguo)
+	// 不传 origin 时默认番茄听书。
+	if got := store.query("", 0, "", "", 1, 10)["origin"]; got != abOriginFanqie {
+		t.Fatalf("默认书源 = %v, want %v", got, abOriginFanqie)
 	}
 }
 
-// 红果听书搜索不能被番茄榜单的远程结果污染。
-func TestAbLibrarySearchKeepsHongguoPoolOnly(t *testing.T) {
+// 番茄听书搜索要能用远程结果补书。
+func TestAbLibrarySearchWithRemote(t *testing.T) {
 	original := abRemoteSearchFunc
 	abRemoteSearchFunc = func(keyword string) []audiobookBook {
 		return []audiobookBook{{ID: "remote-1", Title: "远程榜单书", Board: 0}}
@@ -229,12 +221,6 @@ func TestAbLibrarySearchKeepsHongguoPoolOnly(t *testing.T) {
 	store.rebuildLocked()
 	store.mu.Unlock()
 
-	for _, book := range store.query(abOriginHongguo, 0, "", "书", 1, 10)["books"].([]map[string]any) {
-		if book["id"] == "remote-1" {
-			t.Fatal("红果听书搜索混入了番茄榜单的书")
-		}
-	}
-	// 番茄听书仍然要能用到远程搜索补书。
 	found := false
 	for _, book := range store.query(abOriginFanqie, 0, "", "书", 1, 10)["books"].([]map[string]any) {
 		if book["id"] == "remote-1" {

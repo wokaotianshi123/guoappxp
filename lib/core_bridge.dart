@@ -280,38 +280,6 @@ abstract class AppRepository {
     String url, {
     Map<String, String> headers = const {},
   }) async => throw AppFailure('当前环境不支持听书源');
-
-  // ---- 红果听书（听书 / 小说）：与番茄听书并列的第二个书源 ----
-
-  /// 红果书城目录。category 是 `listen`（听书）或 `novel`（小说）。
-  Future<Map<String, dynamic>> audiobookHongguoCatalog(
-    String category,
-    int page,
-  ) async => throw AppFailure('当前环境不支持红果听书');
-
-  /// 红果书城全量书池：一直翻到底，首屏建池用。
-  /// [since] 传调用方已持有的书数时只回增量（轮询务必用增量，别每次拉全量）。
-  Future<Map<String, dynamic>> audiobookHongguoPool(
-    String category, {
-    int since = 0,
-  }) async => throw AppFailure('当前环境不支持红果听书');
-
-  /// 红果书城搜索，按频道（听书 / 小说）各查各的。
-  Future<Map<String, dynamic>> audiobookHongguoSearch(
-    String category,
-    String query,
-    int page,
-  ) async => throw AppFailure('当前环境不支持红果听书');
-
-  /// 红果听书详情 + 全量目录。
-  Future<Map<String, dynamic>> audiobookHongguoChapters(String bookId) async =>
-      throw AppFailure('当前环境不支持红果听书');
-
-  /// 红果听书单章音频（加密音频带 CENC key）。
-  Future<Map<String, dynamic>> audiobookHongguoMedia(
-    String bookId,
-    String chapterId,
-  ) async => throw AppFailure('当前环境不支持红果听书');
 }
 
 class NativeRepository extends AppRepository {
@@ -1436,10 +1404,8 @@ class NativeRepository extends AppRepository {
   });
 
   @override
-  Future<Map<String, dynamic>> audiobookText(String chapterId) => _call({
-    'action': 'audiobookText',
-    'category': _stripHongguoPrefix(chapterId),
-  });
+  Future<Map<String, dynamic>> audiobookText(String chapterId) =>
+      _call({'action': 'audiobookText', 'category': chapterId});
 
   @override
   Future<String> audiobookFetch(
@@ -1457,62 +1423,4 @@ class NativeRepository extends AppRepository {
     }
     return body;
   }
-
-  @override
-  Future<Map<String, dynamic>> audiobookHongguoCatalog(
-    String category,
-    int page,
-  ) => _call({
-    'action': 'audiobookHongguoCatalog',
-    'category': category,
-    'page': page,
-  });
-
-  @override
-  Future<Map<String, dynamic>> audiobookHongguoPool(
-    String category, {
-    int since = 0,
-  }) => _call({
-    'action': 'audiobookHongguoPool',
-    'category': category,
-    'page': 80,
-    if (since > 0) 'offset': since,
-  });
-
-  @override
-  Future<Map<String, dynamic>> audiobookHongguoSearch(
-    String category,
-    String query,
-    int page,
-  ) => _call({
-    'action': 'audiobookHongguoSearch',
-    'category': category,
-    'query': query,
-    'page': page,
-  });
-
-  @override
-  Future<Map<String, dynamic>> audiobookHongguoChapters(String bookId) =>
-      _call({'action': 'audiobookHongguoChapters', 'query': bookId});
-
-  @override
-  Future<Map<String, dynamic>> audiobookHongguoMedia(
-    String bookId,
-    String chapterId,
-  ) => _call({
-    'action': 'audiobookHongguoMedia',
-    'query': _stripHongguoPrefix(bookId),
-    'category': _stripHongguoPrefix(chapterId),
-  });
-}
-
-String _stripHongguoPrefix(String id) {
-  const prefix = 'hg:';
-  var value = id.trim();
-  // ID 可能在多条路径上被重复加前缀（书库快照、分页切片），这里剥干净，
-  // 否则 core 的纯数字校验会失败，表现为「点开书没有声音」。
-  while (value.startsWith(prefix)) {
-    value = value.substring(prefix.length);
-  }
-  return value;
 }

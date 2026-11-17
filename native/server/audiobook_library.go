@@ -50,23 +50,20 @@ var audiobookCategoryOrder = []string{
 	"玄幻言情", "先婚后爱",
 }
 
-// 听书页的两个书源：红果听书吃官方书城听书专辑，番茄听书吃畅听男女榜。
+// 听书页的书源：番茄听书吃畅听男女榜。
 const (
-	abOriginHongguo = "hongguo"
-	abOriginFanqie  = "fanqie"
+	abOriginFanqie = "fanqie"
 	// abOriginAll 保留旧接口「榜单 + 官方书城合并」的行为。
 	abOriginAll = "all"
 )
 
 func abNormalizeOrigin(origin string) string {
 	switch {
-	case strings.EqualFold(strings.TrimSpace(origin), abOriginFanqie):
-		return abOriginFanqie
 	case strings.EqualFold(strings.TrimSpace(origin), abOriginAll):
 		return abOriginAll
 	default:
-		// 默认红果听书。
-		return abOriginHongguo
+		// 默认番茄听书。
+		return abOriginFanqie
 	}
 }
 
@@ -106,8 +103,8 @@ func abVoiceMode(anchor string) string {
 
 type audiobookLibrarySnapshot struct {
 	pool       []audiobookBook
-	rank       []audiobookBook // 只含畅听男女榜，供「番茄听书」
-	official   []audiobookBook // 只含官方书城听书专辑，供「红果听书」
+	rank       []audiobookBook // 只含畅听男女榜
+	official   []audiobookBook // 只含官方书城听书专辑
 	categories []string
 	loading    bool
 	done       bool
@@ -301,22 +298,10 @@ func (store *audiobookLibraryStore) snapshot() audiobookLibrarySnapshot {
 }
 
 // query 返回当前过滤 / 搜索结果的某一页。抓取中也能用，前端按 loading 轮询即可。
-// origin 决定书源：fanqie=番茄听书（畅听男女榜 + 官方书城听书专辑），
-// all=两者合并；红果听书不走这里（由 handleAudiobookLibrary 直接转红果接口）。
 func (store *audiobookLibraryStore) query(origin string, board int, category, keyword string, page, size int) map[string]any {
 	store.ensure()
 	snapshot := store.snapshot()
 	pool := snapshot.pool
-	switch abNormalizeOrigin(origin) {
-	case abOriginFanqie:
-		// 番茄听书现在也含官方书城的听书专辑：原来「红果听书」的真人剧内容
-		// 已合并进来，书源名仍叫「番茄听书」。
-		pool = snapshot.pool
-	case abOriginAll:
-		pool = snapshot.pool
-	default:
-		pool = snapshot.official
-	}
 	if board < 0 || board >= len(audiobookBoardDefs) {
 		board = 0
 	}
@@ -326,8 +311,7 @@ func (store *audiobookLibraryStore) query(origin string, board int, category, ke
 	list := make([]audiobookBook, 0, len(pool))
 	switch {
 	case keyword != "":
-		// 全量书池本地匹配为主；服务端搜索补的是番茄畅听的书，
-		// 红果听书只用官方书城书池，不能把榜单书混进来。
+		// 全量书池本地匹配为主；服务端搜索补的是番茄畅听的书。
 		seen := map[string]bool{}
 		add := func(books []audiobookBook) {
 			for _, book := range books {
@@ -339,9 +323,7 @@ func (store *audiobookLibraryStore) query(origin string, board int, category, ke
 			}
 		}
 		add(abSearchInPool(pool, keyword))
-		if abNormalizeOrigin(origin) != abOriginHongguo {
-			add(abRemoteSearchFunc(keyword))
-		}
+		add(abRemoteSearchFunc(keyword))
 	case category != "":
 		// 分类来自真实标签，选分类时把男/女两榜合并后的全量书库一起过滤。
 		for _, book := range pool {
@@ -618,14 +600,6 @@ func handleAudiobookLibrary(writer http.ResponseWriter, request *http.Request) {
 	board, _ := strconv.Atoi(params.Get("board"))
 	page, _ := strconv.Atoi(params.Get("page"))
 	size, _ := strconv.Atoi(params.Get("size"))
-	// 红果听书走红果 App 的官方书城接口（听书 / 小说两个频道），
-	// 不再从番茄书库里拼数据；番茄听书保留原书库（畅听榜 + 官方听书专辑）。
-	if abNormalizeOrigin(params.Get("origin")) == abOriginHongguo {
-		writeJSON(writer, map[string]any{"ok": true, "data": abHongguoLibrary(
-			board, strings.TrimSpace(params.Get("category")), strings.TrimSpace(params.Get("q")), page, size,
-		)})
-		return
-	}
 	// 官方书城单独按 10 分钟 TTL 刷新，不受榜单书池 6 小时缓存牵制。
 	abRefreshOfficialLibrary()
 	answer := abLibrary.query(

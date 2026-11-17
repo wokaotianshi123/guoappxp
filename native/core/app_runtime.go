@@ -41,7 +41,7 @@ type Downloader struct {
 	directOnce        sync.Once
 	direct            *http.Client
 	diagnostics       *diagnosticLog
-	// 红果 App 接口客户端（听书用）。惰性创建，见 provider_hongguo_app.go。
+	// 红果 App 接口客户端（短剧用）。惰性创建，见 provider_hongguo_app.go。
 	hongguoOnce sync.Once
 	hongguo     *hongguoAppClient
 }
@@ -104,8 +104,7 @@ type nativeInput struct {
 	File            string                  `json:"file"`
 	URL             string                  `json:"url"`
 	Token           string                  `json:"token"`
-	// Content / Offset 供听书接口使用：Content 是听书请求的附加请求头 JSON，
-	// Offset 是红果书池增量拉取的起始下标。
+	// Content 供听书接口使用：Content 是听书请求的附加请求头 JSON。
 	Content string `json:"content"`
 	Offset  int    `json:"offset"`
 	// Peer 是投屏目标（电视）的地址，核心据此挑本机走哪块网卡。
@@ -518,45 +517,6 @@ func nativeDispatch(input nativeInput) (any, error) {
 			"duration":      int(media.Duration.Seconds()),
 			"headers":       map[string]string{"Referer": media.Referer, "User-Agent": "com.dragon.read"},
 		}), nil
-	// 红果听书（听书 / 小说）书源：与番茄听书并列的第二个书源，
-	// 数据来自红果 App 的官方书城接口，Flutter 与本地服务版共用。
-	case "audiobookHongguoCats":
-		return map[string]any{"items": AudiobookHongguoCategories()}, nil
-	case "audiobookHongguoCatalog":
-		books, hasMore, err := engine.downloader.audiobookHongguoCatalog(ctx, input.Category, input.Page, nil)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"books": books, "hasMore": hasMore, "origin": "hongguo"}, nil
-	case "audiobookHongguoPool":
-		books, total, loading, _ := engine.downloader.audiobookHongguoPoolStart(
-			ctx, input.Category, input.Page, input.Force, input.Offset)
-		stale := false
-		if _, _, snapshotStale, ok := audiobookHongguoPoolSnapshot(input.Category); ok {
-			stale = snapshotStale
-		}
-		return map[string]any{
-			"books": books, "origin": "hongguo", "total": total,
-			"loading": loading, "stale": stale,
-		}, nil
-	case "audiobookHongguoSearch":
-		books, hasMore, err := engine.downloader.audiobookHongguoSearch(ctx, input.Category, input.Query, input.Page)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"books": books, "hasMore": hasMore, "origin": "hongguo"}, nil
-	case "audiobookHongguoChapters":
-		book, chapters, err := engine.downloader.audiobookHongguoChapters(ctx, input.Query)
-		if err != nil {
-			return nil, err
-		}
-		return map[string]any{"book": book, "chapters": chapters}, nil
-	case "audiobookHongguoMedia":
-		plan, err := engine.downloader.audiobookHongguoMedia(ctx, input.Query, input.Category)
-		if err != nil {
-			return nil, err
-		}
-		return engine.withAudiobookStream(plan), nil
 	case "downloadDirectory":
 		engine.downloads.mu.Lock()
 		root := engine.downloads.root

@@ -10,6 +10,7 @@ import '../../live/live_page.dart';
 import '../app_scope.dart';
 import '../cover_blur.dart';
 import '../shell/app_shell.dart';
+import '../settings/sources_page.dart';
 import '../theme/motion.dart';
 import '../detail/detail_page.dart';
 import '../widgets/bar_button.dart';
@@ -145,14 +146,24 @@ class ExplorePageState extends State<ExplorePage> {
                       ? StatusView(
                           title: '还没有安装站源',
                           message: widget.store.profile.admin
-                              ? '站源以模块的形式提供，请在 我的 › 模块 安装。'
+                              ? '站源以模块的形式提供，请在 我的 › 站源 › 模块 安装。'
                               : '请联系管理员安装站源模块。',
                           icon: Icons.extension_off_rounded,
+                          action: '前往站源',
+                          onAction: () => openPage<void>(
+                            context,
+                            (_) => SourcesPage(store: widget.store),
+                          ),
                         )
-                      : const StatusView(
+                      : StatusView(
                           title: '暂无可用站源',
-                          message: '请在 我的 › 模块 中开启站源，或联系管理员开放权限。',
+                          message: '请在 我的 › 站源 › 模块 中开启站源，或联系管理员开放权限。',
                           icon: Icons.public_off_rounded,
+                          action: '前往站源',
+                          onAction: () => openPage<void>(
+                            context,
+                            (_) => SourcesPage(store: widget.store),
+                          ),
                         ),
                 ),
               ],

@@ -90,7 +90,7 @@ class _AppShellState extends State<AppShell> {
   var _headerFocused = false;
   /// 已挂进树的标签。听书页暂不预挂：IndexedStack 会一次性构建所有 children，
   ///
-  /// 听书页只要在树里就会立刻 initState → 拉书池，红果听书首屏请求会和发现页
+  /// 听书页只要在树里就会立刻 initState → 拉书池，首屏请求会和发现页
   /// 抢限流 / IPC / CPU，打开软件就被拖卡。改为用户第一次切过去时才挂载。
   final Set<AppTab> _mountedTabs = <AppTab>{...AppTab.values}
     ..remove(AppTab.audiobook);

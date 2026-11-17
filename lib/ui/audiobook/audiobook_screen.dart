@@ -7,7 +7,6 @@ import 'package:flutter/services.dart';
 
 import 'audiobook_download.dart';
 import 'audiobook_fanqie.dart';
-import 'audiobook_pool_snapshot.dart';
 import 'audiobook_session.dart';
 import 'audiobook_store.dart';
 import '../../core_bridge.dart';
@@ -72,9 +71,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   String _query = '';
   FanqieAudiobookBoard _board = fanqieAudiobookBoards.first;
 
-  /// 当前书源：0 = 红果听书（默认），1 = 番茄听书。
-  int _origin = fanqieAudiobookOrigins.first.type;
-
   /// 空串表示「全部」，否则按番茄畅听的真实分类标签过滤。
   String _category = '';
   String? _error;
@@ -83,25 +79,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   /// 书池后台加载与搜索请求分别用独立的代号，切换分类不会打断书池加载。
   int _poolGeneration = 0;
   int _searchGeneration = 0;
-
-  /// 红果听书按需加载状态：每个频道（listen / novel）已取到第几页、
-  /// 上游是否还有更多、当前是否正在取下一页。
-  ///
-  /// 这里不再有「后台全量翻页 + 定时轮询」：点开书源只取第 1 页即停，
-  /// 用户主动翻页时才按页补一次，取完立刻释放，不长期占用限流与 IPC。
-  final Map<String, int> _hongguoLoadedPages = {};
-  final Map<String, bool> _hongguoHasMore = {};
-  bool _hongguoPageLoading = false;
-
-  /// 某个红果频道正在补首屏：切书源 / 切频道时避免连点打出一串请求。
-  bool _hongguoChannelLoading = false;
-
-  /// 红果听书当前频道：tab 0 是听书，tab 1 是小说。
-  String get _hongguoChannel =>
-      _board.type == fanqieAudiobookBoards.first.type ? 'listen' : 'novel';
-
-  /// 只有红果听书、且不在搜索结果里时才走按需分页。
-  bool get _hongguoPaging => _origin == 0 && _query.isEmpty;
 
   @override
   void initState() {
@@ -138,60 +115,17 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     if (mounted) setState(() {});
   }
 
-  /// 红果听书走官方书城的听书专辑，番茄听书走畅听男女榜；两个书源各自独立，
-  /// 不再互相混入，切换书源时列表和分类一起换掉。
+  /// 番茄听书走畅听男女榜，两榜全量抓取后合并成书池。
   Future<void> _loadPools() async {
     final token = ++_poolGeneration;
-    final origin = _origin;
     if (mounted) {
       setState(() {
         _poolLoading = true;
         _poolDone = false;
-        _hongguoPageLoading = false;
         _error = null;
       });
     }
     try {
-      if (origin == 0) {
-        // 红果听书：按需加载。只取「当前频道」的第 1 页就立刻可用，另一个
-        // 频道等用户切到那个 tab 时再补。以前一次并发两个频道的书城请求，
-        // 两次都要走设备签名并挤同一个 host 限流队列，Android 上切换书源
-        // 时表现为明显卡顿甚至假死；番茄命中本地缓存则是 0 请求，所以只有
-        // 红果这一侧慢。现在切书源最多一个前台请求，用完即停。
-        //
-        // 首屏那一个请求本身就要 4~5 秒（单次响应约 500KB），所以先把上一次
-        // 落盘的快照渲染出来再刷新：用户立刻有书可看，刷新完成后原地替换。
-        final channel = _hongguoChannel;
-        await _restoreHongguoSnapshot(channel, token);
-        final first = await _api.hongguoCatalogPage(channel);
-        if (!mounted || token != _poolGeneration) return;
-        setState(() {
-          _officialCategories = const [];
-          if (channel == 'listen') {
-            _malePool = first.books;
-          } else {
-            _femalePool = first.books;
-          }
-          _poolLoading = false;
-          _poolDone = true;
-          _hongguoPageLoading = false;
-          _hongguoLoadedPages[channel] = 1;
-          _hongguoHasMore[channel] = first.hasMore;
-          _rebuildSearch();
-          _error = _pool.isEmpty ? '红果听书暂时没有书' : null;
-        });
-        unawaited(
-          AudiobookPoolSnapshot.write(
-            channel,
-            first.books,
-            hasMore: first.hasMore,
-          ),
-        );
-        _rememberPool(origin);
-        // 没有 stillLoading，也没有轮询：书库首到这里就静止，等用户翻页。
-        return;
-      }
-
       final results = await Future.wait([
         _api.rankAll(
           fanqieAudiobookBoards[0],
@@ -226,219 +160,14 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         _rebuildSearch();
         _error = _pool.isEmpty ? '番茄畅听榜单暂时没有书' : null;
       });
-      _rememberPool(origin);
     } catch (error) {
       if (!mounted || token != _poolGeneration) return;
       setState(() {
         _poolLoading = false;
-        // 首屏尝试已结束，不再有后台任务；保留手动刷新 / 重试入口。
         _poolDone = true;
-        _hongguoPageLoading = false;
         _error = _pool.isEmpty ? '$error' : null;
       });
     }
-  }
-
-  /// 用上一次落盘的首屏快照先把列表填上。
-  ///
-  /// 首屏请求要 4~5 秒起（响应约 500KB），站点抖动或触发重试时会到十几秒，
-  /// 期间界面只有一个加载圈，用户看到的就像「点了没反应」。快照命中时立刻
-  /// 渲染内容，同时**保持加载态**：底部翻页条会显示「正在加载」，用户既已经
-  /// 看到书，也知道后台还在刷新，刷新完成后原地替换。
-  ///
-  /// 没有快照（首次打开）或快照不可用时什么都不做，照常显示加载态。
-  Future<void> _restoreHongguoSnapshot(String channel, int token) async {
-    final snapshot = await AudiobookPoolSnapshot.read(channel);
-    if (snapshot == null) return;
-    if (!mounted ||
-        token != _poolGeneration ||
-        _origin != 0 ||
-        _hongguoLoadedPages.containsKey(channel)) {
-      return;
-    }
-    setState(() {
-      if (channel == 'listen') {
-        _malePool = snapshot.books;
-      } else {
-        _femalePool = snapshot.books;
-      }
-      _poolDone = true;
-      _hongguoLoadedPages[channel] = 1;
-      _hongguoHasMore[channel] = snapshot.hasMore;
-      _rebuildSearch();
-      _error = null;
-    });
-    _rememberPool(0);
-  }
-
-  /// 两个书源各自缓存一份书池：来回切换时直接复用，不重新翻页。
-  ///
-  /// 红果听书现在按需加载，切回去时立刻显示已加载的那几页，不做后台刷新；
-  /// 番茄榜单全量抓一次也缓存下来，避免每次切书源都重抓一遍。
-  final Map<int, _AudiobookPoolCache> _poolCaches = {};
-
-  /// 切书源：有缓存就立刻显示，没有才加载首屏；两种情况都不做后台刷新。
-  void _switchOrigin(int type) {
-    if (_origin == type) return;
-    final cached = _poolCaches[type];
-    // 立刻作废在途的加载，避免旧书源的数据回写到新书源。
-    ++_poolGeneration;
-    setState(() {
-      _origin = type;
-      _officialCategories = const [];
-      _searchResults = const [];
-      _remoteBooks = const [];
-      _category = '';
-      _query = '';
-      _page = 1;
-      _board = fanqieAudiobookBoards.first;
-      _error = null;
-      _hongguoPageLoading = false;
-      _hongguoChannelLoading = false;
-      if (cached != null && cached.hasBooks) {
-        _malePool = cached.male;
-        _femalePool = cached.female;
-        _officialCategories = cached.categories;
-        _poolLoading = false;
-        _poolDone = cached.done;
-        // 恢复红果按需分页状态，否则切回去后翻页会以为一页都没取过，
-        // 又重新发一遍书城请求（旧版切书源卡顿的来源之一）。
-        if (type == 0) {
-          _hongguoLoadedPages
-            ..clear()
-            ..addAll(cached.loadedPages);
-          _hongguoHasMore
-            ..clear()
-            ..addAll(cached.hasMore);
-        }
-      } else {
-        _malePool = const [];
-        _femalePool = const [];
-        _poolLoading = true;
-        _poolDone = false;
-        if (type == 0) {
-          _hongguoLoadedPages.clear();
-          _hongguoHasMore.clear();
-        }
-      }
-    });
-    _search.text = '';
-    // 有缓存：直接复用，不发任何请求。未命中时也只跑一个前台单页请求，
-    // 不并发、不后台翻页、不轮询；切书源这一帧不会阻塞用户操作。
-    if (cached == null || !cached.hasBooks) {
-      unawaited(_loadPools());
-    }
-  }
-
-  /// 红果听书某个频道还没取过首屏时补一次（只发一个请求）。
-  ///
-  /// 切书源、切频道都走这里：已经加载过的频道直接用本地书池，不重复请求；
-  /// 同一频道在途时直接跳过，避免连点打出一串设备签名请求把界面拖住。
-  Future<void> _ensureHongguoChannel(String channel) async {
-    if (_origin != 0 || _hongguoLoadedPages.containsKey(channel)) return;
-    if (_hongguoChannelLoading) return;
-    final token = _poolGeneration;
-    _hongguoChannelLoading = true;
-    try {
-      // 切频道同样先吃快照：与进页面时的首屏是同一条请求，值得先显示再刷新。
-      await _restoreHongguoSnapshot(channel, token);
-      final first = await _api.hongguoCatalogPage(channel);
-      if (!mounted ||
-          token != _poolGeneration ||
-          _origin != 0 ||
-          _hongguoLoadedPages.containsKey(channel)) {
-        return;
-      }
-      setState(() {
-        if (channel == 'listen') {
-          _malePool = first.books;
-        } else {
-          _femalePool = first.books;
-        }
-        _hongguoLoadedPages[channel] = 1;
-        _hongguoHasMore[channel] = first.hasMore;
-        _rebuildSearch();
-      });
-      unawaited(
-        AudiobookPoolSnapshot.write(
-          channel,
-          first.books,
-          hasMore: first.hasMore,
-        ),
-      );
-      _rememberPool(0);
-    } catch (_) {
-      // 单频道失败不影响另一个频道与已显示内容，不重试、不后台续抓。
-    } finally {
-      _hongguoChannelLoading = false;
-    }
-  }
-
-  /// 红果听书按需加载下一页：只取当前频道的一页，去重追加到书池后立即结束。
-  ///
-  /// 仅在用户主动翻页、且已加载数据不够显示目标页时调用；不启动后台任务、
-  /// 不轮询、不并发翻页，因此不会与其他书源或短剧请求争抢资源，也不会把
-  /// 上千本书含封面 / 简介反复序列化过 IPC。
-  Future<bool> _loadNextHongguoPage() async {
-    if (_hongguoPageLoading || !_hongguoPaging) return false;
-    final channel = _hongguoChannel;
-    final origin = _origin;
-    final token = _poolGeneration;
-    final next = (_hongguoLoadedPages[channel] ?? 1) + 1;
-    _hongguoPageLoading = true;
-    if (mounted) setState(() => _poolLoading = true);
-    try {
-      final result = await _api.hongguoCatalogPage(channel, page: next);
-      // 请求期间用户切了书源 / 榜单：丢弃回包，不回写旧书源的数据。
-      if (!mounted || token != _poolGeneration || _origin != origin) {
-        return false;
-      }
-      _hongguoLoadedPages[channel] = next;
-      _hongguoHasMore[channel] = result.hasMore;
-      final known = <String>{for (final book in _boardPool) book.id};
-      final fresh = <FanqieBook>[
-        for (final book in result.books)
-          if (known.add(book.id)) book,
-      ];
-      setState(() {
-        if (channel == 'listen') {
-          _malePool = [..._malePool, ...fresh];
-        } else {
-          _femalePool = [..._femalePool, ...fresh];
-        }
-        _poolLoading = false;
-        _poolDone = true;
-        _rebuildSearch();
-      });
-      _rememberPool(origin);
-      return result.hasMore;
-    } catch (_) {
-      // 单页失败不影响已显示的内容，也不重试、不后台续抓；
-      // 加载态统一交给 finally 清理，避免请求作废时残留「正在加载」。
-      return false;
-    } finally {
-      _hongguoPageLoading = false;
-      // 请求作废（切书源 / 页面卸载）或单页失败时，别把「正在加载」
-      // 留在界面上。只在仍是同一代请求时清，避免覆盖新书源刚设置的加载态。
-      if (mounted &&
-          _poolLoading &&
-          token == _poolGeneration &&
-          _origin == origin) {
-        setState(() => _poolLoading = false);
-      }
-    }
-  }
-
-  /// 把当前书池记到对应书源的缓存里。
-  void _rememberPool(int origin) {
-    _poolCaches[origin] = _AudiobookPoolCache(
-      male: _malePool,
-      female: _femalePool,
-      categories: _officialCategories,
-      done: _poolDone,
-      loadedPages: Map<String, int>.of(_hongguoLoadedPages),
-      hasMore: Map<String, bool>.of(_hongguoHasMore),
-    );
   }
 
   /// 派生数据缓存。
@@ -462,7 +191,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _board.type,
       _category,
       _officialCategories,
-      _origin,
     );
     if (_derivedKey != null && _sameDerivedKey(_derivedKey!, key)) return;
     _derivedKey = key;
@@ -472,29 +200,23 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   }
 
   bool _sameDerivedKey(Object previous, Object next) {
-    final a = previous as (List, List, int, String, List, int);
-    final b = next as (List, List, int, String, List, int);
+    final a = previous as (List, List, int, String, List);
+    final b = next as (List, List, int, String, List);
     return identical(a.$1, b.$1) &&
         identical(a.$2, b.$2) &&
         a.$3 == b.$3 &&
         a.$4 == b.$4 &&
-        identical(a.$5, b.$5) &&
-        a.$6 == b.$6;
+        identical(a.$5, b.$5);
   }
 
   /// 分类只展示书池里确实有书的：高频基线标签 + 官方书城实时学到的分类。
-  /// 分类条：红果听书按**当前频道**书池里的真实题材统计（听书只出听书的题材、
-  /// 小说只出小说的题材，两者不混），番茄沿用固定分类表的顺序。
   List<String> get _categories {
     _ensureDerived();
-    return _categoriesCache ??= _origin == 0
-        ? fanqieHongguoCategoriesFrom(_boardPool)
-        : fanqieCategoriesFrom(_allPool, preferred: _officialCategories);
+    return _categoriesCache ??=
+        fanqieCategoriesFrom(_allPool, preferred: _officialCategories);
   }
 
-  /// 当前频道（听书 / 小说 或 男 / 女榜）自己的书池。
-  /// 按 tab 索引取而不是按 board.type：红果的两个频道是「听书 / 小说」，
-  /// 与番茄「男生榜 / 女生榜」的 type 语义不同，按索引才不会错位。
+  /// 当前榜单（男生榜 / 女生榜）自己的书池。
   List<FanqieBook> get _boardPool {
     final index = fanqieAudiobookBoards.indexWhere(
       (board) => board.type == _board.type,
@@ -515,19 +237,9 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   }
 
   /// 当前数据源：选分类时按真实标签过滤，否则只看选中的榜。
-  /// 红果听书的两个频道内容完全不同（听书 / 小说），分类过滤只在当前频道内做，
-  /// 否则选「都市高武」会把听书里的同名题材也带进来。
   List<FanqieBook> get _pool {
     _ensureDerived();
     return _poolCache ??= () {
-      if (_origin == 0) {
-        final base = _boardPool;
-        if (_category.isEmpty) return base;
-        return [
-          for (final book in base)
-            if (_matchesCategory(book, _category)) book,
-        ];
-      }
       if (_category.isEmpty) {
         return _boardPool;
       }
@@ -548,7 +260,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   void _rebuildSearch() {
     if (_query.isEmpty) return;
     final local = fanqieSearchInPool(_allPool, _query);
-    // 两个书源都有远程搜索：番茄打畅听接口，红果打红果书城接口。
     final remote = _remoteBooks;
     final seen = <String>{};
     _searchResults = [
@@ -574,43 +285,11 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
 
   bool get _canPrev => _page > 1;
 
-  /// 红果听书按需加载时，只要上游还有更多就允许继续翻（数据不够会现取）；
-  /// 正在取下一页时先禁用，避免连点重复发请求。用 [_poolLoading] 判断，
-  /// 它由 setState 维护，按钮状态才能随请求结束及时恢复。
-  ///
-  /// 例外：书池已经由快照填上内容、只是后台还在刷新时不禁用——用户看得见书，
-  /// 就该能翻；快照本身就是整页数据，翻这几页不需要任何请求。
-  bool get _canNext {
-    if (_hongguoPaging) {
-      if (_poolLoading && _pool.isEmpty) return false;
-      if (_hongguoHasMore[_hongguoChannel] ?? false) return true;
-    }
-    return _page < _totalPages;
-  }
+  bool get _canNext => _page < _totalPages;
 
-  /// 翻页：往回翻或已加载的页直接用本地数据，不产生任何请求；
-  /// 红果听书往后翻且数据不够时，才按页取一次下一页，取完立刻停。
-  Future<void> _changePage(int delta) async {
+  void _changePage(int delta) {
     final next = _page + delta;
-    if (next < 1) return;
-    if (delta > 0 && _hongguoPaging) {
-      // 相邻页有重叠，一次补页不一定凑够 10 本，最多补 3 页；
-      // 上游到底或请求失败就收手，不空转、不后台续抓。
-      var guard = 0;
-      while (guard++ < 3 &&
-          (next - 1) * _pageSize >= _currentList.length &&
-          (_hongguoHasMore[_hongguoChannel] ?? false)) {
-        if (!await _loadNextHongguoPage()) break;
-      }
-      if (!mounted) return;
-      // 补页后仍不够：按现有数据能切到的末页显示，不把用户留在空白页。
-      final reachable = _totalPages;
-      final target = next > reachable ? reachable : next;
-      if (target < _page) return;
-      setState(() => _page = target);
-      return;
-    }
-    if (next > _totalPages) return;
+    if (next < 1 || next > _totalPages) return;
     setState(() => _page = next);
   }
 
@@ -627,9 +306,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _searchLoading = false;
       _error = null;
     });
-    // 红果听书按频道懒加载：切到尚未取过首屏的频道时才发一次请求，
-    // 不与切书源、短剧首页抢同一个 host 的限流队列。
-    if (_origin == 0) unawaited(_ensureHongguoChannel(_hongguoChannel));
   }
 
   void _selectCategory(String category) {
@@ -646,13 +322,9 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     });
   }
 
-  /// 榜单 tab 的文案：红果听书是「听书 / 小说」两个频道，番茄是男女听书榜。
-  String _boardLabel(int index) {
-    if (_origin == 0) return index == 0 ? '听书' : '小说';
-    return fanqieAudiobookBoards[index].name;
-  }
+  String _boardLabel(int index) => fanqieAudiobookBoards[index].name;
 
-  String get _searchHint => _origin == 0 ? '搜索红果听书 / 小说' : '搜索番茄畅听全库';
+  String get _searchHint => '搜索番茄畅听全库';
 
   /// 分类条与「发现」页视频分类共用同一套横向 tab：榜单是「全部」入口，
   /// 其后是书池里真实存在的分类，再后面是搜索热词。三者用前缀区分，
@@ -716,34 +388,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
       _rebuildSearch(); // 本地书池匹配先出结果，不等网络
     });
     try {
-      // 红果听书：听书与小说两个频道各查一遍，合并去重后补进搜索结果。
-      if (_origin == 0) {
-        final results = await Future.wait([
-          _api
-              .hongguoSearch('listen', query)
-              .catchError(
-                (Object _) => const FanqieSearchPage(books: [], hasMore: false),
-              ),
-          _api
-              .hongguoSearch('novel', query)
-              .catchError(
-                (Object _) => const FanqieSearchPage(books: [], hasMore: false),
-              ),
-        ]);
-        if (!mounted || token != _searchGeneration) return;
-        final seen = <String>{};
-        _remoteBooks = [
-          for (final result in results)
-            for (final book in result.books)
-              if (seen.add(book.id)) book,
-        ];
-        setState(() {
-          _searchLoading = false;
-          _rebuildSearch();
-          _error = _searchResults.isEmpty ? '没有找到听书' : null;
-        });
-        return;
-      }
       // 服务端搜索里听书（genre=4）很稀疏，单页常常 0～2 本，取前几页作为
       // 书池之外的补充即可；主体结果来自本地全量书库。
       final results = await Future.wait([
@@ -820,24 +464,6 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           ),
         ),
         if (_pane == _AudiobookPane.search) ...[
-          // 书源：红果听书吃官方书城的听书专辑（带主播录制与 AI 朗读标注），
-          // 番茄听书吃畅听男女榜，两者内容与分类各自独立。
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
-            child: Row(
-              children: [
-                for (final origin in fanqieAudiobookOrigins)
-                  Padding(
-                    padding: const EdgeInsets.only(right: 8),
-                    child: ChoiceChip(
-                      label: Text(origin.name),
-                      selected: _origin == origin.type,
-                      onSelected: (_) => _switchOrigin(origin.type),
-                    ),
-                  ),
-              ],
-            ),
-          ),
           Padding(
             padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
             child: TextField(
@@ -882,10 +508,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
     final total = _totalPages;
     final count = _currentList.length;
     final loading = _poolLoading && _query.isEmpty ? ' · 正在加载' : '';
-    // 按需加载没有固定的「总页数」：页数随翻页增长，只报已加载本数。
-    final label = _hongguoPaging
-        ? '第 $_page 页 · 已加载 $count 本$loading · 翻页继续加载'
-        : '第 $_page / $total 页 · 共 $count 本$loading';
+    final label = '第 $_page / $total 页 · 共 $count 本$loading';
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
       child: Row(
@@ -983,9 +606,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
             const CircularProgressIndicator(),
             const SizedBox(height: 14),
             Text(
-              // 红果首屏单次响应约 500KB、实测 4~5 秒；番茄要翻榜单。都说清
-              // 「要等一会儿」，免得用户以为点了没反应。
-              _origin == 0 ? '正在取回红果书城的书单，首次打开需要几秒…' : '正在取回番茄畅听的榜单…',
+              '正在取回番茄畅听的榜单…',
               style: const TextStyle(fontSize: 13),
               textAlign: TextAlign.center,
             ),
@@ -1289,14 +910,8 @@ class _AudiobookCatalogScreenState extends State<AudiobookCatalogScreen> {
     });
     try {
       final report = await downloadAudiobookChapters(
-        media: (bookId, chapterId) {
-          final repository = widget.repository;
-          // 红果听书的 ID 带 hg: 前缀，桥接层会统一剥掉。
-          if (bookId.startsWith(fanqieHongguoPrefix)) {
-            return repository.audiobookHongguoMedia(bookId, chapterId);
-          }
-          return repository.audiobookMedia(bookId, chapterId);
-        },
+        media: (bookId, chapterId) =>
+            widget.repository.audiobookMedia(bookId, chapterId),
         store: widget.store,
         book: widget.book,
         chapters: selected,
@@ -1719,21 +1334,6 @@ class _AudiobookPlayerScreenState extends State<AudiobookPlayerScreen> {
     final itemId = _chapter.id;
     final generation = ++_textGeneration;
     _textChapterId = itemId;
-    // 红果听书没有逐句正文，章节 ID 带 hg: 前缀，直接跳过正文请求：
-    // 拿红果 item_id 去查番茄正文必然失败，白等一次网络。
-    if (itemId.startsWith(fanqieHongguoPrefix)) {
-      setState(() {
-        _textLoading = false;
-        _texts = const [];
-        _timedText = null;
-        _timed = false;
-        _lines = const [];
-        _line = -1;
-        _shownLine = -1;
-        _textError = null;
-      });
-      return;
-    }
     setState(() {
       _textLoading = true;
       _textError = null;
@@ -2410,27 +2010,4 @@ class AudiobookNowPlayingBar extends StatelessWidget {
       },
     );
   }
-}
-
-/// 单个书源的书池快照，供切换书源时直接复用。
-class _AudiobookPoolCache {
-  const _AudiobookPoolCache({
-    required this.male,
-    required this.female,
-    required this.categories,
-    required this.done,
-    this.loadedPages = const {},
-    this.hasMore = const {},
-  });
-
-  final List<FanqieBook> male;
-  final List<FanqieBook> female;
-  final List<String> categories;
-  final bool done;
-
-  /// 红果按需分页状态随书池一起缓存，切回书源时原样恢复。
-  final Map<String, int> loadedPages;
-  final Map<String, bool> hasMore;
-
-  bool get hasBooks => male.isNotEmpty || female.isNotEmpty;
 }

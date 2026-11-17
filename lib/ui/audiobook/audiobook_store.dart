@@ -125,10 +125,8 @@ class AudiobookStore extends ChangeNotifier {
 
   /// 把书籍 / 章节 ID 转成能当路径用的名字。
   ///
-  /// 红果听书的 ID 带 `hg:` 前缀，而 Windows 文件名不允许冒号，
-  /// 直接拿去建目录会抛 FileSystemException: creation failed（下载必失败）。
-  /// 这里把所有平台的非安全字符统一换成下划线；因为 ID 只由数字和前缀组成，
-  /// 替换后仍然唯一，不会撞车。
+  /// 把非安全字符（如冒号，Windows 文件名不允许）统一换成下划线，
+  /// 避免建目录时抛 FileSystemException；替换后仍保持唯一。
   static String _safeSegment(String raw) {
     final cleaned = raw.replaceAll(RegExp(r'[^A-Za-z0-9_-]'), '_');
     return cleaned.isEmpty ? '_' : cleaned;
@@ -354,7 +352,7 @@ class AudiobookStore extends ChangeNotifier {
       // 旧存档没有这两个字段，缺省空串即可，封面/简介为空时列表用占位。
       cover: '${json['cover'] ?? ''}',
       intro: '${json['intro'] ?? ''}',
-      // 旧存档没有 source，按番茄听书处理；红果听书写入 hongguo。
+      // 旧存档没有 source 时按番茄听书处理。
       source: '${json['source'] ?? 'fanqie'}',
     );
   }

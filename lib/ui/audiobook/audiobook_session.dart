@@ -209,10 +209,7 @@ class AudiobookSession extends ChangeNotifier {
     try {
       Map<String, dynamic>? remote;
       if (!localFile) {
-        // 红果听书的 ID 带 hg: 前缀，桥接层会统一剥掉，这里直接传即可。
-        remote = book.isHongguo
-            ? await repository.audiobookHongguoMedia(book.id, current.id)
-            : await repository.audiobookMedia(book.id, current.id);
+        remote = await repository.audiobookMedia(book.id, current.id);
         if (generation != _generation) {
           _opening = false;
           return;
@@ -233,7 +230,7 @@ class AudiobookSession extends ChangeNotifier {
       if (target.url.isEmpty) throw AppFailure('这一章暂时没有音频地址');
       // 在线音频一律走本机代理：URL 带 .m4a 扩展名让 libmpv 能稳定探测
       // 容器，上游 Referer / User-Agent 由 Dart 侧注入，不再依赖播放器转发
-      // 请求头（Windows 的 libmpv 常忽略 httpHeaders，红果 CDN 返回非音频
+      // 请求头（Windows 的 libmpv 常忽略 httpHeaders，CDN 返回非音频
       // 内容，表现正是「进度在走但没有声音」）。核心较新时已给出指向本机
       // 的 streamUrl，那段地址直接复用、不再二次代理。
       // 保留原始地址与请求头：ffmpeg 解密时直接拉上游并自带 headers

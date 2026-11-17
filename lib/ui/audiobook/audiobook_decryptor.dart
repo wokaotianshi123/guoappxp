@@ -14,8 +14,8 @@ import '../../diary_service.dart';
 /// ffmpeg 解密后重编码」。Web 版有 `startAudio()` 走这条路，但 App 端一直
 /// 把「加密 URL + decryption_key」直接丢给 libmpv —— Windows 的 libmpv
 /// 构建解不了 CENC：容器读得出时长、position 照常推进，加密的音频 sample
-/// 却解不出音轨，于是「进度在走但没有声音」。Android 的 libmpv 构建能直解、
-/// 番茄多为明文，所以只有 Windows + 红果复现；短剧在 Windows 正常也是因为
+/// 却解不出音轨，于是「进度在走但没有声音」。Android 的 libmpv 构建能直解，
+/// 因此该问题主要出现在 Windows 的加密章节上；短剧在 Windows 正常也是因为
 /// 加密视频同样走 ffmpeg 转码，而不是靠 libmpv。
 ///
 /// 这里复用项目已有的 `ffmpeg_kit_flutter_new_min_gpl`（Windows 发布包必带

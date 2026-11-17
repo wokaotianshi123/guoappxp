@@ -3935,8 +3935,8 @@ var audiobookState = {
   // 空串表示「全部」。
   category: '',
   categories: [],
-  // 书源：hongguo = 红果听书（官方书城听书专辑，默认），fanqie = 番茄听书（畅听男女榜）。
-  origin: 'hongguo',
+  // 书源：fanqie = 番茄听书（畅听男女榜）。
+  origin: 'fanqie',
   // 分类条与「全部分类」面板：面板状态要在书库轮询重绘后保持。
   allCategoriesOpen: false,
   revealCategory: false,
@@ -4228,16 +4228,7 @@ function abListHeadHTML() {
     '<span class="ab-page-info">第 ' + audiobookState.page + ' / ' + audiobookState.pageCount + ' 页</span>' +
     '<button type="button" class="btn mini" id="ab-next-page"' + nextDisabled + '>下一页</button>' +
     '</span>';
-  var origins = '<div class="ab-origin-row">' +
-    '<button type="button" class="btn mini ab-origin' +
-      (audiobookState.origin === 'hongguo' ? ' active' : '') +
-      '" data-ab-origin="hongguo">红果听书</button>' +
-    '<button type="button" class="btn mini ab-origin' +
-      (audiobookState.origin === 'fanqie' ? ' active' : '') +
-      '" data-ab-origin="fanqie">番茄听书</button>' +
-    '</div>';
   return '<div class="ab-list-head">' +
-    origins +
     '<div class="ab-category-bar">' +
       '<div class="ab-category-row"><span class="ab-category-label">分类</span>' + categories + '</div>' +
       '<button type="button" class="btn mini ab-category-all' + (opened ? ' active' : '') +
@@ -4249,8 +4240,7 @@ function abListHeadHTML() {
     '</div>';
 }
 
-// 切换书源：红果听书（听书 / 小说两个频道）↔ 番茄听书（畅听男女榜 + 官方听书专辑），
-// 书池、分类、搜索一起重置，避免把上一源的书单混进来。
+// 切换书源时把书池、分类、搜索一起重置，避免把上一源的书单混进来。
 function abSelectOrigin(origin) {
   if (audiobookState.origin === origin) { return; }
   audiobookState.origin = origin;
@@ -4327,11 +4317,6 @@ function abBindCategoryPanel(body) {
     button.addEventListener('click', function () {
       var index = Number(button.getAttribute('data-ab-cat-index'));
       abSelectCategory(index < 0 ? '' : (audiobookState.categories[index] || ''));
-    });
-  });
-  Array.prototype.forEach.call(body.querySelectorAll('.ab-origin'), function (button) {
-    button.addEventListener('click', function () {
-      abSelectOrigin(button.getAttribute('data-ab-origin'));
     });
   });
 }
@@ -4583,9 +4568,7 @@ function renderAudiobookPlayer() {
 function renderAudiobookToolbar() {
   var toolbar = document.getElementById('ab-toolbar');
   if (!toolbar) { return; }
-  var labels = audiobookState.origin === 'hongguo'
-    ? ['听书', '小说']
-    : ['听书榜', '女生听书'];
+  var labels = ['听书榜', '女生听书'];
   var boards = audiobookBoards.map(function (board, index) {
     return '<button type="button" class="btn mini ab-board' +
       (index === audiobookState.board && !audiobookState.shelf ? ' active' : '') +
