@@ -15,6 +15,7 @@ import '../theme/motion.dart';
 import '../widgets/drama_grid.dart';
 import '../widgets/follow_button.dart';
 import '../widgets/focus_ring.dart';
+import '../widgets/horizontal_scroll_bar.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/search_field.dart';
 import '../widgets/status_view.dart';
@@ -37,6 +38,8 @@ class SearchPage extends StatefulWidget {
 class _SearchPageState extends State<SearchPage> {
   late final _controller = TextEditingController(text: widget.query);
   final _focus = FocusNode();
+  // 站源栏的滚动 controller：桌面端靠它显示可拖动的横向滚动条。
+  final _sourceScroll = ScrollController();
   late AppRepository _repository;
   late SourceCatalog _catalog;
   DramaFeed? _results;
@@ -98,6 +101,7 @@ class _SearchPageState extends State<SearchPage> {
     _results?.dispose();
     _controller.dispose();
     _focus.dispose();
+    _sourceScroll.dispose();
     super.dispose();
   }
 
@@ -445,36 +449,40 @@ class _SearchPageState extends State<SearchPage> {
     // 把下面的结果区挤成 0 高度，看着就是「整页不能上下滑、结果出不来」。
     return Padding(
       padding: EdgeInsets.fromLTRB(pad, 8, 0, 0),
-      child: SingleChildScrollView(
-        scrollDirection: Axis.horizontal,
-        padding: EdgeInsets.only(right: pad),
-        child: Row(
-          spacing: 8,
-          children: [
-            FocusRing(
-              radius: 999,
-              child: FilterChip(
-                avatar: Icon(
-                  all ? Icons.travel_explore_rounded : Icons.public_rounded,
-                  size: 16,
-                ),
-                label: const Text('全部源'),
-                selected: all,
-                onSelected: _toggleAllSources,
-                visualDensity: VisualDensity.compact,
-              ),
-            ),
-            for (final site in sources)
+      child: HorizontalScrollBar(
+        controller: _sourceScroll,
+        child: SingleChildScrollView(
+          controller: _sourceScroll,
+          scrollDirection: Axis.horizontal,
+          padding: EdgeInsets.only(right: pad),
+          child: Row(
+            spacing: 8,
+            children: [
               FocusRing(
                 radius: 999,
                 child: FilterChip(
-                  label: Text(site.name),
-                  selected: _picked.contains(site.id),
-                  onSelected: (value) => _toggleSource(site.id, value),
+                  avatar: Icon(
+                    all ? Icons.travel_explore_rounded : Icons.public_rounded,
+                    size: 16,
+                  ),
+                  label: const Text('全部源'),
+                  selected: all,
+                  onSelected: _toggleAllSources,
                   visualDensity: VisualDensity.compact,
                 ),
               ),
-          ],
+              for (final site in sources)
+                FocusRing(
+                  radius: 999,
+                  child: FilterChip(
+                    label: Text(site.name),
+                    selected: _picked.contains(site.id),
+                    onSelected: (value) => _toggleSource(site.id, value),
+                    visualDensity: VisualDensity.compact,
+                  ),
+                ),
+            ],
+          ),
         ),
       ),
     );

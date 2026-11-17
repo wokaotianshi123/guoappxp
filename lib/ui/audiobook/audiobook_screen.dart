@@ -13,6 +13,7 @@ import '../../core_bridge.dart';
 import 'audiobook_widgets.dart';
 import '../widgets/category_tabs.dart';
 import '../widgets/choice_panel.dart';
+import '../widgets/focus_ring.dart';
 
 export 'audiobook_session.dart' show AudiobookSession, AudiobookSleep;
 
@@ -212,8 +213,10 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
   /// 分类只展示书池里确实有书的：高频基线标签 + 官方书城实时学到的分类。
   List<String> get _categories {
     _ensureDerived();
-    return _categoriesCache ??=
-        fanqieCategoriesFrom(_allPool, preferred: _officialCategories);
+    return _categoriesCache ??= fanqieCategoriesFrom(
+      _allPool,
+      preferred: _officialCategories,
+    );
   }
 
   /// 当前榜单（男生榜 / 女生榜）自己的书池。
@@ -1985,22 +1988,32 @@ class AudiobookNowPlayingBar extends StatelessWidget {
                   ),
                 ),
               ),
+              // 电视端遥控器靠 FocusRing 才能停在这两个按钮上并画出焦点框；
+              // 裸 IconButton 在遥控器遍历里会被跳过，播放/关闭都按不到。
               trailing: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  IconButton(
-                    tooltip: session.playing ? '暂停' : '播放',
-                    onPressed: session.playOrPause,
-                    icon: Icon(
-                      session.playing
-                          ? Icons.pause_rounded
-                          : Icons.play_arrow_rounded,
+                  FocusRing(
+                    radius: 999,
+                    child: IconButton(
+                      key: const ValueKey('audiobook-now-playing-play'),
+                      tooltip: session.playing ? '暂停' : '播放',
+                      onPressed: session.playOrPause,
+                      icon: Icon(
+                        session.playing
+                            ? Icons.pause_rounded
+                            : Icons.play_arrow_rounded,
+                      ),
                     ),
                   ),
-                  IconButton(
-                    tooltip: '停止听书',
-                    onPressed: session.stop,
-                    icon: const Icon(Icons.close_rounded),
+                  FocusRing(
+                    radius: 999,
+                    child: IconButton(
+                      key: const ValueKey('audiobook-now-playing-close'),
+                      tooltip: '停止听书',
+                      onPressed: session.stop,
+                      icon: const Icon(Icons.close_rounded),
+                    ),
                   ),
                 ],
               ),

@@ -1,6 +1,6 @@
 import 'dart:async';
 import 'dart:math' as math;
-import 'dart:ui' show lerpDouble;
+import 'dart:ui' show PointerDeviceKind, lerpDouble;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart';
@@ -86,6 +86,17 @@ void revealFocus(
 
 class FocusOutlineScrollBehavior extends MaterialScrollBehavior {
   const FocusOutlineScrollBehavior();
+
+  /// 桌面端（Windows / macOS / Linux）把鼠标也算进可拖动设备。
+  ///
+  /// MaterialScrollBehavior 默认只认 touch / stylus / invertedStylus / trackpad，
+  /// 鼠标左键按住拖不动任何列表——横向栏（直播分类栏、直播源栏、搜索页站源栏）
+  /// 溢出后右侧内容在电脑上彻底点不到。安卓端手指拖动本来就走 touch，不受影响。
+  @override
+  Set<PointerDeviceKind> get dragDevices => {
+    ...super.dragDevices,
+    PointerDeviceKind.mouse,
+  };
 
   @override
   Widget buildOverscrollIndicator(

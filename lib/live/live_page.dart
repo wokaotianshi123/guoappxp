@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../local_store.dart';
 
 import '../ui/widgets/focus_ring.dart';
+import '../ui/widgets/horizontal_scroll_bar.dart';
 import '../ui/widgets/status_view.dart';
 import 'live_models.dart';
 import 'live_player_page.dart';
@@ -52,6 +53,10 @@ class _LivePageState extends State<LivePage> {
 
   List<LiveSource> get _sources => LiveSource.visible(widget.greenMode);
 
+  // 两条横向栏各自持有 controller：桌面端要靠它显示可拖动的滚动条。
+  final _sourceScroll = ScrollController();
+  final _platformScroll = ScrollController();
+
   @override
   void initState() {
     super.initState();
@@ -68,6 +73,8 @@ class _LivePageState extends State<LivePage> {
   @override
   void dispose() {
     widget.store.removeListener(_storeChanged);
+    _sourceScroll.dispose();
+    _platformScroll.dispose();
     super.dispose();
   }
 
@@ -279,45 +286,53 @@ class _LivePageState extends State<LivePage> {
 
   Widget _sourceBar(List<LiveSource> sources) => SizedBox(
     height: 56,
-    child: ListView.separated(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-      itemCount: sources.length,
-      separatorBuilder: (_, _) => const SizedBox(width: 8),
-      itemBuilder: (context, index) {
-        final source = sources[index];
-        return _Chip(
-          label: source.name,
-          selected: source.id == _source?.id,
-          onTap: () => _selectSource(source),
-        );
-      },
+    child: HorizontalScrollBar(
+      controller: _sourceScroll,
+      child: ListView.separated(
+        controller: _sourceScroll,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
+        itemCount: sources.length,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          final source = sources[index];
+          return _Chip(
+            label: source.name,
+            selected: source.id == _source?.id,
+            onTap: () => _selectSource(source),
+          );
+        },
+      ),
     ),
   );
 
   Widget _platformBar() => SizedBox(
     height: 52,
-    child: ListView.separated(
-      scrollDirection: Axis.horizontal,
-      padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
-      itemCount: _platforms.length + 1,
-      separatorBuilder: (_, _) => const SizedBox(width: 8),
-      itemBuilder: (context, index) {
-        if (index == 0) {
+    child: HorizontalScrollBar(
+      controller: _platformScroll,
+      child: ListView.separated(
+        controller: _platformScroll,
+        scrollDirection: Axis.horizontal,
+        padding: const EdgeInsets.fromLTRB(16, 4, 16, 8),
+        itemCount: _platforms.length + 1,
+        separatorBuilder: (_, _) => const SizedBox(width: 8),
+        itemBuilder: (context, index) {
+          if (index == 0) {
+            return _Chip(
+              label: '收藏 ${widget.store.favourites.length}',
+              selected: _platform == _favouritesId,
+              onTap: () => _selectPlatform(_favouritesId),
+            );
+          }
+          final platform = _platforms[index - 1];
           return _Chip(
-            label: '收藏 ${widget.store.favourites.length}',
-            selected: _platform == _favouritesId,
-            onTap: () => _selectPlatform(_favouritesId),
+            label: platform.name,
+            badge: platform.count > 0 ? '${platform.count}' : null,
+            selected: platform.id == _platform,
+            onTap: () => _selectPlatform(platform.id),
           );
-        }
-        final platform = _platforms[index - 1];
-        return _Chip(
-          label: platform.name,
-          badge: platform.count > 0 ? '${platform.count}' : null,
-          selected: platform.id == _platform,
-          onTap: () => _selectPlatform(platform.id),
-        );
-      },
+        },
+      ),
     ),
   );
 
