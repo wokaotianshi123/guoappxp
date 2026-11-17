@@ -13,6 +13,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:path/path.dart' as path;
 
 import 'support/fakes.dart';
+import 'support/source_fixture.dart';
 
 class _FailingFiles extends LocalFiles {
   _FailingFiles(super.root);
@@ -416,6 +417,38 @@ void main() {
       expect(restarted.preferences.getString('plugin_secret'), 'stays-local');
     });
 
+    test('source switches survive a round trip', () async {
+      installSourceFixture();
+      final store = await _open();
+      await store.setSourceEnabled('hongguo', false);
+      final backup = jsonDecode(await store.exportBackup()) as Map;
+      expect(backup['sourceSwitches'], {'hongguo': false});
+
+      await store.setSourceEnabled('hongguo', true);
+      await store.importBackup(jsonEncode(backup));
+
+      final restarted = await restartStore(store);
+      expect(restarted.sourceEnabled('hongguo'), isFalse);
+    });
+
+    test('the backed up module list is offered once after a restore', () async {
+      final store = await _open();
+      final backup =
+          jsonDecode(
+                await store.exportBackup(
+                  modules: const ['hongguo', '../x', 'hongguo', 'guipian'],
+                ),
+              )
+              as Map;
+      expect(backup['modules'], ['hongguo', 'guipian']);
+      expect(store.takeRestoredModules(), isEmpty);
+
+      await store.importBackup(jsonEncode(backup));
+
+      expect(store.takeRestoredModules(), ['hongguo', 'guipian']);
+      expect(store.takeRestoredModules(), isEmpty);
+    });
+
     test('older backups without newer fields still import', () async {
       final store = await _open();
       await store.toggleFavorite(first);
@@ -502,6 +535,11 @@ void main() {
       ('an unknown theme mode', (data) => data['themeMode'] = 'sepia'),
       ('an unknown theme color', (data) => data['themeColor'] = 'gold'),
       ('a non-boolean setting', (data) => data['pureBlack'] = 'yes'),
+      ('a malformed module list', (data) => data['modules'] = ['../x']),
+      (
+        'a non-boolean source switch',
+        (data) => data['sourceSwitches'] = {'hongguo': 'off'},
+      ),
       (
         'a profile id with a path',
         (data) => (data['profiles'] as List).add({

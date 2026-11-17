@@ -183,8 +183,11 @@ class _DetailPageState extends State<DetailPage> {
   final _televisionDetail = GlobalKey<TelevisionDetailState>();
   bool _entered = false;
   PlaybackHandle? _watched;
-  late bool _autoplayPending = widget.autoplay;
-  late bool _curtain = widget.autoplay;
+  /// 手机端点剧直接进播放：详情路由只当过渡页，播放成功就把它 pop 掉，
+  /// 返回时直接落到列表；加载失败则揭开黑幕留在详情页。
+  late final bool _direct = AppScope.formFactorOf(context) == FormFactor.phone;
+  late bool _autoplayPending = widget.autoplay || _direct;
+  late bool _curtain = widget.autoplay || _direct;
 
   @override
   void didChangeDependencies() {
@@ -266,14 +269,42 @@ class _DetailPageState extends State<DetailPage> {
     if (!_autoplayPending || !mounted || details.loading) return;
     _autoplayPending = false;
     if (_ready && details.allowed) {
-      await _play(details.resumeIndex, resume: true);
+      // 直连播放先等画面比例确定（最多 3 秒），避免横竖屏来回跳；
+      // 期间若拿到错误则不再进播放，下面的失败分支会显示详情页。
+      if (_direct) await _awaitVideoSize();
       if (!mounted) return;
+      final watched = await _play(details.resumeIndex, resume: true);
+      if (!mounted) return;
+      if (_direct && watched) {
+        Navigator.pop(context);
+        return;
+      }
     }
     if (_curtain) {
       setState(() => _curtain = false);
     } else if (AppScope.of(context).television &&
         details.currentIndex == null) {
       _televisionDetail.currentState?.focusPlay();
+    }
+  }
+
+  Future<void> _awaitVideoSize() async {
+    final session = _handle?.session;
+    if (session == null) return;
+    final known = Completer<void>();
+    void check() {
+      if ((session.aspectKnown || session.error != null) &&
+          !known.isCompleted) {
+        known.complete();
+      }
+    }
+
+    session.addListener(check);
+    check();
+    try {
+      await known.future.timeout(const Duration(seconds: 3), onTimeout: () {});
+    } finally {
+      session.removeListener(check);
     }
   }
 
@@ -307,7 +338,7 @@ class _DetailPageState extends State<DetailPage> {
     );
   }
 
-  Future<void> _play(int index, {bool resume = false}) async {
+  Future<bool> _play(int index, {bool resume = false}) async {
     final details = _details!;
     final episode = details.episodes[index];
     if (episode.vip &&
@@ -330,9 +361,9 @@ class _DetailPageState extends State<DetailPage> {
               ),
             ) !=
             true) {
-      return;
+      return false;
     }
-    if (!mounted || !details.allowed) return;
+    if (!mounted || !details.allowed) return false;
     final position = _startAt(index, resume: resume);
     final handle = _handle ?? _open(index, position: position);
     _handle = null;
@@ -344,20 +375,21 @@ class _DetailPageState extends State<DetailPage> {
       builder: (_) => PlaybackPage(store: widget.store, handle: handle),
     );
     final closed = Navigator.of(context, rootNavigator: true).push(route);
-    if (_curtain) _liftCurtainAfter(route.animation!);
+    if (_curtain && !_direct) _liftCurtainAfter(route.animation!);
     await closed;
     _watching = false;
     _watched = null;
-    if (!mounted) return;
+    if (!mounted || _curtain) return true;
     final played = handle.session.detail.drama.id;
     if (played != details.drama.id) {
       final season = details.seasons
           .where((season) => season.drama.id == played)
           .firstOrNull;
       if (season != null) await details.selectSeason(season);
-      if (!mounted) return;
+      if (!mounted) return true;
     }
     if (AppScope.of(context).television) _focusWatched(details);
+    return true;
   }
 
   void _focusWatched(DramaDetails details) {

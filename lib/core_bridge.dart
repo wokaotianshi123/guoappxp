@@ -254,6 +254,10 @@ abstract class AppRepository {
   Future<void> searchCancel(String id) async {}
   Future<String> cover(Drama drama, {bool force = false});
   bool coverCached(Drama drama) => false;
+
+  /// 已解码并缓存到本机的封面路径，供封面组件在异步读取完成前直接显示，
+  /// 避免每次重建都先闪一下占位图。
+  String? knownCover(Drama drama) => null;
   Future<DramaDetail> detail(Drama drama);
   Future<PlaybackPlan> resolve(
     Drama drama,
@@ -1125,6 +1129,10 @@ class NativeRepository extends AppRepository {
   @override
   bool coverCached(Drama drama) =>
       _coverPaths.containsKey('${drama.id}\u0000${drama.cover}');
+
+  @override
+  String? knownCover(Drama drama) =>
+      _coverPaths['${drama.id}\u0000${drama.cover}'];
 
   @override
   Future<String> cover(Drama drama, {bool force = false}) async {
