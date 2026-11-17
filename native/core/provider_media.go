@@ -92,11 +92,24 @@ func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (Provi
 	if chapter.Source == "" {
 		chapter.Source = SourceFromDramaID(task.DramaID)
 	}
-	p, ok := d.provider(chapter.Source)
-	if !ok {
-		return ProviderMedia{}, fmt.Errorf("unsupported provider source: %s", chapter.Source)
+	// 编译期接入的站源自己解析取流（抓当集播放页、算令牌、取线路表等），
+	// 不能落到下面按 chapter.VideoURL 直连的通用兜底。
+	if p, ok := d.provider(chapter.Source); ok {
+		return p.ResolveMedia(ctx, task)
 	}
-	return p.ResolveMedia(ctx, task)
+	// 短剧 / 自定义源（含 XBPQ 规则）各有专用取流逻辑，resolveDuanjuMedia
+	// 内部会按 customXBPQRule 分支走「跳转播放链接 → player_data → 嗅探兜底」。
+	// 不能落到通用兜底：兜底按 chapter.VideoURL 直连，XBPQ 源这样取不到地址，
+	// 表现为「打开源后报 unsupported provider source: custom:...」。
+	if isDuanjuProviderSource(chapter.Source) {
+		return d.resolveDuanjuMedia(ctx, task)
+	}
+	// 通用兜底：按 chapter.VideoURL 直连（finishProviderMedia 内含 M3U8 展开）。
+	media := ProviderMedia{
+		URL:     chapter.VideoURL,
+		Referer: firstNonEmpty(chapter.Referer, d.providerBaseURL(chapter.Source)+"/"),
+	}
+	return d.finishProviderMedia(ctx, media, chapter.Source)
 }
 
 func (d *Downloader) finishProviderMedia(ctx context.Context, media ProviderMedia, source string) (ProviderMedia, error) {
