@@ -83,7 +83,12 @@ class SourceSite {
   /// 该 id 对应的源是否由站源模块提供。未知 id 一律为假。
   static bool isModule(String id) =>
       _available.any((site) => site.id == id && site.module);
-  static bool isAvailable(String id) => _available.any((site) => site.id == id);
+  /// 自定义源（MacCMS / XBPQ 规则）不进核心的注册源列表，但属于本机已配置
+  /// 的可用站源：核心侧同样按 `custom:` 前缀放行（见 Go 的
+  /// `isCustomMaccmsSource`）。这里必须与之一致，否则站源列表能显示名字，
+  /// 一点目录 / 详情 / 播放就被 AppRepository 拦成「当前版本不包含此站源」。
+  static bool isAvailable(String id) =>
+      _available.any((site) => site.id == id) || isCustomId(id);
   static bool isKnown(String id) => _all.any((site) => site.id == id);
   static bool isAdult(String id) =>
       _all.any((site) => site.id == id && site.adult);

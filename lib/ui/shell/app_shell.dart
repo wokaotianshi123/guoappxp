@@ -36,6 +36,17 @@ enum AppTab {
   final IconData selectedIcon;
 }
 
+/// 启动时就挂载的标签：默认停在「发现」，听书页暂不进树。
+///
+/// [IndexedStack] 会一次性构建所有 children，听书页只要在树里就会立刻
+/// initState → 拉书池，首屏请求和发现页抢限流 / IPC / CPU，打开软件就被拖卡。
+/// 听书改为用户第一次切过去时才挂载（见 [_AppShellState]）。未挂载的标签
+/// 必须用空占位对齐 index，否则 IndexedStack 的子节点位置与 [_tab.index]
+/// 错位，表现为切到追剧 / 历史 / 我的时整页透明或空白。
+/// 单独抽出来便于回归测试锁住这条策略。
+Set<AppTab> initialMountedTabs() =>
+    <AppTab>{...AppTab.values}..remove(AppTab.audiobook);
+
 Future<T?> openPage<T>(BuildContext context, WidgetBuilder builder) =>
     Navigator.of(
       context,
@@ -88,12 +99,10 @@ class _AppShellState extends State<AppShell> {
   final _explore = GlobalKey<ExplorePageState>();
   var _tab = AppTab.explore;
   var _headerFocused = false;
-  /// 已挂进树的标签。听书页暂不预挂：IndexedStack 会一次性构建所有 children，
-  ///
-  /// 听书页只要在树里就会立刻 initState → 拉书池，首屏请求会和发现页
-  /// 抢限流 / IPC / CPU，打开软件就被拖卡。改为用户第一次切过去时才挂载。
-  final Set<AppTab> _mountedTabs = <AppTab>{...AppTab.values}
-    ..remove(AppTab.audiobook);
+  /// 只有访问过的标签才把根页面挂进 [IndexedStack]；未访问的用空占位保持
+  /// index 对齐，不构建页面、不触发任何数据加载。切到某标签时由 [_select]
+  /// 同帧换成真实 Navigator，之后一直保留状态，不会重复初始化或重复加载。
+  final Set<AppTab> _mountedTabs = initialMountedTabs();
   FocusNode? _lastFocus;
   Timer? _exitWindow;
   DownloadOverview? _downloads;
@@ -301,7 +310,12 @@ class _AppShellState extends State<AppShell> {
                     ],
                   ),
                 ),
-              ),
+              )
+            else
+              // 未访问过的标签用空占位对齐 index：不构建根页面，
+              // 也就不会在默认「发现」页时提前加载听书模块，更不会让
+              // 追剧 / 历史 / 我的因为位置错位而整页透明或越界空白。
+              const SizedBox.shrink(),
         ],
       ),
     );

@@ -557,7 +557,9 @@ class NativeRepository extends AppRepository {
   }
 
   void _authorize(String source, {bool download = false}) {
-    if (!SourceSite.isAvailable(source)) {
+    // 自定义源不进核心注册源列表，显式放行，避免顶层可用性判定再次收窄时
+    // 把所有 XBPQ / MacCMS 源拦成「当前版本不包含此站源」。
+    if (!SourceSite.isCustomId(source) && !SourceSite.isAvailable(source)) {
       throw AppFailure('当前版本不包含此站源');
     }
     if (access == null) return;

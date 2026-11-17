@@ -46,6 +46,22 @@ void main() {
     }
   });
 
+  test('custom XBPQ sources pass authorization instead of being rejected', () async {
+    const customId = 'custom:0123456789abcdef';
+    expect(SourceSite.isCustomId(customId), isTrue);
+    expect(SourceSite.isAvailable(customId), isTrue);
+
+    final repository = NativeRepository(background: true);
+    for (final request in _requests(repository, drama('1', source: customId))) {
+      try {
+        await request();
+      } on AppFailure catch (error) {
+        // 无原生库 / 后台模式下可能会有别的失败，但不能再是「版本不含此源」。
+        expect(error.message, isNot('当前版本不包含此站源'));
+      }
+    }
+  });
+
   test('a user without the source or downloads is stopped first', () async {
     final store = await openStore({
       'profiles': jsonEncode([

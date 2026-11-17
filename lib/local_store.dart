@@ -428,7 +428,8 @@ class LocalStore extends ChangeNotifier {
   };
 
   Future<void> setSourceEnabled(String source, bool enabled) {
-    if (!SourceSite.isAvailable(source)) {
+    // 自定义源不在核心注册源列表里，但显示开关要能正常切换。
+    if (!SourceSite.isCustomId(source) && !SourceSite.isAvailable(source)) {
       return Future.error(StateError('站源无效'));
     }
     final epoch = _epoch;

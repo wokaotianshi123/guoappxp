@@ -678,6 +678,27 @@ void main() {
     expect(restarted.recentSearches, ['丙', '甲']);
   });
 
+  test('custom sources can be toggled and are not reported as missing', () async {
+    final store = await _open();
+    const customId = 'custom:0123456789abcdef';
+    await store.syncCustomSources([
+      CustomSourceSite(
+        id: customId,
+        name: 'XBPQ 测试源',
+        base: 'https://example.com',
+        rule: '{}',
+      ),
+    ]);
+    expect(store.sources.map((site) => site.id), contains(customId));
+    final missing = store.missingSourceRecords();
+    expect(missing.follows, isEmpty);
+    expect(missing.history, isEmpty);
+
+    await store.setSourceEnabled(customId, false);
+    expect(store.sourceEnabled(customId), isFalse);
+    expect(store.sources.map((site) => site.id), isNot(contains(customId)));
+  });
+
   test('erasing all data clears preferences and blocks later writes', () async {
     final store = await _open({'plugin_secret': 'gone'});
     final leftover = await store.eraseAll(() async {
