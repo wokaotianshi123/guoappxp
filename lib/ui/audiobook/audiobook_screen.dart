@@ -517,7 +517,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
         children: [
           IconButton(
             tooltip: '上一页',
-            onPressed: _canPrev ? () => unawaited(_changePage(-1)) : null,
+            onPressed: _canPrev ? () => _changePage(-1) : null,
             icon: const Icon(Icons.chevron_left_rounded),
           ),
           Flexible(
@@ -530,7 +530,7 @@ class _AudiobookScreenState extends State<AudiobookScreen> {
           ),
           IconButton(
             tooltip: '下一页',
-            onPressed: _canNext ? () => unawaited(_changePage(1)) : null,
+            onPressed: _canNext ? () => _changePage(1) : null,
             icon: const Icon(Icons.chevron_right_rounded),
           ),
           // 手动刷新：只有用户主动点才重新取首屏，不占用后台资源。
