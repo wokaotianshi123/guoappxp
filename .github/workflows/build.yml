@@ -102,10 +102,8 @@ jobs:
             exit 1
           fi
           tag="app-v${version//+/-}"
-          if git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null || gh release view "$tag" >/dev/null 2>&1; then
-            echo "版本 $version（$tag）已发布过，请先提升 pubspec.yaml 的 version。" >&2
-            exit 1
-          fi
+          # 允许同一版本号重复发布：同名 Release / Tag 会在 release job 里被删除重建，
+          # 因此这里不再因为 tag 已存在而终止。
           echo "version=$version" >> "$GITHUB_OUTPUT"
           echo "tag=$tag" >> "$GITHUB_OUTPUT"
 
@@ -409,6 +407,17 @@ jobs:
           if [ -n "$changes" ]; then
             { printf '更新内容：\n\n%s\n\n' "$changes"; cat notes.md; } > notes.tmp
             mv notes.tmp notes.md
+          fi
+          # 可重复发布：同名 Release 已存在时先删除，再用本次构建的产物重建。
+          # 删除 Release 不一定会删掉 Tag，再显式清理远程 Tag，确保 create 时
+          # 以当前提交重新打 tag，而不是复用旧 tag 指向的旧代码。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "同名 Release $TAG 已存在，删除后重新发布。"
+            gh release delete "$TAG" --yes
+          fi
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "同名 Tag $TAG 仍存在，删除后重建。"
+            git push origin --delete "$TAG" >/dev/null 2>&1 || true
           fi
           gh release create "$TAG" release/* --target "$GITHUB_SHA" --title "小果影视 ${VERSION}" --notes-file notes.md
       - name: 推送到 Telegram 频道
