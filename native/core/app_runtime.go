@@ -524,10 +524,21 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]string{"directory": root}, nil
 	case "storage":
 		return engine.storage()
-	case "cache":
+	case "cache", "cacheInfo":
+		// cache 供 Dart 端使用，cacheInfo 供本地服务版网页「清理缓存」统计使用；
+		// 两者口径一致。server 侧会再把转码临时目录的统计并进来。
 		return map[string]int64{"bytes": engine.cacheBytes()}, nil
 	case "clearCache":
-		return true, engine.clearCache()
+		// 网页端按 {clearedBytes, bytes} 显示清理结果；core 只清理数据目录内的缓存，
+		// 转码临时目录由 server 侧 mergeTranscodeCache 追加。清前后做差得到释放量。
+		before := engine.cacheBytes()
+		if err := engine.clearCache(); err != nil {
+			return nil, err
+		}
+		return map[string]int64{
+			"clearedBytes": before - engine.cacheBytes(),
+			"bytes":        engine.cacheBytes(),
+		}, nil
 	case "deleteAllData":
 		leftover, err := engine.deleteAllData()
 		return map[string]any{"leftover": leftover}, err
@@ -700,24 +711,32 @@ func (engine *nativeEngine) nativeCatalog(ctx context.Context, input nativeInput
 	}
 	var items []Drama
 	var err error
+	allowEmptyCatalog := false
 	if !hasProvider {
-		return result, errors.New("请选择有效站源")
-	}
-	descriptor := registered.Descriptor()
-	allowEmptyCatalog := descriptor.AllowEmptyCatalog
-	if descriptor.ContinuousFeed {
-		engine.mu.Lock()
-		known := make(map[string]bool, len(engine.catalogs[cacheKey]))
-		for _, drama := range engine.catalogs[cacheKey] {
-			known[drama.ID] = true
+		if isCustomMaccmsSource(source) {
+			// 自定义源（MacCMS / XBPQ 规则）不进 provider 注册表，目录按规则字段
+			// 或网页模板实时抓取。fetchDuanjuCatalogPage 内部已含这条分支。
+			items, result.HasMore, err = d.fetchDuanjuCatalogPage(ctx, source, page, category)
+		} else {
+			return result, errors.New("请选择有效站源")
 		}
-		engine.mu.Unlock()
-		ctx = context.WithValue(ctx, LibraryKnownKey{}, known)
-		if page > 1 {
-			ctx = context.WithValue(ctx, LibraryMoreKey{}, true)
+	} else {
+		descriptor := registered.Descriptor()
+		allowEmptyCatalog = descriptor.AllowEmptyCatalog
+		if descriptor.ContinuousFeed {
+			engine.mu.Lock()
+			known := make(map[string]bool, len(engine.catalogs[cacheKey]))
+			for _, drama := range engine.catalogs[cacheKey] {
+				known[drama.ID] = true
+			}
+			engine.mu.Unlock()
+			ctx = context.WithValue(ctx, LibraryKnownKey{}, known)
+			if page > 1 {
+				ctx = context.WithValue(ctx, LibraryMoreKey{}, true)
+			}
 		}
+		items, result.HasMore, err = registered.CatalogPage(ctx, page, category)
 	}
-	items, result.HasMore, err = registered.CatalogPage(ctx, page, category)
 	if err != nil && len(items) == 0 {
 		return result, err
 	}
@@ -744,11 +763,9 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama LibraryDrama
 	if !valid {
 		return nil, errors.New("剧集信息无效，请刷新剧库")
 	}
-	p, ok := engine.downloader.provider(source)
-	if !ok {
-		return nil, errors.New("请选择有效站源")
-	}
-	raw, chapters, err := p.Detail(ctx, sourceID)
+	// 自定义源（MacCMS / XBPQ 规则）不进 provider 注册表，详情按规则 / 网页模板
+	// 实时解析；fetchDuanjuDetail 内部已含这条分支。
+	raw, chapters, err := engine.downloader.fetchDuanjuDetail(ctx, source, sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -759,7 +776,7 @@ func (engine *nativeEngine) nativeDetail(ctx context.Context, drama LibraryDrama
 		drama = MergeNativeDrama(drama, NativeNormalize(raw))
 	}
 	drama.Source, drama.SourceID, drama.Episodes = source, sourceID, len(chapters)
-	if p.Descriptor().KeepDetailEpisodes {
+	if p, ok := engine.downloader.provider(source); ok && p.Descriptor().KeepDetailEpisodes {
 		drama.Episodes = max(drama.Episodes, NativeNormalize(raw).Episodes)
 	}
 	warning := ""

@@ -15,11 +15,16 @@ func (engine *nativeEngine) nativeSeasons(ctx context.Context, drama LibraryDram
 	if !valid {
 		return nil, errors.New("剧集信息无效")
 	}
+	items := []nativeSeason{}
+	// 自定义源（MacCMS / XBPQ 规则）没有 provider，也不提供「分季」能力，
+	// 优雅降级为空列表，而不是报「请选择有效站源」把整个详情拦下来。
 	p, ok := engine.downloader.provider(source)
 	if !ok {
+		if isCustomMaccmsSource(source) {
+			return map[string]any{"items": items}, nil
+		}
 		return nil, errors.New("请选择有效站源")
 	}
-	items := []nativeSeason{}
 	provider, ok := providerAs[SeasonProvider](p)
 	if !ok {
 		return map[string]any{"items": items}, nil

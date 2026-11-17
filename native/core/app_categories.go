@@ -52,11 +52,24 @@ func (engine *nativeEngine) nativeCategories(ctx context.Context, source string,
 		return cached, nil
 	}
 	d := engine.downloader
-	p, ok := d.provider(source)
-	if !ok {
-		return nil, errors.New("请选择有效站源")
+	var categories []Category
+	var err error
+	if isCustomMaccmsSource(source) {
+		// 自定义源（MacCMS / XBPQ 规则）不进 provider 注册表，分类按规则 /
+		// 首页导航实时提取。fetchDuanjuCategories 内部已含这条分支。
+		categories, err = d.fetchDuanjuCategories(ctx, source)
+		// 实时抓分类失败（站点抖动、规则未识别）时只保留「全部」：目录请求
+		// 不依赖分类参数，不该因为分类为空就把整个站源显示成打不开。
+		if err != nil || len(categories) == 0 {
+			return all, nil
+		}
+	} else {
+		p, ok := d.provider(source)
+		if !ok {
+			return nil, errors.New("请选择有效站源")
+		}
+		categories, err = p.Categories(ctx, force)
 	}
-	categories, err := p.Categories(ctx, force)
 	all = append(all, categories...)
 	if errors.Is(err, ErrCategoriesIncomplete) {
 		return all, nil
