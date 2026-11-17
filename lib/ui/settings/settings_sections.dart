@@ -226,7 +226,7 @@ class SettingsSection extends StatelessWidget {
             ),
             SwitchTile(
               title: '滑动调节亮度/音量',
-              subtitle: '左侧上下滑动调整亮度，右侧上下滑动调整音量',
+              subtitle: '左侧上下滑动调整亮度，右侧上下滑动调整音量；竖屏时在画面左右两侧边缘滑动',
               value: preferences.swipeLevels,
               onChanged: (value) =>
                   savePreferences(preferences.copyWith(swipeLevels: value)),

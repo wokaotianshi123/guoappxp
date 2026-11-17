@@ -169,6 +169,25 @@ class PlaybackSettingsList extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 18),
+          if (session.hasRoutes) ...[
+            Text('线路', style: label),
+            const SizedBox(height: 10),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (var route = 0; route < session.routeCount; route++)
+                  _Choice(
+                    label: '线路 ${route + 1}',
+                    selected: route == session.routeIndex,
+                    onSelected: session.ready && !session.switchingRoute
+                        ? () => _change(() => session.selectRoute(route))
+                        : null,
+                  ),
+              ],
+            ),
+            const SizedBox(height: 18),
+          ],
           Text('清晰度', style: label),
           const SizedBox(height: 10),
           Wrap(

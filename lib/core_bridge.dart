@@ -266,6 +266,18 @@ abstract class AppRepository {
     bool adBlock = true,
   });
   Future<PlaybackPlan> fallback(PlaybackPlan current);
+
+  /// 切到第 [route] 条线路（从 0 开始）。核心支持 selectRoute 时一步到位；
+  /// 旧核心只认识「下一条」，这里沿 fallback 往前翻，翻不到就报错。
+  Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async {
+    var plan = current;
+    for (var step = 0; step <= 8 && plan.routeIndex != route; step++) {
+      plan = await fallback(plan);
+    }
+    if (plan.routeIndex != route) throw AppFailure('这条线路暂时切不过去，请稍后重试');
+    return plan;
+  }
+
   Future<void> cancelPlayback();
   Future<void> release(String session);
 
@@ -1206,6 +1218,16 @@ class NativeRepository extends AppRepository {
         await _call({
           'action': 'fallback',
           'session': current.session,
+          'sequence': ++_playbackSequence,
+        }),
+      );
+  @override
+  Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async =>
+      PlaybackPlan.fromJson(
+        await _call({
+          'action': 'selectRoute',
+          'session': current.session,
+          'route': route,
           'sequence': ++_playbackSequence,
         }),
       );

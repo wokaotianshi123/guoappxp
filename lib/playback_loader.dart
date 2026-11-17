@@ -42,6 +42,9 @@ class PlaybackLoader {
   Future<PlaybackPlan?> fallback(PlaybackPlan current) =>
       _load(() => repository.fallback(current));
 
+  Future<PlaybackPlan?> selectRoute(PlaybackPlan current, int route) =>
+      _load(() => repository.selectRoute(current, route));
+
   Future<PlaybackPlan?> use(PlaybackPlan prepared) =>
       _load(() async => prepared);
 

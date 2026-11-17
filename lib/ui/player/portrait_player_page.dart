@@ -19,6 +19,7 @@ import '../widgets/follow_button.dart';
 import 'danmaku_overlay.dart';
 import 'episode_grid.dart';
 import 'fade_presence.dart';
+import 'level_drag.dart';
 import 'mini_player.dart';
 import 'playback_sheets.dart';
 import 'player_intro.dart';
@@ -81,6 +82,9 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   bool _snapping = false;
 
   PlaybackSession get _session => widget.handle.session;
+
+  /// 设置 › 播放里的「滑动调节亮度/音量」，默认开启。
+  bool get _levelsEnabled => _session.store.playbackPreferences.swipeLevels;
 
   @override
   void initState() {
@@ -625,6 +629,28 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                 ),
               ),
             ),
+            // 左边竖滑调亮度、右边竖滑调音量：只挂在两侧窄边上，
+            // 中间照旧是 PageView 的「上下滑切集」，两边互不抢手势。
+            if (!_pinching && !_session.locked && _levelsEnabled) ...[
+              Positioned(
+                left: 0,
+                top: 0,
+                bottom: 0,
+                child: LevelDrag(
+                  kind: LevelKind.brightness,
+                  alignment: Alignment.centerLeft,
+                ),
+              ),
+              Positioned(
+                right: 0,
+                top: 0,
+                bottom: 0,
+                child: LevelDrag(
+                  kind: LevelKind.volume,
+                  alignment: Alignment.centerRight,
+                ),
+              ),
+            ],
           ],
         ],
       ),

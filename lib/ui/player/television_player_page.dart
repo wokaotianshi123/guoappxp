@@ -17,7 +17,7 @@ import 'player_status.dart';
 import 'player_surface.dart';
 import 'player_video.dart';
 
-enum _Menu { speed, quality, fit }
+enum _Menu { speed, quality, route, fit }
 
 final _arrows = {
   LogicalKeyboardKey.arrowUp,
@@ -51,6 +51,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
   final _danmaku = FocusNode();
   final _speed = FocusNode();
   final _quality = FocusNode();
+  final _route = FocusNode();
   final _fit = FocusNode();
   final _retry = FocusNode();
   final _options = <FocusNode>[];
@@ -99,6 +100,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       _danmaku,
       _speed,
       _quality,
+      _route,
       _fit,
       _retry,
       ..._options,
@@ -241,6 +243,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     if (_session.danmakuSupported) _danmaku,
     _speed,
     _quality,
+    if (_session.hasRoutes) _route,
     _fit,
   ];
 
@@ -249,6 +252,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
       node == _next && _session.hasNext ||
       node == _speed && _session.ready ||
       node == _quality && _session.ready && !_session.local ||
+      node == _route && _session.ready && _session.hasRoutes ||
       node == _play ||
       node == _fit ||
       node == _danmaku;
@@ -267,18 +271,23 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
   List<Object> _values(_Menu menu) => switch (menu) {
     _Menu.speed => playbackSpeeds.reversed.toList(),
     _Menu.quality => [..._session.qualities, 0],
+    _Menu.route => [
+      for (var route = 0; route < _session.routeCount; route++) route,
+    ],
     _Menu.fit => VideoFit.values,
   };
 
   Object _selected(_Menu menu) => switch (menu) {
     _Menu.speed => _session.speed,
     _Menu.quality => _session.quality,
+    _Menu.route => _session.routeIndex,
     _Menu.fit => _session.videoFit,
   };
 
   FocusNode _button(_Menu menu) => switch (menu) {
     _Menu.speed => _speed,
     _Menu.quality => _quality,
+    _Menu.route => _route,
     _Menu.fit => _fit,
   };
 
@@ -312,6 +321,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
         () => switch (menu) {
           _Menu.speed => _session.setSpeed(value as double),
           _Menu.quality => _session.setQuality(value as int),
+          _Menu.route => _session.selectRoute(value as int),
           _Menu.fit => _session.setVideoFit(value as VideoFit),
         },
       ),
@@ -592,6 +602,16 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                   () => _openMenu(_Menu.quality),
                 ),
               ),
+              if (_session.hasRoutes)
+                CompositedTransformTarget(
+                  link: _links[_Menu.route]!,
+                  child: _pill(
+                    _route,
+                    '线路 ${_session.routeIndex + 1}',
+                    '播放线路',
+                    () => _openMenu(_Menu.route),
+                  ),
+                ),
               CompositedTransformTarget(
                 link: _links[_Menu.fit]!,
                 child: _pill(
@@ -959,6 +979,7 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
     String label(Object value) => switch (menu) {
       _Menu.speed => '${value}x',
       _Menu.quality => value == 0 ? '自动' : '${value}P',
+      _Menu.route => '线路 ${(value as int) + 1}',
       _Menu.fit => (value as VideoFit).label,
     };
     return Container(

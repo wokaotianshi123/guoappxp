@@ -31,7 +31,7 @@ String formatClock(Duration value) {
   return seconds >= 3600 ? '${seconds ~/ 3600}:$clock' : clock;
 }
 
-enum _Popup { quality, speed, fit, sleep, volume }
+enum _Popup { quality, route, speed, fit, sleep, volume }
 
 class PlayerSurface extends StatefulWidget {
   const PlayerSurface({
@@ -323,7 +323,10 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
     _session.endBoost();
   }
 
-  Future<void> _change(Future<void> Function() change) async {
+  Future<void> _change(
+    Future<void> Function() change, {
+    String failure = '播放偏好未能保存，请重试',
+  }) async {
     _close();
     widget.onSurface();
     try {
@@ -332,7 +335,7 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
       if (!mounted) return;
       ScaffoldMessenger.of(
         context,
-      ).showSnackBar(const SnackBar(content: Text('播放偏好未能保存，请重试')));
+      ).showSnackBar(SnackBar(content: Text(failure)));
     }
   }
 
@@ -743,6 +746,9 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
     }
 
     final showSpeed = fits(_textSlot(speed, bold: true));
+    final showRoute =
+        _session.hasRoutes &&
+        fits(_textSlot('线路 ${_session.routeIndex + 1}'));
     final showQuality = fits(_textSlot(_session.qualityLabel));
     final showWide = !widget.touch && !widget.fullscreen && fits(_iconSlot);
     final showDanmaku = _session.danmakuSupported && fits(_iconSlot + 4);
@@ -784,6 +790,15 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
           ),
         ],
         const Spacer(),
+        if (showRoute)
+          _popupTarget(
+            _Popup.route,
+            _text(
+              '线路 ${_session.routeIndex + 1}',
+              '播放线路',
+              ready ? () => _open(_Popup.route) : null,
+            ),
+          ),
         if (showQuality)
           _popupTarget(
             _Popup.quality,
@@ -942,6 +957,7 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
         label: (value) => value == 0 ? '自动' : '${value}P',
         onSelected: (value) => _change(() => _session.setQuality(value)),
       ),
+      _Popup.route => _routeOptions(),
       _Popup.fit => _options<VideoFit>(
         values: VideoFit.values,
         selected: _session.videoFit,
@@ -999,6 +1015,45 @@ class _PlayerSurfaceState extends State<PlayerSurface> {
               ),
             ),
         ],
+      ),
+    );
+  }
+
+  /// 线路列表：线路数量不定，超长时在面板内滚动而不是把弹层顶出屏幕。
+  Widget _routeOptions() {
+    final colors = Theme.of(context).colorScheme;
+    final count = _session.routeCount.clamp(1, 64);
+    final height = (count * 36.0 + 12).clamp(48.0, 300.0);
+    return SizedBox(
+      width: 132,
+      height: height,
+      child: ListView.builder(
+        padding: EdgeInsets.zero,
+        itemCount: count,
+        itemBuilder: (context, index) {
+          final current = index == _session.routeIndex;
+          return InkWell(
+            borderRadius: BorderRadius.circular(8),
+            hoverColor: Colors.white.withValues(alpha: .14),
+            onTap: () => _change(
+              () => _session.selectRoute(index),
+              failure: '线路切换失败，换一条试试',
+            ),
+            child: Container(
+              height: 36,
+              padding: const EdgeInsets.symmetric(horizontal: 14),
+              alignment: Alignment.center,
+              child: Text(
+                '线路 ${index + 1}',
+                style: TextStyle(
+                  fontSize: 14,
+                  fontWeight: current ? FontWeight.w700 : FontWeight.w500,
+                  color: current ? colors.primary : Colors.white,
+                ),
+              ),
+            ),
+          );
+        },
       ),
     );
   }

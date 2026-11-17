@@ -233,6 +233,8 @@ class PlaybackSession extends ChangeNotifier {
   double _openedAt = 0;
   double _speed = 1;
   int _quality = 0;
+  bool _switchingRoute = false;
+  int? _routeRequest;
   bool _danmakuEnabled = true;
   Size? _videoSize;
   VideoFit _videoFit = VideoFit.auto;
@@ -287,6 +289,12 @@ class PlaybackSession extends ChangeNotifier {
   int get quality => _quality;
   bool get local => _plan?.local == true;
   List<int> get qualities => _plan?.qualities ?? const [];
+  /// 当前播放线路（0 开始）与这一集的总线路数；只有多个线路时播放设置才显示切换。
+  int get routeIndex => _plan?.routeIndex ?? 0;
+  int get routeCount => _plan?.routeCount ?? 1;
+  bool get hasRoutes => !local && routeCount > 1;
+  bool get switchingRoute => _switchingRoute;
+  String get routeLabel => '线路 ${routeIndex + 1}/$routeCount';
   bool get danmakuSupported => SourceSite.byId(detail.drama.source).danmaku;
   bool get danmakuEnabled => _danmakuEnabled;
   PlaybackPreferences get preferences => _preferences;
@@ -750,6 +758,7 @@ class PlaybackSession extends ChangeNotifier {
     _localFailure = false;
     _loginRequired = false;
     _loadingMessage = switch (recovery) {
+      PlaybackRecoveryAction.alternative when _routeRequest != null => '正在切换线路',
       PlaybackRecoveryAction.alternative => '正在切换备用线路',
       PlaybackRecoveryAction.refresh => '正在重新获取播放地址',
       _ => '正在准备播放',
@@ -775,7 +784,10 @@ class PlaybackSession extends ChangeNotifier {
       });
       if (!_current(ticket)) return;
       prepared = retained != null
-          ? await _loader.fallback(retained!)
+          ? switch (_routeRequest) {
+              final route? => await _loader.selectRoute(retained!, route),
+              null => await _loader.fallback(retained!),
+            }
           : warmed != null
           ? await _loader.use(warmed)
           : await _loader.load(
@@ -1344,6 +1356,34 @@ class PlaybackSession extends ChangeNotifier {
       position: currentPosition,
       playWhenReady: _error != null || player.state.playing,
     );
+  }
+
+  /// 切到这一集的第 [route] 条线路，从当前位置接着播。
+  ///
+  /// 走的是与自动恢复同一条通道（先存进度、保留旧会话、装上新会话），
+  /// 所以切线路不会丢进度，也不会在切换期间把画面停在旧流上。
+  Future<void> selectRoute(int route) async {
+    final current = _plan;
+    if (_closed || _switchingRoute || current == null || current.local) return;
+    if (!_usable || route < 0 || route >= routeCount) return;
+    if (route == current.routeIndex) return;
+    _switchingRoute = true;
+    _routeRequest = route;
+    _notify();
+    try {
+      await play(
+        _index,
+        position: currentPosition,
+        recovery: PlaybackRecoveryAction.alternative,
+        playWhenReady: _error != null || player.state.playing,
+      );
+      // 用户手动换线不该算进「自动恢复已试过几条备线」的次数。
+      _recovery.reset();
+    } finally {
+      _routeRequest = null;
+      _switchingRoute = false;
+      _notify();
+    }
   }
 
   Future<void> toggleDanmaku() async {

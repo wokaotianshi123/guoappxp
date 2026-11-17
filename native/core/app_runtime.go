@@ -94,6 +94,8 @@ type nativeInput struct {
 	Index           int                     `json:"index"`
 	Quality         int                     `json:"quality"`
 	Session         string                  `json:"session"`
+	// Route 是播放线路下标（从 0 开始），仅 selectRoute 使用。
+	Route           int                     `json:"route"`
 	Sequence        int64                   `json:"sequence"`
 	Force           bool                    `json:"force"`
 	Bundled         bool                    `json:"bundled"`
@@ -595,14 +597,17 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.nativeMetadata(ctx, input.Drama)
 	case "followCheck":
 		return engine.nativeFollowCheck(ctx, input.Drama)
-	case "resolve", "fallback":
+	case "resolve", "fallback", "selectRoute":
 		playback, finish, err := engine.nativeBeginPlayback(ctx, input.Sequence)
 		if err != nil {
 			return nil, err
 		}
 		defer finish()
-		if input.Action == "fallback" {
+		switch input.Action {
+		case "fallback":
 			return engine.nativeNextPlayback(playback, input.Session)
+		case "selectRoute":
+			return engine.nativeSelectPlayback(playback, input.Session, input.Route)
 		}
 		return engine.nativeResolve(playback, input)
 	case "cancelPlayback":

@@ -148,6 +148,22 @@ func (engine *nativeEngine) nativeNextPlayback(ctx context.Context, session stri
 	return engine.nativeOpenPlayback(ctx, choice)
 }
 
+// nativeSelectPlayback 直接切到第 route 条线路（从 0 开始）。
+// 播放设置里的「线路」列表靠它跳选，不必像 next 那样逐条往前走。
+func (engine *nativeEngine) nativeSelectPlayback(ctx context.Context, session string, route int) (nativePlan, error) {
+	engine.mu.Lock()
+	choice, exists := engine.playbacks[session]
+	engine.mu.Unlock()
+	if !exists {
+		return nativePlan{}, errors.New("播放线路已失效，请重新解析播放")
+	}
+	if route < 0 || route >= len(choice.media) {
+		return nativePlan{}, errors.New("该线路不存在，请重新解析播放")
+	}
+	choice.index = route
+	return engine.nativeOpenPlayback(ctx, choice)
+}
+
 func (engine *nativeEngine) nativeReleasePlayback(session string) {
 	engine.mu.Lock()
 	choice, exists := engine.playbacks[session]

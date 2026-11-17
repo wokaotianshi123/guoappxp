@@ -143,10 +143,12 @@ class AppDevice {
     } catch (_) {}
   }
 
-  /// 只有 Android 由 MainActivity 提供窗口级亮度覆盖；桌面端与 iOS 没有
-  /// 等价能力，手势里必须据此关掉亮度分支，避免出现「有条无效果」的假调节。
+  /// Android 由 MainActivity 提供窗口级亮度覆盖，iOS 由 AppDelegate 调
+  /// UIScreen.brightness（退出播放页会恢复原值）；桌面端没有等价能力，
+  /// 手势里必须据此关掉亮度分支，避免出现「有条无效果」的假调节。
   static bool get brightnessSupported =>
-      defaultTargetPlatform == TargetPlatform.android;
+      defaultTargetPlatform == TargetPlatform.android ||
+      defaultTargetPlatform == TargetPlatform.iOS;
 
   static Future<double?> brightness() async {
     try {
