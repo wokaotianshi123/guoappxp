@@ -1550,21 +1550,28 @@ class _AudiobookPlayerScreenState extends State<AudiobookPlayerScreen> {
                     children: [
                       Text(formatAudiobookClock(_dragging ? _drag : _position)),
                       Expanded(
-                        child: Slider(
-                          value: value,
-                          max: max,
-                          onChanged: _duration > 1
-                              ? (next) => setState(() {
-                                  _dragging = true;
-                                  _drag = next;
-                                })
-                              : null,
-                          onChangeEnd: _duration > 1
-                              ? (next) async {
-                                  setState(() => _dragging = false);
-                                  await _session.seekTo(next);
-                                }
-                              : null,
+                        // 方向导航模式：Slider 只吃左右键调进度，上下键留给
+                        // 焦点遍历，否则焦点落进进度条就再也逃不出去。
+                        child: MediaQuery(
+                          data: MediaQuery.of(context).copyWith(
+                            navigationMode: NavigationMode.directional,
+                          ),
+                          child: Slider(
+                            value: value,
+                            max: max,
+                            onChanged: _duration > 1
+                                ? (next) => setState(() {
+                                    _dragging = true;
+                                    _drag = next;
+                                  })
+                                : null,
+                            onChangeEnd: _duration > 1
+                                ? (next) async {
+                                    setState(() => _dragging = false);
+                                    await _session.seekTo(next);
+                                  }
+                                : null,
+                          ),
                         ),
                       ),
                       Text(formatAudiobookClock(_duration)),
@@ -1784,25 +1791,31 @@ class _AudiobookPlayerScreenState extends State<AudiobookPlayerScreen> {
             icon: const Icon(CupertinoIcons.goforward_15),
           ),
           Expanded(
-            child: Slider(
-              value: value,
-              max: max,
-              onChanged: _duration > 1
-                  ? (next) => setState(() {
-                      _dragging = true;
-                      _drag = next;
-                    })
-                  : null,
-              onChangeEnd: _duration > 1
-                  ? (next) async {
-                      setState(() {
-                        _dragging = false;
-                        _following = true;
-                      });
-                      await _session.seekTo(next);
-                      _followLine(next, force: true);
-                    }
-                  : null,
+            // 同主播放条：方向导航下只吃左右键，上下键留给焦点遍历。
+            child: MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(navigationMode: NavigationMode.directional),
+              child: Slider(
+                value: value,
+                max: max,
+                onChanged: _duration > 1
+                    ? (next) => setState(() {
+                        _dragging = true;
+                        _drag = next;
+                      })
+                    : null,
+                onChangeEnd: _duration > 1
+                    ? (next) async {
+                        setState(() {
+                          _dragging = false;
+                          _following = true;
+                        });
+                        await _session.seekTo(next);
+                        _followLine(next, force: true);
+                      }
+                    : null,
+              ),
             ),
           ),
           Text(
@@ -1915,13 +1928,19 @@ class _ChapterJumpSheetState extends State<_ChapterJumpSheet> {
               overflow: TextOverflow.ellipsis,
               style: Theme.of(context).textTheme.titleMedium,
             ),
-            Slider(
-              key: const ValueKey('audiobook-chapter-jump-slider'),
-              value: _value,
-              max: (count - 1).toDouble(),
-              divisions: count > 1 ? count - 1 : null,
-              label: '${index + 1}',
-              onChanged: (next) => setState(() => _value = next),
+            // 章节选择滑块同样只吃左右键，上下键留给焦点遍历。
+            MediaQuery(
+              data: MediaQuery.of(
+                context,
+              ).copyWith(navigationMode: NavigationMode.directional),
+              child: Slider(
+                key: const ValueKey('audiobook-chapter-jump-slider'),
+                value: _value,
+                max: (count - 1).toDouble(),
+                divisions: count > 1 ? count - 1 : null,
+                label: '${index + 1}',
+                onChanged: (next) => setState(() => _value = next),
+              ),
             ),
             FilledButton(
               onPressed: () => Navigator.pop(context, index),
@@ -1957,42 +1976,68 @@ class AudiobookNowPlayingBar extends StatelessWidget {
           return const SizedBox.shrink();
         }
         final theme = Theme.of(context);
+        void openPlayer() => Navigator.of(context).push(
+          MaterialPageRoute<void>(
+            builder: (_) => AudiobookPlayerScreen(
+              repository: repository,
+              api: api,
+              store: store,
+              book: book,
+              chapters: session.chapters,
+              index: session.index,
+            ),
+          ),
+        );
+        // 刻意不用 ListTile：它的 onTap 会生成一个覆盖整条状态栏的焦点节点，
+        // 两个按钮被包在这个父节点内部，遥控器方向键只会在父节点上打转，
+        // 永远进不了子节点（实测 rect 覆盖 (0,528)-(800,600)，按钮在它里面）。
+        // 改成手写 Row 后，标题区与两个按钮是同级焦点节点，右键就能逐个走过去。
         return Material(
           key: const ValueKey('audiobook-now-playing'),
           color: theme.colorScheme.surfaceContainerHigh,
           child: SafeArea(
             top: false,
-            child: ListTile(
-              leading: const Icon(Icons.headphones_rounded),
-              title: Text(
-                book.title,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              subtitle: Text(
-                session.loading
-                    ? '${chapter.title} · 正在打开'
-                    : '${chapter.title} · ${formatAudiobookClock(session.position)}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-              ),
-              onTap: () => Navigator.of(context).push(
-                MaterialPageRoute<void>(
-                  builder: (_) => AudiobookPlayerScreen(
-                    repository: repository,
-                    api: api,
-                    store: store,
-                    book: book,
-                    chapters: session.chapters,
-                    index: session.index,
-                  ),
-                ),
-              ),
-              // 电视端遥控器靠 FocusRing 才能停在这两个按钮上并画出焦点框；
-              // 裸 IconButton 在遥控器遍历里会被跳过，播放/关闭都按不到。
-              trailing: Row(
-                mainAxisSize: MainAxisSize.min,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 8, 6),
+              child: Row(
                 children: [
+                  const Icon(Icons.headphones_rounded),
+                  const SizedBox(width: 16),
+                  Expanded(
+                    child: FocusRing(
+                      radius: 12,
+                      child: InkWell(
+                        key: const ValueKey('audiobook-now-playing-open'),
+                        borderRadius: BorderRadius.circular(12),
+                        onTap: openPlayer,
+                        child: Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 6),
+                          child: Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              Text(
+                                book.title,
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodyLarge,
+                              ),
+                              Text(
+                                session.loading
+                                    ? '${chapter.title} · 正在打开'
+                                    : '${chapter.title} · ${formatAudiobookClock(session.position)}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                style: theme.textTheme.bodySmall,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  // 电视端遥控器靠 FocusRing 才能停在这两个按钮上并画出焦点框。
                   FocusRing(
                     radius: 999,
                     child: IconButton(
