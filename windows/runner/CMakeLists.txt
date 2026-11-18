@@ -26,6 +26,9 @@ add_executable(${BINARY_NAME} WIN32
 # that need different build settings.
 apply_standard_settings(${BINARY_NAME})
 target_compile_options(${BINARY_NAME} PRIVATE /utf-8)
+# MSVC 14.51+ treats the deprecation of <experimental/coroutine> as a hard error;
+# C++/WinRT (used by media_controls.cpp) still includes that header under C++17.
+target_compile_definitions(${BINARY_NAME} PRIVATE _SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
 
 # Add preprocessor definitions for the build version.
 target_compile_definitions(${BINARY_NAME} PRIVATE "FLUTTER_VERSION=\"${FLUTTER_VERSION}\"")
