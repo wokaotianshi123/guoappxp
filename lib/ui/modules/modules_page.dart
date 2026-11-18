@@ -33,6 +33,11 @@ ModuleIndexEntry? _updateFor(SourceModule module, ModuleIndexEntry? entry) =>
     ? entry
     : null;
 
+List<SourceModule> _arranged(List<SourceModule> modules, List<String> order) {
+  final byId = {for (final module in modules) module.id: module};
+  return [for (final id in order) ?byId.remove(id), ...byId.values];
+}
+
 Map<String, String> _missingSources(
   LocalStore store,
   AppRepository repository,
@@ -57,6 +62,7 @@ class _ModulesPageState extends State<ModulesPage>
   late final _tabs = TabController(length: 4, vsync: this)
     ..addListener(_tabChanged);
   List<SourceModule>? _modules;
+  List<String>? _moving;
   String? _error;
   ModuleStore? _index;
   String? _indexError;
@@ -264,8 +270,53 @@ class _ModulesPageState extends State<ModulesPage>
     separatorBuilder: (_, _) => const SizedBox(height: 12),
   );
 
+  Future<void> _reorder(List<SourceModule> modules, int from, int to) async {
+    final ids = [for (final module in modules) module.id];
+    ids.insert(to, ids.removeAt(from));
+    setState(() => _moving = ids);
+    await saveSetting(context, () => _store.setSourceOrder(ids));
+    if (mounted) setState(() => _moving = null);
+  }
+
+  Widget _reorderable(
+    List<SourceModule> modules,
+    List<Widget> header,
+    Widget Function(SourceModule) card,
+  ) => ReorderableListView(
+    padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
+    buildDefaultDragHandles: false,
+    header: header.isEmpty
+        ? null
+        : Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: Column(spacing: 12, children: header),
+          ),
+    onReorderItem: (from, to) => _reorder(modules, from, to),
+    proxyDecorator: (child, _, animation) => ScaleTransition(
+      scale: Tween(begin: 1.0, end: 1.03).animate(animation),
+      child: Material(type: MaterialType.transparency, child: child),
+    ),
+    children: [
+      for (final (index, module) in modules.indexed)
+        ReorderableDelayedDragStartListener(
+          key: ValueKey(module.id),
+          index: index,
+          child: Padding(
+            padding: const EdgeInsets.only(bottom: 12),
+            child: card(module),
+          ),
+        ),
+    ],
+  );
+
   Widget _installedTab() {
-    final modules = _modules;
+    final modules = switch (_modules) {
+      final loaded? => _arranged(
+        loaded,
+        _moving ?? [for (final site in SourceSite.allValues) site.id],
+      ),
+      null => null,
+    };
     final enabled = _canInstall;
     final latest = <String, ModuleIndexEntry>{};
     for (final entry in _index?.entries ?? const <ModuleIndexEntry>[]) {
@@ -275,27 +326,33 @@ class _ModulesPageState extends State<ModulesPage>
         latest[entry.id] = entry;
       }
     }
+    Widget card(SourceModule module) => _InstalledCard(
+      module: module,
+      update: _updateFor(module, latest[module.id]),
+      enabled: _store.sourceEnabled(module.id),
+      onToggle: module.error.isEmpty && SourceSite.isAvailable(module.id)
+          ? (value) => _toggle(module, value)
+          : null,
+      onDetails: () => _details(module),
+      onUpdate: enabled ? () => _installIndexed(latest[module.id]!) : null,
+      onUninstall: enabled ? () => _uninstall(module) : null,
+    );
+    final header = [if (_error case final error?) _Note(error)];
+    if (modules != null &&
+        modules.length > 1 &&
+        _store.profile.admin &&
+        !_store.locked &&
+        !AppScope.of(context).television) {
+      return _reorderable(modules, header, card);
+    }
     return _list([
-      if (_error case final error?) _Note(error),
+      ...header,
       if (modules == null && _error == null)
         const _Loading()
       else if (modules != null && modules.isEmpty)
         const _Note('还没有安装模块。站源以模块的形式提供，可以从在线仓库、内置或手动安装。')
       else if (modules != null)
-        for (final module in modules)
-          _InstalledCard(
-            module: module,
-            update: _updateFor(module, latest[module.id]),
-            enabled: _store.sourceEnabled(module.id),
-            onToggle: module.error.isEmpty && SourceSite.isAvailable(module.id)
-                ? (value) => _toggle(module, value)
-                : null,
-            onDetails: () => _details(module),
-            onUpdate: enabled
-                ? () => _installIndexed(latest[module.id]!)
-                : null,
-            onUninstall: enabled ? () => _uninstall(module) : null,
-          ),
+        for (final module in modules) card(module),
     ]);
   }
 

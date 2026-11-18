@@ -11,6 +11,7 @@ import 'danmaku_style.dart';
 import 'diary_service.dart';
 import 'follow_state.dart';
 import 'local_store.dart';
+import 'media_controls.dart';
 import 'models.dart';
 import 'playback_loader.dart';
 import 'playback_preferences.dart';
@@ -62,6 +63,7 @@ class PlaybackSession extends ChangeNotifier {
       ..setBlockedWords(preferences.danmakuWords);
     store.addListener(_accessChanged);
     store.addListener(_syncBlockedWords);
+    store.addListener(_syncMedia);
     _bind();
     _saveTimer = Timer.periodic(
       const Duration(seconds: 5),
@@ -212,6 +214,7 @@ class PlaybackSession extends ChangeNotifier {
   bool _closed = false;
   bool _acceptErrors = false;
   bool _foreground = true;
+  bool _visible = true;
   bool _playIntent = true;
   bool _pendingError = false;
   bool _boosting = false;
@@ -344,7 +347,9 @@ class PlaybackSession extends ChangeNotifier {
   }
 
   void _notify() {
-    if (!_closed) notifyListeners();
+    if (_closed) return;
+    notifyListeners();
+    _syncMedia();
   }
 
   void _accessChanged() {
@@ -371,6 +376,74 @@ class PlaybackSession extends ChangeNotifier {
   void _sync() {
     _syncDanmaku();
     _syncPreload();
+    _syncMedia();
+  }
+
+  bool get _backgroundPlayback => store.playbackPreferences.backgroundPlayback;
+
+  bool get _videoHidden => Platform.isIOS && !_visible && _backgroundPlayback;
+
+  void _syncMedia() {
+    if (_closed) return;
+    final controls = MediaControls.instance;
+    if (!_backgroundPlayback || !_engaged || !_usable || store.locked) {
+      controls.release(this);
+      return;
+    }
+    if (!_playIntent && !controls.owns(this)) return;
+    final state = player.state;
+    final opened = ready && _openedIndex == _index;
+    controls.update(
+      this,
+      MediaState(
+        title: detail.drama.title,
+        subtitle: episode.title,
+        artwork: repository.knownCover(detail.drama) ?? '',
+        active: _playIntent && _error == null,
+        playing: _playIntent && state.playing,
+        position: opened ? state.position : Duration.zero,
+        duration: opened ? state.duration : Duration.zero,
+        rate: state.rate,
+        hasPrevious: hasPrevious,
+        hasNext: hasNext,
+      ),
+      _mediaCommand,
+    );
+  }
+
+  void _mediaCommand(MediaCommand command, Duration? position) {
+    if (_closed) return;
+    switch (command) {
+      case MediaCommand.play:
+        if (paused) togglePlayback();
+      case MediaCommand.pause:
+        _pause();
+      case MediaCommand.toggle:
+        if (paused) {
+          togglePlayback();
+        } else {
+          _pause();
+        }
+      case MediaCommand.next:
+        unawaited(next());
+      case MediaCommand.previous:
+        unawaited(previous());
+      case MediaCommand.seek:
+        if (position != null) unawaited(seekTo(position));
+    }
+  }
+
+  void _pause() {
+    if (!_usable || !_playIntent) return;
+    if (ready && player.state.playing) {
+      togglePlayback();
+      return;
+    }
+    _stop();
+    _cancelResumeWatchdog();
+    _pausedSince = DateTime.now();
+    _scheduleStandbyIdle();
+    _notify();
   }
 
   void _syncDanmaku() {
@@ -708,6 +781,9 @@ class PlaybackSession extends ChangeNotifier {
       ].join(','),
     );
     await platform.setProperty('network-timeout', '20');
+    if (Platform.isIOS) {
+      await platform.setProperty('vid', _videoHidden ? 'no' : 'auto');
+    }
   }
 
   Future<void> play(
@@ -1448,12 +1524,17 @@ class PlaybackSession extends ChangeNotifier {
   }
 
   void setForeground(bool visible) {
-    if (_closed || _foreground == visible) return;
-    DiaryService.add(visible ? '[Play] 应用回到前台' : '[Play] 应用不可见，暂停播放');
-    _foreground = visible;
+    if (_closed) return;
+    _setVisible(visible);
+    final foreground = visible || _backgroundPlayback;
+    if (_foreground == foreground) return;
+    DiaryService.add(
+      foreground ? '[Play] 应用回到前台' : '[Play] 应用不可见，暂停播放',
+    );
+    _foreground = foreground;
     _health.reset();
     _sync();
-    if (!visible) {
+    if (!foreground) {
       endBoost();
       _playIntent = false;
       _pausedSince = DateTime.now();
@@ -1466,6 +1547,24 @@ class PlaybackSession extends ChangeNotifier {
     } else {
       _holdNetworkSpeed();
       if (_pendingError) _queueRecovery('foreground_pending_error');
+    }
+  }
+
+  void _setVisible(bool visible) {
+    if (_visible == visible) return;
+    _visible = visible;
+    if (!visible && _backgroundPlayback) {
+      DiaryService.add('[Play] 应用不可见，后台继续播放');
+    }
+    if (!Platform.isIOS) return;
+    for (final target in [_player, ?_standby]) {
+      final platform = target.platform;
+      if (platform is! NativePlayer) continue;
+      unawaited(
+        platform
+            .setProperty('vid', _videoHidden ? 'no' : 'auto')
+            .catchError((Object _) {}),
+      );
     }
   }
 
@@ -1510,6 +1609,8 @@ class PlaybackSession extends ChangeNotifier {
     _generation++;
     store.removeListener(_accessChanged);
     store.removeListener(_syncBlockedWords);
+    store.removeListener(_syncMedia);
+    MediaControls.instance.release(this);
     _saveTimer?.cancel();
     _healthTimer?.cancel();
     _errorTimer?.cancel();

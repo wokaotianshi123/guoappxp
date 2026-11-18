@@ -105,6 +105,7 @@ class PlaybackPreferences {
     this.hideSystemBars = true,
     this.portraitStyleForWide = false,
     this.autoPictureInPicture = false,
+    this.backgroundPlayback = false,
     this.videoFit = VideoFit.auto,
     this.adBlock = true,
   });
@@ -139,6 +140,7 @@ class PlaybackPreferences {
   final bool hideSystemBars;
   final bool portraitStyleForWide;
   final bool autoPictureInPicture;
+  final bool backgroundPlayback;
   final VideoFit videoFit;
   final bool adBlock;
 
@@ -172,6 +174,7 @@ class PlaybackPreferences {
     bool? hideSystemBars,
     bool? portraitStyleForWide,
     bool? autoPictureInPicture,
+    bool? backgroundPlayback,
     VideoFit? videoFit,
     bool? adBlock,
   }) => PlaybackPreferences(
@@ -202,6 +205,7 @@ class PlaybackPreferences {
     hideSystemBars: hideSystemBars ?? this.hideSystemBars,
     portraitStyleForWide: portraitStyleForWide ?? this.portraitStyleForWide,
     autoPictureInPicture: autoPictureInPicture ?? this.autoPictureInPicture,
+    backgroundPlayback: backgroundPlayback ?? this.backgroundPlayback,
     videoFit: videoFit ?? this.videoFit,
     adBlock: adBlock ?? this.adBlock,
   );
@@ -234,6 +238,7 @@ class PlaybackPreferences {
     'hideSystemBars': hideSystemBars,
     'portraitStyleForWide': portraitStyleForWide,
     'autoPictureInPicture': autoPictureInPicture,
+    'backgroundPlayback': backgroundPlayback,
     'videoFit': videoFit.name,
     'adBlock': adBlock,
   };
@@ -296,6 +301,7 @@ class PlaybackPreferences {
       hideSystemBars: value['hideSystemBars'] as bool? ?? true,
       portraitStyleForWide: value['portraitStyleForWide'] as bool? ?? false,
       autoPictureInPicture: value['autoPictureInPicture'] as bool? ?? false,
+      backgroundPlayback: value['backgroundPlayback'] as bool? ?? false,
       videoFit: VideoFit.values.asNameMap()[value['videoFit']] ?? VideoFit.auto,
       adBlock: value['adBlock'] as bool? ?? true,
     );

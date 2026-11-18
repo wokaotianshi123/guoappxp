@@ -1,10 +1,12 @@
 #include "flutter_window.h"
 
 #include <commctrl.h>
+#include <dwmapi.h>
 
 #include <algorithm>
 #include <cmath>
 #include <optional>
+#include <string>
 #include <flutter/standard_method_codec.h>
 
 #include "flutter/generated_plugin_registrant.h"
@@ -14,6 +16,7 @@ namespace {
 constexpr double kMiniExtent = 480;
 constexpr double kMiniMinExtent = 200;
 constexpr double kMiniMargin = 24;
+constexpr int kBossKeyId = 1;
 
 std::optional<int> IntArgument(const flutter::EncodableMap& args,
                                const char* key) {
@@ -24,6 +27,25 @@ std::optional<int> IntArgument(const flutter::EncodableMap& args,
     return static_cast<int>(*value);
   }
   return std::nullopt;
+}
+
+bool BoolArgument(const flutter::EncodableMap& args, const char* key) {
+  const auto found = args.find(flutter::EncodableValue(key));
+  if (found == args.end()) return false;
+  const auto* value = std::get_if<bool>(&found->second);
+  return value && *value;
+}
+
+UINT BossKeyCode(const std::string& key) {
+  if (key.size() == 1 && ((key[0] >= 'A' && key[0] <= 'Z') ||
+                          (key[0] >= '0' && key[0] <= '9'))) {
+    return key[0];
+  }
+  if (key.size() >= 2 && key.size() <= 3 && key[0] == 'F') {
+    const int number = std::atoi(key.c_str() + 1);
+    if (number >= 1 && number <= 12) return VK_F1 + number - 1;
+  }
+  return 0;
 }
 
 SIZE MiniSize(double aspect, double extent) {
@@ -72,6 +94,8 @@ bool FlutterWindow::OnCreate() {
     return false;
   }
   RegisterPlugins(flutter_controller_->engine());
+  media_controls_ = std::make_unique<MediaControls>(
+      GetHandle(), flutter_controller_->engine()->messenger());
   device_channel_ =
       std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
           flutter_controller_->engine()->messenger(), "duanju/device",
@@ -127,6 +151,11 @@ bool FlutterWindow::OnCreate() {
             return;
           }
           result->Success();
+          return;
+        }
+        if (call.method_name() == "setBossKey") {
+          result->Success(flutter::EncodableValue(SetBossKey(
+              std::get_if<flutter::EncodableMap>(call.arguments()))));
           return;
         }
         if (call.method_name() != "playbackPower") {
@@ -312,6 +341,34 @@ bool FlutterWindow::SetWindowFrame(const flutter::EncodableMap& args) {
   return true;
 }
 
+bool FlutterWindow::SetBossKey(const flutter::EncodableMap* args) {
+  HWND window = GetHandle();
+  UnregisterHotKey(window, kBossKeyId);
+  if (!args) return true;
+  const auto found = args->find(flutter::EncodableValue("key"));
+  const auto* key =
+      found == args->end() ? nullptr : std::get_if<std::string>(&found->second);
+  const UINT code = key ? BossKeyCode(*key) : 0;
+  if (!code) return false;
+  UINT modifiers = MOD_NOREPEAT;
+  if (BoolArgument(*args, "ctrl")) modifiers |= MOD_CONTROL;
+  if (BoolArgument(*args, "alt")) modifiers |= MOD_ALT;
+  if (BoolArgument(*args, "shift")) modifiers |= MOD_SHIFT;
+  if (BoolArgument(*args, "meta")) modifiers |= MOD_WIN;
+  return RegisterHotKey(window, kBossKeyId, modifiers, code) != 0;
+}
+
+void FlutterWindow::ToggleHidden() {
+  HWND window = GetHandle();
+  if (IsWindowVisible(window)) {
+    if (device_channel_) device_channel_->InvokeMethod("bossKeyHidden", nullptr);
+    ShowWindow(window, SW_HIDE);
+    return;
+  }
+  ShowWindow(window, IsIconic(window) ? SW_RESTORE : SW_SHOW);
+  SetForegroundWindow(window);
+}
+
 void FlutterWindow::KeepMiniAspect(WPARAM edge, RECT* frame) {
   double width = frame->right - frame->left;
   double height = frame->bottom - frame->top;
@@ -339,6 +396,8 @@ void FlutterWindow::KeepMiniAspect(WPARAM edge, RECT* frame) {
 }
 
 void FlutterWindow::OnDestroy() {
+  UnregisterHotKey(GetHandle(), kBossKeyId);
+  media_controls_.reset();
   device_channel_.reset();
   taskbar_.Reset();
   if (flutter_controller_) {
@@ -379,9 +438,18 @@ FlutterWindow::MessageHandler(HWND hwnd, UINT const message,
         return TRUE;
       }
       break;
+    case WM_HOTKEY:
+      if (wparam == kBossKeyId) {
+        ToggleHidden();
+        return 0;
+      }
+      break;
     case WM_FONTCHANGE:
       flutter_controller_->engine()->ReloadSystemFonts();
       break;
+    case MediaControls::kCommandMessage:
+      if (media_controls_) media_controls_->HandleCommand(wparam, lparam);
+      return 0;
   }
 
   return Win32Window::MessageHandler(hwnd, message, wparam, lparam);
