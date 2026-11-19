@@ -695,6 +695,7 @@ class _ModuleCard extends StatelessWidget {
     required this.version,
     required this.id,
     required this.body,
+    this.group = '',
     this.trailing,
     this.leading = const [],
     this.actions = const [],
@@ -704,6 +705,9 @@ class _ModuleCard extends StatelessWidget {
   final bool adult;
   final String version;
   final String id;
+
+  /// 模块作为站源时的类目名（短剧类 / 视频类 / 黄果类 / 成人类），空则不显示。
+  final String group;
   final List<Widget> body;
   final Widget? trailing;
   final List<Widget> leading;
@@ -745,6 +749,8 @@ class _ModuleCard extends StatelessWidget {
                             style: meta,
                           ),
                           Text('标识：$id', style: meta),
+                          // 分组与站源菜单同一口径，装完就能看出它会落在哪个类目。
+                          if (group.isNotEmpty) Text('分组：$group', style: meta),
                           if (body.isNotEmpty) ...[
                             const SizedBox(height: 6),
                             ...body,
@@ -817,6 +823,7 @@ class _InstalledCard extends StatelessWidget {
       adult: module.adult,
       version: module.version,
       id: module.id,
+      group: module.classLabel,
       body: [
         if (module.error.isNotEmpty)
           Text(module.error, style: TextStyle(color: colors.error))
@@ -962,7 +969,8 @@ class _ModuleDialog extends StatelessWidget {
     final version = module.version.isEmpty ? '未标注' : module.version;
     final capabilities = [
       for (final name in module.capabilities)
-        moduleCapabilityNames[name] ?? name,
+        if (!moduleBaseCapabilityNames.contains(name))
+          moduleCapabilityNames[name] ?? name,
     ];
     Widget section(String title, String body) => Padding(
       padding: const EdgeInsets.only(top: 12),

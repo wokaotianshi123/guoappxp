@@ -31,7 +31,7 @@ type moduleRepositoriesConfig struct {
 }
 
 // 默认配置沿用内置的两处官方镜像，作为第一个仓库；同时 moduleIndex 在
-// 自定义仓库失败时仍会把它们当兜底镜像尝试（见 activeModuleIndexAddresses）。
+// 自定义仓库失败时仍会把它们当兜底镜像尝试（见 moduleIndexGroups）。
 func defaultModuleRepositoriesConfig() moduleRepositoriesConfig {
 	config := moduleRepositoriesConfig{Repositories: []nativeModuleRepository{}}
 	for _, address := range moduleIndexAddresses {
@@ -158,37 +158,85 @@ func repositoriesAsMap(repos []nativeModuleRepository) []map[string]any {
 	return items
 }
 
-// activeModuleIndexAddresses 返回索引候选地址：当前启用仓库的 index.json 优先，
-// 其后追加内置官方镜像作为兜底（自定义仓库暂时不可用时仍能显示官方模块）。
-// 返回顺序即镜像优先级，moduleIndex 的成功下标会决定文件下载的模板起点。
-func (engine *nativeEngine) activeModuleIndexAddresses() []string {
+// activeModuleRepositoryURL 返回当前启用仓库的 index.json 地址；没有配置时
+// 用内置官方仓库的第一处镜像。
+func (engine *nativeEngine) activeModuleRepositoryURL() string {
 	engine.repositoriesMu.Lock()
 	config := engine.repositories
 	engine.repositoriesMu.Unlock()
-	addresses := []string{}
-	if len(config.Repositories) > 0 {
-		active := config.Active
-		if active < 0 || active >= len(config.Repositories) {
-			active = 0
+	if len(config.Repositories) == 0 {
+		if len(moduleIndexAddresses) == 0 {
+			return ""
 		}
-		if address := strings.TrimSpace(config.Repositories[active].URL); address != "" {
-			addresses = append(addresses, address)
-		}
+		return moduleIndexAddresses[0]
 	}
-	for _, fallback := range moduleIndexAddresses {
-		duplicate := false
-		for _, existing := range addresses {
-			if strings.EqualFold(existing, fallback) {
-				duplicate = true
+	active := config.Active
+	if active < 0 || active >= len(config.Repositories) {
+		active = 0
+	}
+	if address := strings.TrimSpace(config.Repositories[active].URL); address != "" {
+		return address
+	}
+	if len(moduleIndexAddresses) > 0 {
+		return moduleIndexAddresses[0]
+	}
+	return ""
+}
+
+// moduleIndexGroups 返回按优先级排列的候选镜像组：
+// 第一组是当前启用仓库的镜像（GitHub 仓库会展开成 jsDelivr / fastly / raw
+// 三处，同一份 index.json 并发取），第二组是内置官方仓库的兜底。
+// 两组内容完全相同时只取一组，避免对着同一个地址重试。
+func (engine *nativeEngine) moduleIndexGroups() [][]string {
+	groups := [][]string{}
+	primary := moduleIndexMirrors(engine.activeModuleRepositoryURL())
+	if len(primary) > 0 {
+		groups = append(groups, primary)
+	}
+	official := dedupeModuleAddresses(moduleIndexAddresses)
+	if len(official) == 0 {
+		return groups
+	}
+	if len(groups) == 0 || !sameModuleAddresses(groups[0], official) {
+		groups = append(groups, official)
+	}
+	return groups
+}
+
+func dedupeModuleAddresses(addresses []string) []string {
+	cleaned := make([]string, 0, len(addresses))
+	for _, address := range addresses {
+		address = strings.TrimSpace(address)
+		if address == "" || sameModuleAddresses(cleaned, []string{address}) {
+			continue
+		}
+		cleaned = append(cleaned, address)
+	}
+	return cleaned
+}
+
+// sameModuleAddresses 判断两组地址是否等价（顺序无关、忽略大小写）。
+func sameModuleAddresses(left, right []string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	remaining := make([]string, 0, len(right))
+	for _, address := range right {
+		remaining = append(remaining, strings.ToLower(strings.TrimSpace(address)))
+	}
+	for _, address := range left {
+		key := strings.ToLower(strings.TrimSpace(address))
+		found := -1
+		for index, candidate := range remaining {
+			if candidate == key {
+				found = index
 				break
 			}
 		}
-		if !duplicate {
-			addresses = append(addresses, fallback)
+		if found < 0 {
+			return false
 		}
+		remaining = append(remaining[:found], remaining[found+1:]...)
 	}
-	if len(addresses) == 0 {
-		return moduleIndexAddresses
-	}
-	return addresses
+	return true
 }

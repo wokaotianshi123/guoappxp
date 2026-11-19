@@ -11,6 +11,15 @@ class ChoiceOption<T> {
   final String label;
 }
 
+/// 分组选项：站源菜单按类目分段时用，[options] 在组内按原顺序排。
+/// 只给一个组时组标题不画，视觉上与不分段一致。
+class ChoiceGroup<T> {
+  const ChoiceGroup(this.id, this.label, this.options);
+  final String id;
+  final String label;
+  final List<ChoiceOption<T>> options;
+}
+
 class ChoiceGrid {
   const ChoiceGrid({
     required this.phone,
@@ -49,6 +58,7 @@ Future<T?> showChoicePanel<T>({
   required List<ChoiceOption<T>> options,
   required T? selected,
   required ChoiceGrid grid,
+  List<ChoiceGroup<T>>? groups,
   ChoiceAction? action,
 }) {
   final form = AppScope.formFactorOf(context);
@@ -56,6 +66,7 @@ Future<T?> showChoicePanel<T>({
     form: form,
     title: title,
     options: options,
+    groups: groups,
     selected: selected,
     columns: switch (form) {
       FormFactor.phone => grid.phone,
@@ -139,10 +150,14 @@ class _ChoicePanel<T> extends StatelessWidget {
     required this.selected,
     required this.columns,
     required this.action,
+    this.groups,
   });
   final FormFactor form;
   final String title;
   final List<ChoiceOption<T>> options;
+
+  /// 分段展示的选项（站源菜单按类目分段时传入）；为空时用扁平的 [options]。
+  final List<ChoiceGroup<T>>? groups;
   final T? selected;
   final int columns;
   final ChoiceAction? action;
@@ -170,7 +185,7 @@ class _ChoicePanel<T> extends StatelessWidget {
                     ),
               ),
               Text(
-                '${options.length} 个',
+                '${_total()} 个',
                 style: (television ? text.bodyMedium : text.bodySmall)
                     ?.copyWith(color: colors.onSurfaceVariant),
               ),
@@ -226,32 +241,102 @@ class _ChoicePanel<T> extends StatelessWidget {
               padding: EdgeInsets.only(
                 right: form == FormFactor.phone ? 12 : 0,
               ),
-              child: GridView.builder(
-                shrinkWrap: true,
-                padding: EdgeInsets.all(television ? 12 : 6),
-                itemCount: options.length,
-                gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
-                  crossAxisCount: columns,
-                  mainAxisSpacing: spacing,
-                  crossAxisSpacing: spacing,
-                  mainAxisExtent: switch (form) {
-                    FormFactor.phone => 44,
-                    FormFactor.pad || FormFactor.window => 36,
-                    FormFactor.television => 48,
-                  },
-                ),
-                itemBuilder: (context, index) => _ChoiceCell<T>(
-                  option: options[index],
-                  selected: options[index].value == selected,
-                  form: form,
-                ),
-              ),
+              child: _body(context, spacing, television),
             ),
           ),
         ],
       ),
     );
   }
+
+  int _total() {
+    final sections = groups;
+    if (sections == null) return options.length;
+    return sections.fold<int>(0, (sum, group) => sum + group.options.length);
+  }
+
+  Widget _body(BuildContext context, double spacing, bool television) {
+    final sections = groups;
+    if (sections == null || sections.isEmpty) {
+      return _grid(options, spacing, television);
+    }
+    // 只有一个类目时不画标题，外观与原来的扁平网格一致。
+    final headers = sections.length > 1;
+    final text = Theme.of(context).textTheme;
+    final colors = Theme.of(context).colorScheme;
+    return SingleChildScrollView(
+      padding: EdgeInsets.all(television ? 12 : 6),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (final (index, group) in sections.indexed) ...[
+            if (index > 0) SizedBox(height: television ? 18 : 14),
+            if (headers)
+              Padding(
+                padding: const EdgeInsets.only(left: 4, bottom: 6),
+                child: Row(
+                  spacing: 6,
+                  children: [
+                    Text(
+                      group.label,
+                      style: (television
+                              ? text.titleSmall
+                              : text.labelLarge)
+                          ?.copyWith(
+                            fontWeight: FontWeight.w700,
+                            color: colors.onSurfaceVariant,
+                          ),
+                    ),
+                    Text(
+                      '${group.options.length}',
+                      style: text.labelSmall?.copyWith(
+                        color: colors.onSurfaceVariant,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            _grid(
+              group.options,
+              spacing,
+              television,
+              padding: EdgeInsets.zero,
+              shrink: true,
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+
+  Widget _grid(
+    List<ChoiceOption<T>> items,
+    double spacing,
+    bool television, {
+    EdgeInsets? padding,
+    bool shrink = false,
+  }) => GridView.builder(
+    shrinkWrap: true,
+    // 分段时每组网格自己不滚，滚动交给外层；扁平形态仍由网格自己滚。
+    physics: shrink ? const NeverScrollableScrollPhysics() : null,
+    padding: padding ?? EdgeInsets.all(television ? 12 : 6),
+    itemCount: items.length,
+    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+      crossAxisCount: columns,
+      mainAxisSpacing: spacing,
+      crossAxisSpacing: spacing,
+      mainAxisExtent: switch (form) {
+        FormFactor.phone => 44,
+        FormFactor.pad || FormFactor.window => 36,
+        FormFactor.television => 48,
+      },
+    ),
+    itemBuilder: (context, index) => _ChoiceCell<T>(
+      option: items[index],
+      selected: items[index].value == selected,
+      form: form,
+    ),
+  );
 }
 
 class _ChoiceCell<T> extends StatelessWidget {

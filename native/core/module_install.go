@@ -32,15 +32,21 @@ type nativeModuleInfo struct {
 	Hosts        []string `json:"hosts"`
 	Capabilities []string `json:"capabilities"`
 	Adult        bool     `json:"adult"`
-	Installed    bool     `json:"installed"`
-	Previous     string   `json:"previous,omitempty"`
-	Token        string   `json:"token,omitempty"`
-	Error        string   `json:"error,omitempty"`
+	// Group / GroupName / Category 是模块作为站源时的分组与类目，
+	// 供模块页与站源菜单展示（推导规则见 ModuleManifest.sourceClass）。
+	Group     string `json:"group"`
+	GroupName string `json:"groupName"`
+	Category  string `json:"category"`
+	Installed bool   `json:"installed"`
+	Previous  string `json:"previous,omitempty"`
+	Token     string `json:"token,omitempty"`
+	Error     string `json:"error,omitempty"`
 }
 
 func moduleInfo(manifest ModuleManifest) nativeModuleInfo {
 	return nativeModuleInfo{ID: manifest.ID, Name: manifest.Name, Version: manifest.Version, Description: manifest.Description,
-		Hosts: manifest.Hosts, Capabilities: manifest.Capabilities, Adult: *manifest.Adult}
+		Hosts: manifest.Hosts, Capabilities: manifest.Capabilities, Adult: *manifest.Adult,
+		Group: manifest.Group, GroupName: manifest.GroupName, Category: manifest.sourceClass()}
 }
 
 func (engine *nativeEngine) modules() ([]nativeModuleInfo, error) {

@@ -8,12 +8,25 @@ import '../shell/app_shell.dart';
 import '../widgets/choice_panel.dart';
 
 Future<void> pickSource(BuildContext anchor, LocalStore store) async {
+  final sources = store.sources;
+  // 站源菜单按类目分段（短剧类 / 视频类 / 黄果类 / 成人类 / 其他站源），
+  // 与站源管理页同一口径；只有一个类目时不画分段标题，保持原来的扁平外观。
+  final sections = SourceGroup.byClass(sources);
   final value = await showChoicePanel<String>(
     context: anchor,
     title: '全部站源',
     options: [
-      for (final source in store.sources) ChoiceOption(source.id, source.name),
+      for (final source in sources) ChoiceOption(source.id, source.name),
     ],
+    groups: sections.length > 1
+        ? [
+            for (final section in sections)
+              ChoiceGroup(section.id, section.name, [
+                for (final source in section.sources)
+                  ChoiceOption(source.id, source.name),
+              ]),
+          ]
+        : null,
     selected: store.source,
     grid: ChoiceGrid.sources,
     action: store.profile.admin

@@ -13,11 +13,14 @@ import (
 )
 
 type SourceDescriptor struct {
-	ID                 string
-	Name               string
-	Description        string
-	Group              string
-	GroupName          string
+	ID          string
+	Name        string
+	Description string
+	Group       string
+	GroupName   string
+	// Category 是站源类目（shortDrama/video/huangguo/adult），界面按它把
+	// 站源菜单分段；由模块清单的 family/category 推导，编进包里的源留空。
+	Category           string
 	EntryName          string
 	Adult              bool
 	SkipVIPPrompt      bool

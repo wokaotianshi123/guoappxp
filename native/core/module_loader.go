@@ -29,6 +29,19 @@ const (
 
 var moduleIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9_-]{0,31}$`)
 
+// moduleBaseCapabilities 是「基础三件套」的能力别名。目录（catalog）、详情
+// （detail）、播放（media）由 Provider 接口本身提供，任何模块都不用额外实现
+// 接口，所以这几种名字只作为「已知能力」放行，不登记进能力表。
+//
+// 这几个名字来自 guoappcheng 商店的模块清单口径（catalog/detail/search/media），
+// 与本站源模块一直用的扩展能力名（search/rankings/cover…）是两套写法。清单里
+// 出现基础名时报「未知的模块能力」会让整批模块装不上，所以这里按已知处理。
+var moduleBaseCapabilities = map[string]bool{
+	"catalog": true,
+	"detail":  true,
+	"media":   true,
+}
+
 var moduleCapabilityTypes = map[string][]reflect.Type{
 	"search":          {reflect.TypeFor[Searcher](), reflect.TypeFor[WarningSearcher]()},
 	"account":         {reflect.TypeFor[AccountProvider]()},
@@ -62,8 +75,14 @@ type ModuleManifest struct {
 	Adult             *bool    `json:"adult"`
 	AllowEmptyCatalog bool     `json:"allowEmptyCatalog"`
 
+	// Group/GroupName 是「同一入口的多个条目归一组」的老写法；Category/Family
+	// 是 guoappcheng 商店清单的分组字段（category 取 shortDrama/video/adult，
+	// family 取 huangguo）。两者互不影响：前者是条目分组，后者只决定界面类目
+	// （见 sourceClass）。
 	Group              string   `json:"group"`
 	GroupName          string   `json:"groupName"`
+	Category           string   `json:"category"`
+	Family             string   `json:"family"`
 	EntryName          string   `json:"entryName"`
 	SkipVIPPrompt      bool     `json:"skipVipPrompt"`
 	Aliases            []string `json:"aliases"`
@@ -144,6 +163,9 @@ func parseModule(raw, code []byte) (*jsModule, error) {
 	}
 	capabilities := map[reflect.Type]bool{}
 	for _, name := range manifest.Capabilities {
+		if moduleBaseCapabilities[name] {
+			continue
+		}
 		types, known := moduleCapabilityTypes[name]
 		if !known {
 			return nil, fmt.Errorf("未知的模块能力 %q", name)
@@ -177,6 +199,43 @@ func parseModule(raw, code []byte) (*jsModule, error) {
 	return &jsModule{manifest: manifest, program: program, capabilities: capabilities}, nil
 }
 
+// moduleClassKeys 是模块清单 category/family 认可的站源类目。类目标识沿用
+// 清单里的写法（shortDrama/video/huangguo/adult），与 guoappcheng 的
+// 「短剧类 / 视频类 / 黄果类 / 成人类」一一对应；显示名在界面侧决定。
+var moduleClassKeys = map[string]bool{
+	"shortdrama": true,
+	"video":      true,
+	"huangguo":   true,
+	"adult":      true,
+}
+
+// sourceClass 返回站源类目（界面按它把站源菜单分段）：以清单的 category 为准；
+// 没写 category 时才退回 family。两项都没有时返回空，界面按站源标识的既有
+// 归类兜底，再不行归「其他」。
+//
+// 注意 family 不能盖过 category：guoappcheng 商店里红果也写着
+// "family": "huangguo"（那是同一套 App 系谱，不是界面上的「黄果类」），
+// 而黄果类成员（黄豆/剧果等）的清单写的是 category: shortDrama。
+// 「黄果类」的判定在界面侧按站源标识做，与 guoappcheng 的站源表一致。
+func (manifest ModuleManifest) sourceClass() string {
+	for _, raw := range []string{manifest.Category, manifest.Family} {
+		key := strings.ToLower(strings.TrimSpace(raw))
+		if moduleClassKeys[key] {
+			return canonicalModuleClass(key)
+		}
+	}
+	return ""
+}
+
+// canonicalModuleClass 把清单里的类目写法归一，避免 "shortdrama" 与
+// "shortDrama" 在菜单里变成两个分段。
+func canonicalModuleClass(key string) string {
+	if key == "shortdrama" {
+		return "shortDrama"
+	}
+	return key
+}
+
 func (module *jsModule) descriptor() SourceDescriptor {
 	var rankings []RankingBoard
 	for _, ranking := range module.manifest.Rankings {
@@ -192,6 +251,7 @@ func (module *jsModule) descriptor() SourceDescriptor {
 
 		Group:              module.manifest.Group,
 		GroupName:          module.manifest.GroupName,
+		Category:           module.manifest.sourceClass(),
 		EntryName:          module.manifest.EntryName,
 		Adult:              *module.manifest.Adult,
 		SkipVIPPrompt:      module.manifest.SkipVIPPrompt,

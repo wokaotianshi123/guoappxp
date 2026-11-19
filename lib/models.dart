@@ -4,6 +4,108 @@ const hongguoSourceId = 'hongguo';
 
 bool validSourceId(String id) => RegExp(r'^[a-z0-9_-]{1,64}$').hasMatch(id);
 
+/// 站源类目：站源菜单、站源管理页按它分段，与 guoappcheng 的四分类同口径——
+/// 短剧类 / 视频类 / 黄果类 / 成人类。黄果类优先于内容类型（黄果系入口自成
+/// 一类，不与短剧类、视频类混），其余按内容归类，认不出的归「其他站源」。
+abstract final class SourceClass {
+  static const shortDrama = 'shortDrama';
+  static const video = 'video';
+  static const huangguo = 'huangguo';
+  static const adult = 'adult';
+  static const other = 'other';
+
+  /// 界面分段顺序。类目以外的自定义类目排在后面。
+  static const order = [shortDrama, video, huangguo, adult, other];
+
+  static String labelOf(String key) => switch (key) {
+    shortDrama => '短剧类',
+    video => '视频类',
+    huangguo => '黄果类',
+    adult => '成人类',
+    other => '其他站源',
+    _ => key,
+  };
+
+  /// 把清单里的类目写法归一（shortdrama / ShortDrama 都算短剧类）。
+  static String? normalize(String raw) => switch (raw.trim().toLowerCase()) {
+    'shortdrama' => shortDrama,
+    'video' => video,
+    'huangguo' => huangguo,
+    'adult' => adult,
+    _ => null,
+  };
+
+  static int rankOf(String key) {
+    final index = order.indexOf(key);
+    return index < 0 ? order.length : index;
+  }
+}
+
+/// 黄果类成员：黄果系入口（AI/旧版/视频）+ 黄豆/野果/剧果。与 guoappcheng 的
+/// 站源表一致——它们优先级高于内容类型，自成一类。
+///
+/// 为什么认标识而不是认清单的 category/family：商店清单里红果也写着
+/// "family": "huangguo"（同一套 App 系谱），而黄豆这些的 category 写的是
+/// shortDrama。只有标识能表达「界面上的黄果类」。
+const _huangguoClasses = <String>{
+  'huangguo-video',
+  'huangguoai',
+  'cloudfront',
+  'huangdou',
+  'yeguo',
+  'huangju',
+};
+
+/// 没写类目的老模块按站源标识归类（口径照搬 guoappcheng）。新模块在清单里
+/// 声明 category/family 后以清单为准，这张表只是兜底，不再往里面加新源。
+const _legacyClasses = <String, String>{
+  'hongguo': SourceClass.shortDrama,
+  'dsd': SourceClass.shortDrama,
+  'yaguo': SourceClass.shortDrama,
+  'maoguo': SourceClass.shortDrama,
+  'fanguo': SourceClass.shortDrama,
+  'heguo': SourceClass.shortDrama,
+  'xingguo': SourceClass.shortDrama,
+  'huaguo': SourceClass.shortDrama,
+  'wangguo': SourceClass.shortDrama,
+  'wuguo': SourceClass.shortDrama,
+  'jinguoduanju': SourceClass.shortDrama,
+  'faguo': SourceClass.video,
+  'guipian': SourceClass.video,
+  'hanxiaoquan': SourceClass.video,
+  'ikanbot': SourceClass.video,
+  'sorani': SourceClass.video,
+  'yingshigongchang': SourceClass.video,
+  '360zy': SourceClass.video,
+  'modu': SourceClass.video,
+  'dytt': SourceClass.video,
+  'shandian': SourceClass.video,
+  'hongniu': SourceClass.video,
+  'niuniuzy': SourceClass.video,
+  'wsyzy': SourceClass.video,
+  'dongpiandi': SourceClass.video,
+  'beabox': SourceClass.video,
+  'heitao': SourceClass.video,
+  'hanime1': SourceClass.adult,
+  'missav': SourceClass.adult,
+  'zy155': SourceClass.adult,
+  'yutu': SourceClass.adult,
+  'fanhao': SourceClass.adult,
+  'lsbzy': SourceClass.adult,
+  'hsck': SourceClass.adult,
+  'danaizi': SourceClass.adult,
+  'jkun': SourceClass.adult,
+  'lebo': SourceClass.adult,
+  'senlin': SourceClass.adult,
+  'doudou': SourceClass.adult,
+  'didi': SourceClass.adult,
+  'heiliao': SourceClass.adult,
+  'taohua': SourceClass.adult,
+  'souav': SourceClass.adult,
+  'ckzy': SourceClass.adult,
+  'aosika': SourceClass.adult,
+};
+
 class SourceSite {
   const SourceSite(
     this.id,
@@ -11,6 +113,7 @@ class SourceSite {
     this.description, {
     this.group = '',
     this.groupLabel = '',
+    this.category = '',
     this.entryLabel = '',
     this.available = true,
     this.pagedSearch = false,
@@ -30,6 +133,7 @@ class SourceSite {
     json['description'] as String? ?? '',
     group: json['group'] as String? ?? '',
     groupLabel: json['groupName'] as String? ?? '',
+    category: json['category'] as String? ?? '',
     entryLabel: json['entryName'] as String? ?? '',
     available: json['available'] == true,
     pagedSearch: json['search'] == true,
@@ -48,6 +152,10 @@ class SourceSite {
   final String description;
   final String group;
   final String groupLabel;
+
+  /// 站源类目（shortDrama/video/huangguo/adult），由模块清单的 family/category
+  /// 推导；编进包里的源或没写类目的老模块为空，由 [classKey] 兜底。
+  final String category;
   final String entryLabel;
   final bool available;
   final bool pagedSearch;
@@ -67,6 +175,14 @@ class SourceSite {
   String get groupId => group.isEmpty ? id : group;
   String get groupName => groupLabel.isEmpty ? name : groupLabel;
   String get entryName => entryLabel.isEmpty ? name : entryLabel;
+
+  /// 菜单分段用的类目：黄果类成员按标识恒定归黄果类；其余以清单声明的
+  /// category/family 为准，没声明的按标识查老表，都不认的归「其他站源」。
+  String get classKey => _huangguoClasses.contains(id)
+      ? SourceClass.huangguo
+      : SourceClass.normalize(category) ??
+            _legacyClasses[id] ??
+            SourceClass.other;
 
   static List<SourceSite> _installed = const [];
   static List<String> _order = const [];
@@ -150,6 +266,24 @@ class SourceGroup {
     return [
       for (final group in groups.entries)
         SourceGroup(group.key, group.value.first.groupName, group.value),
+    ];
+  }
+
+  /// 按站源类目分段：类目顺序固定（短剧类 → 视频类 → 黄果类 → 成人类 →
+  /// 其他站源），空类目不出现；只有一个类目时调用方可以不画标题。
+  static List<SourceGroup> byClass(Iterable<SourceSite> sources) {
+    final buckets = <String, List<SourceSite>>{};
+    for (final source in sources) {
+      (buckets[source.classKey] ??= []).add(source);
+    }
+    final keys = buckets.keys.toList()
+      ..sort((a, b) {
+        final rank = SourceClass.rankOf(a).compareTo(SourceClass.rankOf(b));
+        return rank != 0 ? rank : a.compareTo(b);
+      });
+    return [
+      for (final key in keys)
+        SourceGroup(key, SourceClass.labelOf(key), buckets[key]!),
     ];
   }
 }

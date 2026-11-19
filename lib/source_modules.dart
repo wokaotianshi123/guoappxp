@@ -1,5 +1,7 @@
 import 'dart:typed_data';
 
+import 'models.dart' show SourceClass;
+
 class SourceModule {
   const SourceModule({
     required this.id,
@@ -9,6 +11,7 @@ class SourceModule {
     this.hosts = const [],
     this.capabilities = const [],
     this.adult = false,
+    this.category = '',
     this.installed = false,
     this.previous = '',
     this.token = '',
@@ -24,6 +27,7 @@ class SourceModule {
         .whereType<String>()
         .toList(),
     adult: json['adult'] == true,
+    category: json['category'] as String? ?? '',
     installed: json['installed'] == true,
     previous: json['previous'] as String? ?? '',
     token: json['token'] as String? ?? '',
@@ -36,10 +40,20 @@ class SourceModule {
   final List<String> hosts;
   final List<String> capabilities;
   final bool adult;
+
+  /// 模块作为站源时的类目（shortDrama/video/huangguo/adult），来自清单的
+  /// family/category；没写类目的老模块为空。
+  final String category;
   final bool installed;
   final String previous;
   final String token;
   final String error;
+
+  /// 类目显示名；认不出的类目返回空，界面上不显示分组标签。
+  String get classLabel {
+    final key = SourceClass.normalize(category);
+    return key == null ? '' : SourceClass.labelOf(key);
+  }
 }
 
 class ModuleIndexEntry {
@@ -158,6 +172,10 @@ bool isNewerModuleVersion(String latest, String installed) {
   }
   return false;
 }
+
+/// 基础三件套的能力名（目录 / 详情 / 播放）。guoappcheng 商店的清单会显式写
+/// 这三个，界面统一用「目录、详情和播放」一行表示，不重复列出。
+const moduleBaseCapabilityNames = {'catalog', 'detail', 'media'};
 
 const moduleCapabilityNames = {
   'search': '搜索',

@@ -75,22 +75,37 @@ class _SourcesViewState extends State<SourcesView> {
     builder: (context, _) {
       final store = widget.store;
       final customs = store.customSources;
+      // 站源按类目分段（短剧类 / 视频类 / 黄果类 / 成人类 / 其他站源），
+      // 与发现页的站源菜单同一口径；只有一个类目时不画标题。
+      final sections = SourceGroup.byClass(SourceSite.values);
+      final headers = sections.length > 1;
       return ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
-          SettingsCard(
-            children: [
-              for (final site in SourceSite.values)
-                _SourceTile(
-                  title: site.name,
-                  subtitle: site.adult
-                      ? '${site.description} · 限制级，默认关闭'
-                      : site.description,
-                  enabled: store.sourceEnabled(site.id),
-                  onChanged: (value) => _toggle(site.id, value, true),
+          for (final (index, section) in sections.indexed) ...[
+            if (index > 0) const SizedBox(height: 16),
+            if (headers)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: SectionHeader(
+                  title: '${section.name} · ${section.sources.length}',
+                  padding: EdgeInsets.zero,
                 ),
-            ],
-          ),
+              ),
+            SettingsCard(
+              children: [
+                for (final site in section.sources)
+                  _SourceTile(
+                    title: site.name,
+                    subtitle: site.adult
+                        ? '${site.description} · 限制级，默认关闭'
+                        : site.description,
+                    enabled: store.sourceEnabled(site.id),
+                    onChanged: (value) => _toggle(site.id, value, true),
+                  ),
+              ],
+            ),
+          ],
           const SizedBox(height: 12),
           const _Note(
             '关闭的站源不在发现、搜索、追剧、观看记录和下载中显示，记录保留，重新开启后恢复。正在下载的集会暂停，重新开启后可在下载页继续。',

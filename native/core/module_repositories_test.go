@@ -66,19 +66,22 @@ func TestModuleRepositoriesSaveLoadAndFallback(t *testing.T) {
 	if view["active"] != 0 {
 		t.Fatalf("active = %v", view["active"])
 	}
-	addresses := engine.activeModuleIndexAddresses()
-	if len(addresses) == 0 || addresses[0] != "https://mirror.example.com/index.json" {
-		t.Fatalf("active addresses = %v", addresses)
+	if got := engine.activeModuleRepositoryURL(); got != "https://mirror.example.com/index.json" {
+		t.Fatalf("active repository = %q", got)
 	}
-	// 内置官方镜像应作为兜底仍在列表里。
+	// 内置官方镜像应作为兜底仍在分组列表里。
+	groups := engine.moduleIndexGroups()
+	if len(groups) < 2 {
+		t.Fatalf("groups = %v", groups)
+	}
 	foundFallback := false
-	for _, address := range addresses {
+	for _, address := range groups[1] {
 		if address == moduleIndexAddresses[0] {
 			foundFallback = true
 		}
 	}
 	if !foundFallback {
-		t.Fatalf("missing builtin fallback in %v", addresses)
+		t.Fatalf("missing builtin fallback in %v", groups)
 	}
 
 	// 重新加载应还原保存的配置。
@@ -94,8 +97,8 @@ func TestModuleRepositoriesSaveLoadAndFallback(t *testing.T) {
 	if _, err := reloaded.saveModuleRepositories(custom); err != nil {
 		t.Fatal(err)
 	}
-	if got := reloaded.activeModuleIndexAddresses()[0]; got != moduleIndexAddresses[0] {
-		t.Fatalf("after switch, first address = %q", got)
+	if got := reloaded.activeModuleRepositoryURL(); got != moduleIndexAddresses[0] {
+		t.Fatalf("after switch, active repository = %q", got)
 	}
 }
 
@@ -140,12 +143,12 @@ func TestModuleIndexUsesActiveRepository(t *testing.T) {
 			{Name: "custom", URL: custom.URL + "/index.json"},
 		}, Active: 0},
 	}
-	entries, mirror, err := engine.moduleIndex(t.Context())
+	entries, err := engine.moduleIndex(t.Context())
 	if err != nil {
 		t.Fatalf("moduleIndex: %v", err)
 	}
-	if len(entries) != 0 || mirror != 0 {
-		t.Fatalf("entries=%v mirror=%d", entries, mirror)
+	if len(entries) != 0 {
+		t.Fatalf("entries=%v", entries)
 	}
 	if customHits != 1 || fallbackHits != 0 {
 		t.Fatalf("customHits=%d fallbackHits=%d", customHits, fallbackHits)
@@ -156,7 +159,7 @@ func TestModuleIndexUsesActiveRepository(t *testing.T) {
 	engine.repositories = moduleRepositoriesConfig{Repositories: []nativeModuleRepository{
 		{Name: "down", URL: "https://127.0.0.1:1/index.json"},
 	}, Active: 0}
-	if _, _, err := engine.moduleIndex(t.Context()); err != nil {
+	if _, err := engine.moduleIndex(t.Context()); err != nil {
 		t.Fatalf("fallback moduleIndex: %v", err)
 	}
 	if fallbackHits == 0 {

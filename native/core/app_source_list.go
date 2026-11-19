@@ -6,6 +6,7 @@ type nativeSourceInfo struct {
 	Description     string `json:"description"`
 	Group           string `json:"group"`
 	GroupName       string `json:"groupName"`
+	Category        string `json:"category"`
 	EntryName       string `json:"entryName"`
 	Available       bool   `json:"available"`
 	Search          bool   `json:"search"`
@@ -33,7 +34,8 @@ func (engine *nativeEngine) sourceList() []nativeSourceInfo {
 		}
 		info := nativeSourceInfo{
 			ID: id, Name: descriptor.Name, Description: descriptor.Description,
-			Group: descriptor.Group, GroupName: descriptor.GroupName, EntryName: descriptor.EntryName,
+			Group: descriptor.Group, GroupName: descriptor.GroupName, Category: descriptor.Category,
+			EntryName: descriptor.EntryName,
 			Available: nativeSourceAvailable(id), VIPPrompt: !descriptor.SkipVIPPrompt, Adult: descriptor.Adult,
 			Module: nativeModuleSource(id),
 		}
