@@ -220,7 +220,7 @@ class _ModulesPageState extends State<ModulesPage>
   }
 
   /// 批量安装：一次把多个文件 / 多个地址交给核心展开并暂存，
-  /// 单个 zip 里含多个子模块 zip 时也会被展开成多项。
+  /// 单个 zip 里含多个模块时会被展开成多项，由用户勾选后安装。
   Future<void> _installBatch({
     List<String> files = const [],
     List<String> urls = const [],
@@ -236,18 +236,18 @@ class _ModulesPageState extends State<ModulesPage>
             : '全部失败：${failed.map((item) => '${item.displayName}（${item.error}）').join('；')}',
       );
     }
-    final accepted = await showDialog<bool>(
+    final chosen = await showDialog<List<PreparedModule>>(
       context: context,
       builder: (_) => _BatchInstallPreview(
         items: ready,
         failures: failed,
       ),
     );
-    if (accepted != true) return;
+    if (chosen == null || chosen.isEmpty || !mounted) return;
     var installed = 0;
     final notices = <String>[];
     final errors = <String>[];
-    for (final item in ready) {
+    for (final item in chosen) {
       final module = item.module!;
       try {
         final warning = await _applyInstall(module);
@@ -262,6 +262,7 @@ class _ModulesPageState extends State<ModulesPage>
         '已安装 $installed 个站源',
         if (errors.isNotEmpty) '${errors.length} 个失败：${errors.join('；')}',
         if (failed.isNotEmpty) '${failed.length} 个无法识别',
+        if (ready.length > chosen.length) '跳过 ${ready.length - chosen.length} 个未勾选',
         ...notices,
       ].join('，'),
     );
@@ -525,7 +526,7 @@ class _ModulesPageState extends State<ModulesPage>
         children: [
           SettingsTile(
             title: '选择本地文件',
-            subtitle: '可多选；支持一个 zip 里含多个子模块 zip',
+            subtitle: '可多选；合集包内置多个站源，安装时可勾选',
             enabled: enabled,
             onTap: enabled ? _installFile : null,
           ),
@@ -1041,7 +1042,7 @@ class _AddressDialogState extends State<_AddressDialog> {
               decoration: const InputDecoration(
                 labelText: '安装包地址',
                 hintText: 'https://…/module.zip',
-                helperText: '可一次填多个地址，每行一个；单个 zip 里含多个模块时会一起识别',
+                helperText: '可一次填多个地址，每行一个；合集包识别后可勾选要安装的模块',
                 helperMaxLines: 2,
                 border: OutlineInputBorder(),
               ),
@@ -1089,7 +1090,8 @@ class _AddressDialogState extends State<_AddressDialog> {
   }
 }
 
-/// 批量安装前的预览：列出能装的与无法识别的，确认后逐个安装。
+/// 批量安装前的预览：逐项勾选要安装的模块，默认全选；确认后只安装选中的。
+/// 返回选中的 PreparedModule 列表，返回 null 表示取消。
 class _BatchInstallPreview extends StatefulWidget {
   const _BatchInstallPreview({required this.items, this.failures = const []});
 
@@ -1102,6 +1104,9 @@ class _BatchInstallPreview extends StatefulWidget {
 
 class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
   final _scroll = ScrollController();
+  late final Set<String> _selected = {
+    for (final item in widget.items) item.module!.token,
+  };
 
   @override
   void dispose() {
@@ -1109,82 +1114,151 @@ class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
     super.dispose();
   }
 
+  bool get _allSelected => _selected.length == widget.items.length;
+
+  void _toggleAll() {
+    setState(() {
+      if (_allSelected) {
+        _selected.clear();
+      } else {
+        _selected.addAll({
+          for (final item in widget.items) item.module!.token,
+        });
+      }
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     final colors = Theme.of(context).colorScheme;
     final items = widget.items;
     final failures = widget.failures;
-    final adult = items.where((item) => item.module!.adult).length;
+    final adult = items.where(
+      (item) => item.module!.adult && _selected.contains(item.module!.token),
+    ).length;
+    final selectedCount = _selected.length;
     return AlertDialog(
-      title: Text('安装 ${items.length} 个站源？'),
+      title: Text('选择要安装的站源（共 ${items.length} 个）'),
       content: SizedBox(
         width: 560,
         child: ConstrainedBox(
           constraints: const BoxConstraints(maxHeight: 420),
-          child: Scrollbar(
-            controller: _scroll,
-            thumbVisibility: true,
-            child: ListView(
-              controller: _scroll,
-              shrinkWrap: true,
-              children: [
-                for (final item in items)
-                  Padding(
-                    padding: const EdgeInsets.symmetric(vertical: 4),
-                    child: Row(
-                      spacing: 8,
-                      children: [
-                        Expanded(
-                          child: Text(
-                            '${item.module!.name} · ${item.module!.version}',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Row(
+                  spacing: 8,
+                  children: [
+                    FocusRing(
+                      radius: 12,
+                      child: TextButton.icon(
+                        onPressed: _toggleAll,
+                        icon: Icon(
+                          _allSelected
+                              ? Icons.check_box_outline_blank
+                              : Icons.check_box,
+                          size: 18,
                         ),
-                        if (item.module!.installed)
-                          Text(
-                            item.module!.previous.isEmpty
-                                ? '已安装'
-                                : '覆盖 ${item.module!.previous}',
-                            style: const TextStyle(fontSize: 12),
-                          ),
-                        if (item.module!.adult)
-                          Text(
-                            '限制级',
-                            style: TextStyle(fontSize: 12, color: colors.error),
-                          ),
-                      ],
-                    ),
-                  ),
-                if (failures.isNotEmpty) ...[
-                  const Divider(),
-                  Padding(
-                    padding: const EdgeInsets.only(bottom: 4),
-                    child: Text(
-                      '${failures.length} 项无法识别，将跳过',
-                      style: TextStyle(fontSize: 12, color: colors.error),
-                    ),
-                  ),
-                  for (final item in failures)
-                    Padding(
-                      padding: const EdgeInsets.symmetric(vertical: 2),
-                      child: Text(
-                        '${item.displayName}：${item.error}',
-                        style: TextStyle(fontSize: 12, color: colors.error),
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
+                        label: Text(_allSelected ? '全不选' : '全选'),
                       ),
                     ),
-                ],
-                if (adult > 0) ...[
-                  const SizedBox(height: 8),
-                  Text(
-                    '包含 $adult 个限制级站源，安装后默认关闭。',
-                    style: TextStyle(fontSize: 12, color: colors.error),
+                    Text(
+                      '已选 $selectedCount / ${items.length}',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: colors.primary,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              Expanded(
+                child: Scrollbar(
+                  controller: _scroll,
+                  thumbVisibility: true,
+                  child: ListView(
+                    controller: _scroll,
+                    shrinkWrap: true,
+                    children: [
+                      for (final item in items)
+                        Padding(
+                          padding: const EdgeInsets.symmetric(vertical: 2),
+                          child: FocusRing(
+                            radius: 12,
+                            child: CheckboxListTile(
+                              dense: true,
+                              value: _selected.contains(item.module!.token),
+                              onChanged: (value) => setState(() {
+                                if (value == true) {
+                                  _selected.add(item.module!.token);
+                                } else {
+                                  _selected.remove(item.module!.token);
+                                }
+                              }),
+                              title: Text(
+                                '${item.module!.name} · ${item.module!.version}',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                              subtitle: item.module!.installed
+                                  ? Text(
+                                      item.module!.previous.isEmpty
+                                          ? '已安装'
+                                          : '覆盖 ${item.module!.previous}',
+                                      style: const TextStyle(fontSize: 12),
+                                    )
+                                  : null,
+                              secondary: item.module!.adult
+                                  ? Text(
+                                      '限制级',
+                                      style: TextStyle(
+                                        fontSize: 12,
+                                        color: colors.error,
+                                      ),
+                                    )
+                                  : null,
+                              controlAffinity: ListTileControlAffinity.leading,
+                            ),
+                          ),
+                        ),
+                      if (failures.isNotEmpty) ...[
+                        const Divider(),
+                        Padding(
+                          padding: const EdgeInsets.only(bottom: 4),
+                          child: Text(
+                            '${failures.length} 项无法识别，将跳过',
+                            style: TextStyle(fontSize: 12, color: colors.error),
+                          ),
+                        ),
+                        for (final item in failures)
+                          Padding(
+                            padding: const EdgeInsets.symmetric(vertical: 2),
+                            child: Text(
+                              '${item.displayName}：${item.error}',
+                              style: TextStyle(
+                                fontSize: 12,
+                                color: colors.error,
+                              ),
+                              maxLines: 2,
+                              overflow: TextOverflow.ellipsis,
+                            ),
+                          ),
+                      ],
+                      if (adult > 0) ...[
+                        const SizedBox(height: 8),
+                        Text(
+                          '包含 $adult 个勾选的限制级站源，安装后默认关闭。',
+                          style: TextStyle(fontSize: 12, color: colors.error),
+                        ),
+                      ],
+                    ],
                   ),
-                ],
-              ],
-            ),
+                ),
+              ),
+            ],
           ),
         ),
       ),
@@ -1192,16 +1266,23 @@ class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
         FocusRing(
           radius: 20,
           child: TextButton(
-            autofocus: true,
-            onPressed: () => Navigator.pop(context, false),
+            onPressed: () => Navigator.pop(context, null),
             child: const Text('取消'),
           ),
         ),
         FocusRing(
           radius: 20,
           child: FilledButton(
-            onPressed: () => Navigator.pop(context, true),
-            child: Text('安装 ${items.length} 个'),
+            onPressed: selectedCount == 0
+                ? null
+                : () => Navigator.pop(
+                    context,
+                    [
+                      for (final item in items)
+                        if (_selected.contains(item.module!.token)) item,
+                    ],
+                  ),
+            child: Text(selectedCount == 0 ? '请勾选模块' : '安装 $selectedCount 个'),
           ),
         ),
       ],
