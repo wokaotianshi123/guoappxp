@@ -166,6 +166,23 @@ void main() {
       expect(store.sourceEnabled('huangdou'), isTrue);
     });
 
+    test('限制级站源默认关闭，手动开启后保持开启', () async {
+      final store = await _open({});
+      // 限制级站源可以内置，但用户没有主动开启前不参与发现、搜索等入口。
+      expect(SourceSite.isAdult('heitao-adult'), isTrue);
+      expect(store.sourceEnabled('heitao-adult'), isFalse);
+      expect(store.sources.map((site) => site.id), isNot(contains('heitao-adult')));
+      expect(store.permittedSources.map((site) => site.id), contains('heitao-adult'));
+
+      await store.setSourceEnabled('heitao-adult', true);
+      expect(store.sourceEnabled('heitao-adult'), isTrue);
+      expect(store.sources.map((site) => site.id), contains('heitao-adult'));
+
+      // 关掉再开也要以用户选择为准，不会被默认值翻回关闭。
+      await store.setSourceEnabled('heitao-adult', false);
+      expect(store.sourceEnabled('heitao-adult'), isFalse);
+    });
+
     for (final (name, records) in [
       (
         'an unknown snapshot field',

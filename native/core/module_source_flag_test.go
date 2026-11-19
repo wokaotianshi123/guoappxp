@@ -17,6 +17,7 @@ import (
 // sourceList()，而 sourceList 现在要读同一把锁判断哪些源来自模块。Go 的
 // Mutex 不可重入，持锁段一旦延伸到 sourceList 就会卡死（本测试会挂住超时）。
 func TestSourceListMarksModuleSources(t *testing.T) {
+	isolateBundledModules(t)
 	example := filepath.Join("..", "module_example", "jsexample")
 	manifest, err := os.ReadFile(filepath.Join(example, moduleManifest))
 	if err != nil {

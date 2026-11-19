@@ -428,10 +428,15 @@ class LocalStore extends ChangeNotifier {
       if (!locked) site.asSourceSite,
   ];
 
+  /// 站源是否在发现、搜索、追剧等入口显示。
+  ///
+  /// 用户没有显式开关过的站源按内容分级决定默认值：限制级站源（内置的成人
+  /// 模块）默认关闭，其余默认开启。用户手动开关一次之后以开关记录为准，
+  /// 升级新增的限制级模块也不会把已开启的翻回关闭。
   bool sourceEnabled(String source) => switch (_settings['sourceSwitches']) {
     final Map switches when switches[source] is bool =>
       switches[source] as bool,
-    _ => true,
+    _ => !SourceSite.isAdult(source),
   };
 
   Future<void> setSourceEnabled(String source, bool enabled) {

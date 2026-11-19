@@ -29,8 +29,7 @@ var revisionHiddenSources = map[int][]string{
 	3: {"beabox", "jinguo", "jinguoduanju"},
 }
 
-// 从未保存过源显示列表时的默认隐藏集，与 App 端
-// SourceSite.defaultHiddenSiteIds 保持一致：
+// 从未保存过源显示列表时的默认隐藏集，与 App 端一致：
 // 默认可见 = 红果、韩小圈、鬼片、A123、爱看机器人，其余内置源默认隐藏。
 var defaultHiddenSources = map[string]bool{
 	"huangdou": true, "huangju": true, "yeguo": true, "dsd": true,
@@ -42,11 +41,26 @@ var defaultHiddenSources = map[string]bool{
 	"beabox": true, "jinguo": true, "jinguoduanju": true,
 }
 
+// adultModuleSources 返回清单里标记为限制级的站源模块。
+// 限制级模块可以安装，但用户没有主动开启前不出现在首页站源下拉框里。
+func adultModuleSources() map[string]bool {
+	adult := map[string]bool{}
+	for _, descriptor := range core.RegisteredSources() {
+		if descriptor.Adult {
+			adult[descriptor.ID] = true
+		}
+	}
+	return adult
+}
+
 var (
 	visibilityMu     sync.Mutex
 	visibilityPath   string
 	visibilityLoaded bool
 	hiddenSources    = map[string]bool{}
+	// visibilityExplicit 记录用户手动开关过的站源。限制级模块默认隐藏，
+	// 只有用户主动开启过（出现在这里且不在 hiddenSources 里）才显示。
+	visibilityExplicit = map[string]bool{}
 )
 
 func setVisibilityDirectory(directory string) {
@@ -54,6 +68,7 @@ func setVisibilityDirectory(directory string) {
 	visibilityPath = filepath.Join(directory, visibilityFile)
 	visibilityLoaded = false
 	hiddenSources = map[string]bool{}
+	visibilityExplicit = map[string]bool{}
 	visibilityMu.Unlock()
 }
 
@@ -65,6 +80,7 @@ func loadVisibility() {
 		if raw, err := os.ReadFile(visibilityPath); err == nil {
 			var parsed struct {
 				Hidden   []string `json:"hidden"`
+				Explicit []string `json:"explicit"`
 				Revision int      `json:"revision"`
 			}
 			if json.Unmarshal(raw, &parsed) == nil {
@@ -74,11 +90,19 @@ func loadVisibility() {
 						hiddenSources[id] = true
 					}
 				}
+				visibilityExplicit = map[string]bool{}
+				for _, id := range parsed.Explicit {
+					if id = strings.TrimSpace(id); id != "" {
+						visibilityExplicit[id] = true
+					}
+				}
 				visibilityLoaded = true
 				if parsed.Revision < sourceVisibilityRevision {
 					for version := parsed.Revision + 1; version <= sourceVisibilityRevision; version++ {
 						for _, id := range revisionHiddenSources[version] {
-							hiddenSources[id] = true
+							if !visibilityExplicit[id] {
+								hiddenSources[id] = true
+							}
 						}
 					}
 					_ = saveVisibility()
@@ -92,6 +116,7 @@ func loadVisibility() {
 	for id := range defaultHiddenSources {
 		hiddenSources[id] = true
 	}
+	visibilityExplicit = map[string]bool{}
 	visibilityLoaded = true
 }
 
@@ -103,7 +128,13 @@ func saveVisibility() error {
 	for id := range hiddenSources {
 		ids = append(ids, id)
 	}
-	raw, err := json.MarshalIndent(map[string]any{"hidden": ids, "revision": sourceVisibilityRevision}, "", "  ")
+	explicit := []string{}
+	for id := range visibilityExplicit {
+		explicit = append(explicit, id)
+	}
+	raw, err := json.MarshalIndent(map[string]any{
+		"hidden": ids, "explicit": explicit, "revision": sourceVisibilityRevision,
+	}, "", "  ")
 	if err != nil {
 		return err
 	}
@@ -118,7 +149,16 @@ func isSourceHidden(source string) bool {
 	visibilityMu.Lock()
 	defer visibilityMu.Unlock()
 	loadVisibility()
-	return hiddenSources[source]
+	return hiddenLocked(source)
+}
+
+// hiddenLocked 在已持有 visibilityMu 时判断可见性，避免重复加锁。
+func hiddenLocked(source string) bool {
+	if hiddenSources[source] {
+		return true
+	}
+	// 限制级模块默认不出现在首页；用户手动开关过之后以显式选择为准。
+	return !visibilityExplicit[source] && adultModuleSources()[source]
 }
 
 // handleSourceVisibility GET 返回全部可用站源与可见状态；
@@ -140,7 +180,7 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 				_, fromModule := moduleSources[source.ID]
 				items = append(items, map[string]any{
 					"id": source.ID, "name": source.Name, "builtin": !fromModule, "module": fromModule,
-					"visible": !hiddenSources[source.ID],
+					"visible": !hiddenLocked(source.ID),
 				})
 			}
 		}
@@ -156,7 +196,7 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 					seen[custom["id"]] = true
 					items = append(items, map[string]any{
 						"id": custom["id"], "name": custom["name"], "builtin": false,
-						"visible": !hiddenSources[custom["id"]],
+						"visible": !hiddenLocked(custom["id"]),
 					})
 				}
 			}
@@ -175,7 +215,7 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 			if sourceAvailable(source) {
 				items = append(items, map[string]any{
 					"id": source, "name": name, "builtin": false, "module": true,
-					"visible": !hiddenSources[source],
+					"visible": !hiddenLocked(source),
 				})
 			}
 		}
@@ -198,6 +238,8 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 		} else {
 			hiddenSources[payload.ID] = true
 		}
+		// 手动开关过就记下显式选择：限制级模块的默认隐藏只对没选择过的源生效。
+		visibilityExplicit[payload.ID] = true
 		if err := saveVisibility(); err != nil {
 			writeJSON(writer, map[string]any{"ok": false, "error": "保存失败：" + err.Error()})
 			return

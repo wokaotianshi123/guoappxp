@@ -37,8 +37,8 @@ env:
   # bundle id 与 Windows 的 userdata 目录，不能拿来单独改安卓。
   ANDROID_PACKAGE_NAME: ${{ vars.ANDROID_PACKAGE_NAME }}
   PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
-  # 内置站源模块目录。私有仓库拿不到时留空，构建出「不含内置模块」的包，
-  # 站源改从站源页的模块商店安装。
+  # 额外的内置站源模块目录（可留空）。仓库自带的 modules/ 会自动全部内置，
+  # 这里的变量只用于临时追加，例如把私有仓库检出的副本一并打进包。
   BUNDLED_MODULES: ${{ vars.BUNDLED_MODULES }}
   PYTHONUTF8: '1'
   PROJECT_URL: ${{ vars.PROJECT_URL }}
@@ -114,12 +114,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - &checkout-hongguo
-        uses: actions/checkout@v4
-        continue-on-error: true
-        with:
-          repository: ${{ vars.BUNDLED_MODULES_REPO }}
-          path: bundled-modules/hongguo
       - &setup-python
         uses: actions/setup-python@v5
         with:
@@ -194,7 +188,6 @@ jobs:
     timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
-      - *checkout-hongguo
       - *setup-go
       - *setup-python
       - *setup-flutter
@@ -227,7 +220,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - *checkout-hongguo
       - *setup-python
       - *setup-go
       - *setup-flutter
@@ -262,7 +254,6 @@ jobs:
     timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
-      - *checkout-hongguo
       - *setup-python
       - *setup-go
       - *setup-flutter

@@ -11,8 +11,7 @@ import (
 	"testing/fstest"
 )
 
-func TestBundledModulesInstallRespectRemovalAndVersions(t *testing.T) {
-	example := filepath.Join("..", "module_example", "jsexample")
+func TestBundledModulesInstallRespectRemovalAndVersions(t *testing.T) {	example := filepath.Join("..", "module_example", "jsexample")
 	manifest, err := os.ReadFile(filepath.Join(example, moduleManifest))
 	if err != nil {
 		t.Fatal(err)

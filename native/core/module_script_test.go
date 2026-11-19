@@ -396,6 +396,7 @@ module.exports = {
 }
 
 func TestLoadModulesRegistersAndReplaces(t *testing.T) {
+	isolateBundledModules(t)
 	data := t.TempDir()
 	target := filepath.Join(data, moduleDirectory, "jsexample")
 	if err := os.CopyFS(target, os.DirFS(filepath.Join("..", "module_example", "jsexample"))); err != nil {

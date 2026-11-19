@@ -11,6 +11,7 @@ SourceSite _site(
   bool hongguo = false,
   bool account = false,
   bool vipPrompt = true,
+  bool adult = false,
 }) => SourceSite(
   id,
   name,
@@ -26,6 +27,7 @@ SourceSite _site(
   devices: hongguo,
   account: account,
   vipPrompt: vipPrompt,
+  adult: adult,
 );
 
 void installSourceFixture() => SourceSite.install([
@@ -50,4 +52,5 @@ void installSourceFixture() => SourceSite.install([
   ),
   _site('huangguoai', '黄果 AI', group: 'huangguo', entry: 'AI'),
   _site('cloudfront', '黄果旧版', group: 'huangguo', entry: '旧版', search: false),
+  _site('heitao-adult', '黑桃限制级', adult: true),
 ]);

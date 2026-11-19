@@ -130,9 +130,16 @@ void main() {
   group('sources', () {
     test('available sources start switched on', () async {
       final store = await openStore();
+      // 限制级站源默认关闭，其余可用站源默认开启。
       expect(
         store.sources.map((site) => site.id),
-        SourceSite.values.map((site) => site.id),
+        SourceSite.values
+            .where((site) => !site.adult)
+            .map((site) => site.id),
+      );
+      expect(
+        store.sources.map((site) => site.id),
+        isNot(contains('heitao-adult')),
       );
     });
 

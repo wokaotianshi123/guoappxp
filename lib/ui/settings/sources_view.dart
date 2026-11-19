@@ -83,7 +83,9 @@ class _SourcesViewState extends State<SourcesView> {
               for (final site in SourceSite.values)
                 _SourceTile(
                   title: site.name,
-                  subtitle: site.description,
+                  subtitle: site.adult
+                      ? '${site.description} · 限制级，默认关闭'
+                      : site.description,
                   enabled: store.sourceEnabled(site.id),
                   onChanged: (value) => _toggle(site.id, value, true),
                 ),
