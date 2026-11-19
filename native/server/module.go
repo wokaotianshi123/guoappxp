@@ -177,6 +177,115 @@ func moduleUninstall(id string) error {
 	return nil
 }
 
+// handleModulePrepare 把上传的 zip / 地址展开暂存成待安装项返回给前端，
+// 不执行安装，供用户在弹层里勾选要装哪些模块。核心按 token 暂存安装包，
+// token 在用户确认安装前一直有效。
+func handleModulePrepare(writer http.ResponseWriter, request *http.Request) {
+	body, err := io.ReadAll(io.LimitReader(request.Body, moduleUploadBytes+1))
+	if err != nil {
+		writeJSON(writer, map[string]any{"ok": false, "error": "读取安装包失败"})
+		return
+	}
+	if len(body) == 0 || len(body) > moduleUploadBytes {
+		writeJSON(writer, map[string]any{"ok": false, "error": "安装包为空或超过 8 MB"})
+		return
+	}
+	var prepared []map[string]any
+	if trimmed := strings.TrimSpace(string(body)); strings.HasPrefix(trimmed, "{") {
+		var payload struct {
+			URLs []string `json:"urls"`
+		}
+		if err := json.Unmarshal(body, &payload); err == nil {
+			urls := make([]string, 0, len(payload.URLs))
+			for _, value := range payload.URLs {
+				if value = strings.TrimSpace(value); value != "" {
+					urls = append(urls, value)
+				}
+			}
+			if len(urls) == 0 {
+				writeJSON(writer, map[string]any{"ok": false, "error": "请填写安装包地址"})
+				return
+			}
+			prepared, err = modulePrepareURLs(urls)
+		} else {
+			writeJSON(writer, map[string]any{"ok": false, "error": "请求不是合法 JSON"})
+			return
+		}
+	} else {
+		handle, err := os.CreateTemp("", "module-*.zip")
+		if err != nil {
+			writeJSON(writer, map[string]any{"ok": false, "error": "无法暂存安装包"})
+			return
+		}
+		location := handle.Name()
+		defer os.Remove(location)
+		if _, err := handle.Write(body); err != nil {
+			handle.Close()
+			writeJSON(writer, map[string]any{"ok": false, "error": "无法暂存安装包"})
+			return
+		}
+		handle.Close()
+		prepared, err = modulePrepareFiles([]string{location})
+	}
+	if err != nil {
+		writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	writeJSON(writer, map[string]any{"ok": true, "items": preparedViewItems(prepared)})
+}
+
+// moduleSelection 是前端勾选后提交的一项：token 对应核心暂存的模块包，
+// name 只用于失败提示。
+type moduleSelection struct {
+	Token string `json:"token"`
+	Name  string `json:"name"`
+}
+
+// handleModuleInstallPrepared 按前端勾选的 token 安装，未勾选的不装。
+func handleModuleInstallPrepared(writer http.ResponseWriter, request *http.Request) {
+	payload := struct {
+		Items []moduleSelection `json:"items"`
+	}{}
+	if err := json.NewDecoder(io.LimitReader(request.Body, 1<<20)).Decode(&payload); err != nil {
+		writeJSON(writer, map[string]any{"ok": false, "error": "请求不是合法 JSON"})
+		return
+	}
+	installed, failures := installSelectedModules(payload.Items)
+	writeJSON(writer, map[string]any{
+		"ok": true, "installed": installed, "failures": failures, "items": moduleItems(),
+	})
+}
+
+// installSelectedModules 逐个安装前端勾选的暂存模块，返回成功数与失败说明。
+func installSelectedModules(items []moduleSelection) (int, []string) {
+	installed := 0
+	failures := []string{}
+	for _, item := range items {
+		token := strings.TrimSpace(item.Token)
+		name := strings.TrimSpace(item.Name)
+		if name == "" {
+			name = token
+		}
+		if token == "" {
+			failures = append(failures, name+"：安装包校验失败")
+			continue
+		}
+		reply, err := callCore(map[string]any{"action": "installModule", "token": token})
+		if err != nil || !reply.OK {
+			message := "安装失败"
+			if err != nil {
+				message = err.Error()
+			} else {
+				message = moduleErrorText(reply.Error, message)
+			}
+			failures = append(failures, name+"："+message)
+			continue
+		}
+		installed++
+	}
+	return installed, failures
+}
+
 func moduleErrorText(message, fallback string) string {
 	message = strings.TrimSpace(message)
 	if message == "" {
@@ -348,10 +457,12 @@ func handleModuleExport(writer http.ResponseWriter, request *http.Request) {
 
 // handleModules 是模块页的接口：
 //
-//	GET  /api/modules           已装模块列表
-//	GET  /api/modules/index     模块商店（含随包内置的模块）
-//	POST /api/modules/install   安装：{"url":"…"} / {"id":"…"} / 原始 zip 字节
-//	POST /api/modules/uninstall 卸载：{"id":"…"}
+//	GET  /api/modules              已装模块列表
+//	GET  /api/modules/index        模块商店（含随包内置的模块）
+//	POST /api/modules/install      安装：{"url":"…"} / {"id":"…"} / 原始 zip 字节
+//	POST /api/modules/prepare      准备：展开安装包成待安装项（不安装，供勾选）
+//	POST /api/modules/install-prepared 安装：{"items":[{"token":"…","name":"…"}]}
+//	POST /api/modules/uninstall    卸载：{"id":"…"}
 func handleModules(writer http.ResponseWriter, request *http.Request) {
 	switch request.URL.Path {
 	case "/api/modules":
@@ -377,6 +488,20 @@ func handleModules(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		handleModuleInstall(writer, request)
+	case "/api/modules/prepare":
+		// 准备：展开 zip / 地址成待安装项，不安装，供前端勾选。
+		if request.Method != http.MethodPost {
+			writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
+			return
+		}
+		handleModulePrepare(writer, request)
+	case "/api/modules/install-prepared":
+		// 安装：按前端勾选的 token 逐个安装。
+		if request.Method != http.MethodPost {
+			writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
+			return
+		}
+		handleModuleInstallPrepared(writer, request)
 	case "/api/modules/uninstall":
 		if request.Method != http.MethodPost {
 			writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
@@ -502,15 +627,63 @@ func handleModuleInstall(writer http.ResponseWriter, request *http.Request) {
 
 // moduleInstallFiles 把本地安装包交给核心批量准备并逐个安装，返回成功数与失败说明。
 func moduleInstallFiles(files []string) (int, []string, error) {
-	reply, err := callCore(map[string]any{"action": "prepareModules", "files": files})
+	prepared, err := modulePrepareFiles(files)
 	if err != nil {
 		return 0, nil, err
 	}
-	if !reply.OK {
-		return 0, nil, errors.New(moduleErrorText(reply.Error, "安装包校验失败"))
-	}
-	count, failures := installPreparedModules(preparedEntries(reply.Data["items"]))
+	count, failures := installPreparedModules(prepared)
 	return count, failures, nil
+}
+
+// modulePrepareFiles 只把安装包展开、暂存成待安装项并返回，不执行安装。
+// 供前端在真正安装前让用户勾选要装哪些模块。
+func modulePrepareFiles(files []string) ([]map[string]any, error) {
+	reply, err := callCore(map[string]any{"action": "prepareModules", "files": files})
+	if err != nil {
+		return nil, err
+	}
+	if !reply.OK {
+		return nil, errors.New(moduleErrorText(reply.Error, "安装包校验失败"))
+	}
+	return preparedEntries(reply.Data["items"]), nil
+}
+
+// modulePrepareURLs 与 modulePrepareFiles 相同，但来源是下载地址。
+func modulePrepareURLs(urls []string) ([]map[string]any, error) {
+	reply, err := callCore(map[string]any{"action": "prepareModules", "urls": urls})
+	if err != nil {
+		return nil, err
+	}
+	if !reply.OK {
+		return nil, errors.New(moduleErrorText(reply.Error, "安装包校验失败"))
+	}
+	return preparedEntries(reply.Data["items"]), nil
+}
+
+// preparedViewItems 把核心的待安装项裁剪成前端展示需要的字段，避免把内部
+// token 之外的运行时数据下发出去；token 用于提交时对应勾选的模块。
+func preparedViewItems(prepared []map[string]any) []map[string]any {
+	out := make([]map[string]any, 0, len(prepared))
+	for _, entry := range prepared {
+		info, _ := entry["info"].(map[string]any)
+		token, _ := info["token"].(string)
+		name, _ := entry["name"].(string)
+		item := map[string]any{
+			"name":  name,
+			"token": token,
+			"error": entry["error"],
+		}
+		if token != "" {
+			item["id"] = info["id"]
+			item["displayName"] = info["name"]
+			item["version"] = info["version"]
+			item["adult"] = info["adult"]
+			item["installed"] = info["installed"]
+			item["previous"] = info["previous"]
+		}
+		out = append(out, item)
+	}
+	return out
 }
 
 // preparedEntries 从核心响应里取出待安装项。
