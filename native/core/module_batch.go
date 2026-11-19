@@ -47,10 +47,40 @@ type prepareModuleResult struct {
 	Error string            `json:"error,omitempty"`
 }
 
+// packModuleFiles 把一份 manifest 与代码打成一个独立的模块包，manifest 与
+// main.js 直接放在压缩包根目录，符合 modulePackageFiles 的识别约定。
+func packModuleFiles(manifest, code []byte) ([]byte, error) {
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	for _, item := range []struct {
+		name string
+		data []byte
+	}{
+		{moduleManifest, manifest},
+		{moduleEntry, code},
+	} {
+		writer, err := archive.Create(item.name)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		if _, err := writer.Write(item.data); err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+	}
+	if err := archive.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
 // expandModulePackage 把一份字节摊平成若干模块包。
 //
 // 判定顺序：先按普通模块包解析；解析不了再当作合集包，逐个成员递归展开。
-// 这样单个模块 zip 与合集 zip 都能用同一入口提交。
+// 合集支持两种布局：每个模块是独立的子 zip；或每个模块占一级子目录、目录里
+// 直接放 manifest.json 与 main.js（软件早期版本导出的合集就是这种布局）。
+// 两种都能用同一入口提交。
 func expandModulePackage(name string, raw []byte, depth int) ([]modulePackageCandidate, error) {
 	if _, _, err := modulePackageFiles(raw); err == nil {
 		return []modulePackageCandidate{{name: name, raw: raw}}, nil
@@ -88,10 +118,75 @@ func expandModulePackage(name string, raw []byte, depth int) ([]modulePackageCan
 		}
 		candidates = append(candidates, expanded...)
 	}
+	// 兼容「每个模块占一级子目录」的合集布局：把每个子目录里的 manifest 与
+	// main.js 重新打成一个独立模块包，再走普通模块包的校验与暂存。
+	for _, candidate := range expandFolderLayout(name, archive, &count) {
+		candidates = append(candidates, candidate)
+	}
 	if len(candidates) == 0 {
 		return nil, fmt.Errorf("%s 里没有找到模块 zip", name)
 	}
 	return candidates, nil
+}
+
+// expandFolderLayout 识别「name/manifest.json + name/main.js」这种每个模块占
+// 一级子目录的合集布局，把每个子目录重新组装成独立模块包。子目录里缺少任意
+// 一个文件的都跳过，避免把不完整的目录误判成模块。
+func expandFolderLayout(name string, archive *zip.Reader, count *int) []modulePackageCandidate {
+	folders := map[string]map[string]*zip.File{}
+	for _, file := range archive.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		clean := strings.TrimPrefix(strings.ReplaceAll(file.Name, `\`, "/"), "./")
+		parts := strings.Split(clean, "/")
+		if len(parts) != 2 {
+			continue
+		}
+		base := parts[1]
+		if base != moduleManifest && base != moduleEntry {
+			continue
+		}
+		folder := parts[0]
+		if folder == "" {
+			continue
+		}
+		if folders[folder] == nil {
+			folders[folder] = map[string]*zip.File{}
+		}
+		folders[folder][base] = file
+	}
+	keys := make([]string, 0, len(folders))
+	for folder := range folders {
+		keys = append(keys, folder)
+	}
+	sort.Strings(keys)
+	var candidates []modulePackageCandidate
+	for _, folder := range keys {
+		files := folders[folder]
+		manifestFile, codeFile := files[moduleManifest], files[moduleEntry]
+		if manifestFile == nil || codeFile == nil {
+			continue
+		}
+		*count++
+		if *count > moduleBundleEntries {
+			return candidates
+		}
+		manifest, err := readZipMember(manifestFile, moduleManifestBytes)
+		if err != nil {
+			continue
+		}
+		code, err := readZipMember(codeFile, moduleEntryBytes)
+		if err != nil {
+			continue
+		}
+		packed, err := packModuleFiles(manifest, code)
+		if err != nil {
+			continue
+		}
+		candidates = append(candidates, modulePackageCandidate{name: folder, raw: packed})
+	}
+	return candidates
 }
 
 func readZipMember(file *zip.File, limit int64) ([]byte, error) {
@@ -263,8 +358,11 @@ func (engine *nativeEngine) resetModules() (map[string]any, error) {
 	}, nil
 }
 
-// exportModules 把模块导出成一个 zip（内含每个模块一个子目录）。
+// exportModules 把模块导出成一个合集 zip：每个模块是一个独立的子模块 zip
+// （文件名 "<模块标识>.zip"，包内根目录放 manifest.json 与 main.js）。
 //
+// 这样导出的合集包与本程序导入端 expandModulePackage 的合集布局一致，
+// 重新导入时能逐个识别、逐个安装；每个子包也能单独解压安装。
 // ids 为空时导出全部用户安装的模块。内置模块只要装在数据目录里也能导出，
 // 这样换设备时可以直接整包带走。
 func (engine *nativeEngine) exportModules(ids []string) (map[string]any, error) {
@@ -311,22 +409,20 @@ func (engine *nativeEngine) exportModules(ids []string) (map[string]any, error) 
 		if err != nil {
 			continue
 		}
-		for _, item := range []struct {
-			name string
-			data []byte
-		}{
-			{moduleManifest, manifest},
-			{moduleEntry, code},
-		} {
-			writer, err := archive.Create(name + "/" + item.name)
-			if err != nil {
-				_ = archive.Close()
-				return nil, err
-			}
-			if _, err := writer.Write(item.data); err != nil {
-				_ = archive.Close()
-				return nil, err
-			}
+		// 每个模块先打成一个独立子包，再作为 "<标识>.zip" 写入合集。
+		member, err := packModuleFiles(manifest, code)
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		writer, err := archive.Create(name + ".zip")
+		if err != nil {
+			_ = archive.Close()
+			return nil, err
+		}
+		if _, err := writer.Write(member); err != nil {
+			_ = archive.Close()
+			return nil, err
 		}
 		count++
 	}

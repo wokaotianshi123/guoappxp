@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"encoding/base64"
 	"os"
 	"path/filepath"
 	"strings"
@@ -272,6 +273,103 @@ func TestExportModulesSelectedOnly(t *testing.T) {
 	names, _ := result["names"].([]string)
 	if len(names) != 1 || names[0] != "beta" {
 		t.Fatalf("导出名单不对: %v", names)
+	}
+}
+
+// folderBundleZip 把若干模块以「每个模块一个子目录、目录里直接放 manifest 与
+// main.js」的布局打成一个合集包，模拟软件早期版本的导出格式。
+func folderBundleZip(t *testing.T, ids []string) []byte {
+	t.Helper()
+	var buffer bytes.Buffer
+	archive := zip.NewWriter(&buffer)
+	manifest := `{"id":"ID","name":"ID","version":"1.0.0","description":"","runtime":"js","api":1,"adult":false,"hosts":[]}`
+	code := `module.exports={categories:function(){return [];},catalogPage:function(){return {items:[]};},detail:function(){return {drama:{},chapters:[]};},resolveMedia:function(){return {url:""};}};`
+	for _, id := range ids {
+		w, err := archive.Create(id + "/" + moduleManifest)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(strings.ReplaceAll(manifest, "ID", id))); err != nil {
+			t.Fatal(err)
+		}
+		w, err = archive.Create(id + "/" + moduleEntry)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := w.Write([]byte(code)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := archive.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buffer.Bytes()
+}
+
+func TestExpandModulePackageFolderLayout(t *testing.T) {
+	// 早期版本导出的合集：每个模块占一个子目录，也要能展开。
+	bundle := folderBundleZip(t, []string{"alpha", "beta"})
+	items, err := expandModulePackage("legacy.zip", bundle, 0)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("子目录式合集应展开成 2 份，得到 %d", len(items))
+	}
+	for _, item := range items {
+		module, err := unpackModule(item.raw)
+		if err != nil {
+			t.Fatalf("子目录重组后的模块包无效: %v", err)
+		}
+		if module.manifest.ID == "" {
+			t.Fatal("重组后的模块缺少标识")
+		}
+	}
+}
+
+func TestExportModulesImportRoundTrip(t *testing.T) {
+	// 导出 → 重新导入要能完整闭环：每个模块都变成可安装的独立包。
+	engine := newBatchEngine(t)
+	t.Cleanup(func() { Unregister("alpha"); Unregister("beta") })
+	dir := t.TempDir()
+	for _, id := range []string{"alpha", "beta"} {
+		file := filepath.Join(dir, id+".zip")
+		_ = os.WriteFile(file, moduleZip(t, id, "1.0.0", ""), 0o600)
+		info, err := engine.prepareModule(context.Background(), file, "", "", false)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := engine.installModule(info.Token); err != nil {
+			t.Fatal(err)
+		}
+	}
+	result, err := engine.exportModules(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	content, _ := result["content"].(string)
+	raw, err := base64.StdEncoding.DecodeString(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// 走与「从文件导入」完全相同的展开入口。
+	items, err := expandModulePackage("exported.zip", raw, 0)
+	if err != nil {
+		t.Fatalf("软件导出的合集包应能被自己识别: %v", err)
+	}
+	if len(items) != 2 {
+		t.Fatalf("导出的合集应展开成 2 份，得到 %d", len(items))
+	}
+	ids := map[string]bool{}
+	for _, item := range items {
+		module, err := unpackModule(item.raw)
+		if err != nil {
+			t.Fatalf("导出的子包无效: %v", err)
+		}
+		ids[module.manifest.ID] = true
+	}
+	if !ids["alpha"] || !ids["beta"] {
+		t.Fatalf("导出丢失模块: %v", ids)
 	}
 }
 
