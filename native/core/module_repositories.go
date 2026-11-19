@@ -1,0 +1,194 @@
+package core
+
+import (
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net/url"
+	"os"
+	"path/filepath"
+	"strings"
+)
+
+// 在线仓库：一份「仓库名 + index.json 地址」的列表，首个为当前启用的仓库。
+// 配置文件落在应用数据目录，与模块安装包、资源设置彼此独立。
+const (
+	moduleRepositoriesFile  = "module-repositories.json"
+	moduleRepositoriesBytes = 16 << 10
+	moduleRepositoriesMax   = 20
+	moduleRepositoryNameMax = 40
+	moduleRepositoryURLMax  = 2048
+)
+
+type nativeModuleRepository struct {
+	Name string `json:"name"`
+	URL  string `json:"url"`
+}
+
+type moduleRepositoriesConfig struct {
+	Repositories []nativeModuleRepository `json:"repositories"`
+	Active       int                      `json:"active"`
+}
+
+// 默认配置沿用内置的两处官方镜像，作为第一个仓库；同时 moduleIndex 在
+// 自定义仓库失败时仍会把它们当兜底镜像尝试（见 activeModuleIndexAddresses）。
+func defaultModuleRepositoriesConfig() moduleRepositoriesConfig {
+	config := moduleRepositoriesConfig{Repositories: []nativeModuleRepository{}}
+	for _, address := range moduleIndexAddresses {
+		config.Repositories = append(config.Repositories, nativeModuleRepository{Name: "官方仓库", URL: address})
+	}
+	return config
+}
+
+func (config moduleRepositoriesConfig) validate() error {
+	if len(config.Repositories) == 0 {
+		return errors.New("至少保留一个在线仓库")
+	}
+	if len(config.Repositories) > moduleRepositoriesMax {
+		return fmt.Errorf("在线仓库最多 %d 个", moduleRepositoriesMax)
+	}
+	seen := map[string]bool{}
+	for _, repo := range config.Repositories {
+		name := strings.TrimSpace(repo.Name)
+		if name == "" || len([]rune(name)) > moduleRepositoryNameMax {
+			return errors.New("仓库名称应为 1 至 40 个字符")
+		}
+		address := strings.TrimSpace(repo.URL)
+		if address == "" || len(address) > moduleRepositoryURLMax {
+			return errors.New("仓库地址过长或为空")
+		}
+		parsed, err := url.Parse(address)
+		if err != nil || parsed.Host == "" || parsed.Fragment != "" ||
+			(parsed.Scheme != "http" && parsed.Scheme != "https") {
+			return errors.New("仓库地址须为以 http:// 或 https:// 开头的 index.json 地址")
+		}
+		key := strings.ToLower(address)
+		if seen[key] {
+			return errors.New("仓库地址不能重复")
+		}
+		seen[key] = true
+	}
+	if config.Active < 0 || config.Active >= len(config.Repositories) {
+		return errors.New("启用的仓库序号无效")
+	}
+	return nil
+}
+
+func (config moduleRepositoriesConfig) sanitized() moduleRepositoriesConfig {
+	clean := moduleRepositoriesConfig{Active: config.Active}
+	for _, repo := range config.Repositories {
+		clean.Repositories = append(clean.Repositories, nativeModuleRepository{
+			Name: strings.TrimSpace(repo.Name),
+			URL:  strings.TrimSpace(repo.URL),
+		})
+	}
+	return clean
+}
+
+func (engine *nativeEngine) moduleRepositoriesPath() string {
+	return filepath.Join(engine.directory, moduleRepositoriesFile)
+}
+
+// loadModuleRepositories 读取已保存的仓库配置；文件缺失或非法时回退默认值。
+func (engine *nativeEngine) loadModuleRepositories() {
+	file := engine.moduleRepositoriesPath()
+	info, err := os.Stat(file)
+	if err != nil {
+		engine.repositories = defaultModuleRepositoriesConfig()
+		return
+	}
+	if !info.Mode().IsRegular() || info.Size() > moduleRepositoriesBytes {
+		engine.repositoriesWarning = "在线仓库配置无效，已使用默认仓库"
+		engine.repositories = defaultModuleRepositoriesConfig()
+		return
+	}
+	data, readErr := os.ReadFile(file)
+	var stored moduleRepositoriesConfig
+	if readErr != nil || json.Unmarshal(data, &stored) != nil || stored.validate() != nil {
+		engine.repositoriesWarning = "在线仓库配置无法读取，已使用默认仓库"
+		engine.repositories = defaultModuleRepositoriesConfig()
+		return
+	}
+	engine.repositories = stored.sanitized()
+}
+
+// repositoriesView 供 UI 展示：带上当前启用项与可能的告警文案。
+func (engine *nativeEngine) repositoriesView() map[string]any {
+	engine.repositoriesMu.Lock()
+	defer engine.repositoriesMu.Unlock()
+	items := make([]map[string]any, 0, len(engine.repositories.Repositories))
+	for _, repo := range engine.repositories.Repositories {
+		items = append(items, map[string]any{"name": repo.Name, "url": repo.URL})
+	}
+	return map[string]any{
+		"items":   items,
+		"active":  engine.repositories.Active,
+		"warning": engine.repositoriesWarning,
+	}
+}
+
+// saveModuleRepositories 校验并保存仓库配置，空列表或非法地址直接拒绝。
+func (engine *nativeEngine) saveModuleRepositories(config moduleRepositoriesConfig) (map[string]any, error) {
+	clean := config.sanitized()
+	if err := clean.validate(); err != nil {
+		return nil, err
+	}
+	data, err := json.Marshal(clean)
+	if err != nil {
+		return nil, errors.New("无法保存在线仓库配置")
+	}
+	engine.repositoriesMu.Lock()
+	defer engine.repositoriesMu.Unlock()
+	if err := nativeDownloadWrite(engine.moduleRepositoriesPath(), data); err != nil {
+		return nil, errors.New("未能保存在线仓库配置，原配置保持不变")
+	}
+	engine.repositories = clean
+	engine.repositoriesWarning = ""
+	return map[string]any{
+		"items":  repositoriesAsMap(clean.Repositories),
+		"active": clean.Active,
+	}, nil
+}
+
+func repositoriesAsMap(repos []nativeModuleRepository) []map[string]any {
+	items := make([]map[string]any, 0, len(repos))
+	for _, repo := range repos {
+		items = append(items, map[string]any{"name": repo.Name, "url": repo.URL})
+	}
+	return items
+}
+
+// activeModuleIndexAddresses 返回索引候选地址：当前启用仓库的 index.json 优先，
+// 其后追加内置官方镜像作为兜底（自定义仓库暂时不可用时仍能显示官方模块）。
+// 返回顺序即镜像优先级，moduleIndex 的成功下标会决定文件下载的模板起点。
+func (engine *nativeEngine) activeModuleIndexAddresses() []string {
+	engine.repositoriesMu.Lock()
+	config := engine.repositories
+	engine.repositoriesMu.Unlock()
+	addresses := []string{}
+	if len(config.Repositories) > 0 {
+		active := config.Active
+		if active < 0 || active >= len(config.Repositories) {
+			active = 0
+		}
+		if address := strings.TrimSpace(config.Repositories[active].URL); address != "" {
+			addresses = append(addresses, address)
+		}
+	}
+	for _, fallback := range moduleIndexAddresses {
+		duplicate := false
+		for _, existing := range addresses {
+			if strings.EqualFold(existing, fallback) {
+				duplicate = true
+				break
+			}
+		}
+		if !duplicate {
+			addresses = append(addresses, fallback)
+		}
+	}
+	if len(addresses) == 0 {
+		return moduleIndexAddresses
+	}
+	return addresses
+}

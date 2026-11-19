@@ -66,6 +66,7 @@ class _ModulesPageState extends State<ModulesPage>
   String? _error;
   ModuleStore? _index;
   String? _indexError;
+  ModuleRepositories? _repositories;
   bool _busy = false;
 
   LocalStore get _store => widget.store;
@@ -82,6 +83,7 @@ class _ModulesPageState extends State<ModulesPage>
     WidgetsBinding.instance.addPostFrameCallback((_) {
       _refresh();
       _loadIndex();
+      _loadRepositories();
     });
   }
 
@@ -120,6 +122,34 @@ class _ModulesPageState extends State<ModulesPage>
     } catch (failure) {
       if (mounted) setState(() => _indexError = '$failure');
     }
+  }
+
+  Future<void> _loadRepositories() async {
+    try {
+      final repos = await _repository.moduleRepositories();
+      if (mounted) setState(() => _repositories = repos);
+    } catch (_) {
+      // 在线仓库配置不可用时保持默认视图，不影响其它 tab。
+    }
+  }
+
+  /// 打开在线仓库管理：增删改切换仓库，保存后刷新配置与商店列表。
+  Future<void> _manageRepositories() async {
+    final current = _repositories ?? const ModuleRepositories();
+    final result = await showDialog<ModuleRepositories>(
+      context: context,
+      builder: (_) => _RepositoriesDialog(config: current),
+    );
+    if (result == null) return;
+    await _run(() async {
+      await _repository.saveModuleRepositories(
+        result.repositories,
+        result.active,
+      );
+      _show('在线仓库配置已保存');
+    });
+    await _loadRepositories();
+    await _loadIndex();
   }
 
   void _show(String message) {
@@ -227,8 +257,14 @@ class _ModulesPageState extends State<ModulesPage>
   }) async {
     final prepared = await _repository.prepareModules(files: files, urls: urls);
     if (!mounted) return;
-    final ready = [for (final item in prepared) if (item.ok) item];
-    final failed = [for (final item in prepared) if (!item.ok) item];
+    final ready = [
+      for (final item in prepared)
+        if (item.ok) item,
+    ];
+    final failed = [
+      for (final item in prepared)
+        if (!item.ok) item,
+    ];
     if (ready.isEmpty) {
       throw AppFailure(
         failed.isEmpty
@@ -238,10 +274,7 @@ class _ModulesPageState extends State<ModulesPage>
     }
     final chosen = await showDialog<List<PreparedModule>>(
       context: context,
-      builder: (_) => _BatchInstallPreview(
-        items: ready,
-        failures: failed,
-      ),
+      builder: (_) => _BatchInstallPreview(items: ready, failures: failed),
     );
     if (chosen == null || chosen.isEmpty || !mounted) return;
     var installed = 0;
@@ -262,7 +295,8 @@ class _ModulesPageState extends State<ModulesPage>
         '已安装 $installed 个站源',
         if (errors.isNotEmpty) '${errors.length} 个失败：${errors.join('；')}',
         if (failed.isNotEmpty) '${failed.length} 个无法识别',
-        if (ready.length > chosen.length) '跳过 ${ready.length - chosen.length} 个未勾选',
+        if (ready.length > chosen.length)
+          '跳过 ${ready.length - chosen.length} 个未勾选',
         ...notices,
       ].join('，'),
     );
@@ -352,9 +386,7 @@ class _ModulesPageState extends State<ModulesPage>
     if (accepted != true) return;
     await _run(() async {
       final result = await _repository.resetModules();
-      _show(
-        '已删除 ${result.removed.length} 个模块，恢复 ${result.bundled} 个内置站源',
-      );
+      _show('已删除 ${result.removed.length} 个模块，恢复 ${result.bundled} 个内置站源');
     });
   }
 
@@ -485,7 +517,29 @@ class _ModulesPageState extends State<ModulesPage>
             missing.containsKey(b.id) ? 0 : 1,
           ),
         );
+    final repos = _repositories;
+    final activeName =
+        repos != null &&
+            repos.active >= 0 &&
+            repos.active < repos.repositories.length
+        ? repos.repositories[repos.active].name
+        : '';
     return _list([
+      if (!bundled)
+        SettingsCard(
+          children: [
+            SettingsTile(
+              icon: Icons.storefront_outlined,
+              title: '在线仓库',
+              subtitle: activeName.isEmpty
+                  ? '添加 index.json 地址以切换应用商店'
+                  : '当前：$activeName · 点击管理 / 切换',
+              enabled: enabled,
+              onTap: enabled ? _manageRepositories : null,
+            ),
+          ],
+        ),
+      if (!bundled && repos?.warning.isNotEmpty == true) _Note(repos!.warning),
       if (warning.isNotEmpty) _Note(warning),
       if (!bundled && entries.isNotEmpty)
         SettingsCard(
@@ -546,9 +600,7 @@ class _ModulesPageState extends State<ModulesPage>
         children: [
           SettingsTile(
             title: '导出模块',
-            subtitle: exportable
-                ? '可导出单个、多个或全部已安装模块'
-                : '还没有可导出的模块',
+            subtitle: exportable ? '可导出单个、多个或全部已安装模块' : '还没有可导出的模块',
             enabled: enabled && exportable,
             onTap: enabled && exportable
                 ? () async {
@@ -1090,6 +1142,307 @@ class _AddressDialogState extends State<_AddressDialog> {
   }
 }
 
+/// 在线仓库管理：新增 / 编辑 / 删除仓库名+地址，点击条目前圆点切换启用项。
+/// 返回最终的仓库配置；返回 null 表示取消。
+class _RepositoriesDialog extends StatefulWidget {
+  const _RepositoriesDialog({required this.config});
+  final ModuleRepositories config;
+
+  @override
+  State<_RepositoriesDialog> createState() => _RepositoriesDialogState();
+}
+
+class _RepositoriesDialogState extends State<_RepositoriesDialog> {
+  late List<ModuleRepository> _items;
+  late int _active;
+
+  @override
+  void initState() {
+    super.initState();
+    _items = [
+      for (final repo in widget.config.repositories)
+        ModuleRepository(name: repo.name, url: repo.url),
+    ];
+    _active = widget.config.active;
+    if (_items.isEmpty) {
+      _items = [const ModuleRepository(name: '默认仓库', url: '')];
+      _active = 0;
+    }
+    if (_active < 0 || _active >= _items.length) _active = 0;
+  }
+
+  Future<void> _edit(int index) async {
+    final existing = _items[index];
+    final result = await showDialog<ModuleRepository>(
+      context: context,
+      builder: (_) => _RepositoryEditDialog(repository: existing),
+    );
+    if (result == null) return;
+    setState(() => _items[index] = result);
+  }
+
+  Future<void> _add() async {
+    final result = await showDialog<ModuleRepository>(
+      context: context,
+      builder: (_) => const _RepositoryEditDialog(),
+    );
+    if (result == null) return;
+    setState(() {
+      _items.add(result);
+    });
+  }
+
+  void _remove(int index) {
+    if (_items.length <= 1) {
+      _showHint('至少保留一个在线仓库');
+      return;
+    }
+    setState(() {
+      _items.removeAt(index);
+      if (_active >= _items.length) _active = _items.length - 1;
+      if (_active < 0) _active = 0;
+    });
+  }
+
+  void _showHint(String message) {
+    ScaffoldMessenger.of(
+      context,
+    ).showSnackBar(SnackBar(content: Text(message)));
+  }
+
+  bool get _valid {
+    final urls = <String>{};
+    for (final repo in _items) {
+      if (repo.name.trim().isEmpty || repo.url.trim().isEmpty) return false;
+      final uri = Uri.tryParse(repo.url.trim());
+      if (uri == null ||
+          (uri.scheme != 'http' && uri.scheme != 'https') ||
+          uri.host.isEmpty) {
+        return false;
+      }
+      if (!urls.add(repo.url.trim().toLowerCase())) return false;
+    }
+    return true;
+  }
+
+  void _submit() {
+    if (!_valid) {
+      _showHint('请填写有效的仓库名与 http(s) 地址，且地址不重复');
+      return;
+    }
+    final clean = [
+      for (final repo in _items)
+        ModuleRepository(name: repo.name.trim(), url: repo.url.trim()),
+    ];
+    Navigator.pop(
+      context,
+      ModuleRepositories(repositories: clean, active: _active),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('管理在线仓库'),
+      content: SizedBox(
+        width: 560,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            const Text(
+              '点击圆点切换启用的仓库；应用商店会从该地址的 index.json 读取模块列表。',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 10),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 340),
+              child: SingleChildScrollView(
+                child: Column(
+                  children: [
+                    for (var i = 0; i < _items.length; i++)
+                      Card(
+                        child: ListTile(
+                          leading: Radio<int>(
+                            value: i,
+                            groupValue: _active,
+                            onChanged: (value) =>
+                                setState(() => _active = value ?? _active),
+                          ),
+                          title: Text(
+                            _items[i].name.isEmpty ? '未命名仓库' : _items[i].name,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                          subtitle: Text(
+                            _items[i].url.isEmpty ? '未填写地址' : _items[i].url,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 12,
+                              color: _items[i].url.isEmpty
+                                  ? colors.error
+                                  : null,
+                            ),
+                          ),
+                          trailing: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              IconButton(
+                                tooltip: '编辑',
+                                icon: const Icon(Icons.edit_outlined),
+                                onPressed: () => _edit(i),
+                              ),
+                              IconButton(
+                                tooltip: '删除',
+                                icon: Icon(
+                                  Icons.delete_outline,
+                                  color: colors.error,
+                                ),
+                                onPressed: () => _remove(i),
+                              ),
+                            ],
+                          ),
+                          onTap: () => setState(() => _active = i),
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: TextButton.icon(
+                onPressed: _add,
+                icon: const Icon(Icons.add),
+                label: const Text('添加仓库'),
+              ),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: FilledButton(onPressed: _submit, child: const Text('保存')),
+        ),
+      ],
+    );
+  }
+}
+
+/// 新增 / 编辑单个仓库：仓库名 + index.json 地址。
+class _RepositoryEditDialog extends StatefulWidget {
+  const _RepositoryEditDialog({this.repository});
+  final ModuleRepository? repository;
+
+  @override
+  State<_RepositoryEditDialog> createState() => _RepositoryEditDialogState();
+}
+
+class _RepositoryEditDialogState extends State<_RepositoryEditDialog> {
+  late final TextEditingController _name;
+  late final TextEditingController _url;
+
+  @override
+  void initState() {
+    super.initState();
+    _name = TextEditingController(text: widget.repository?.name ?? '');
+    _url = TextEditingController(text: widget.repository?.url ?? '');
+  }
+
+  @override
+  void dispose() {
+    _name.dispose();
+    _url.dispose();
+    super.dispose();
+  }
+
+  bool get _valid {
+    if (_name.text.trim().isEmpty || _url.text.trim().isEmpty) return false;
+    final uri = Uri.tryParse(_url.text.trim());
+    return uri != null &&
+        uri.host.isNotEmpty &&
+        (uri.scheme == 'http' || uri.scheme == 'https');
+  }
+
+  void _submit() {
+    if (!_valid) return;
+    Navigator.pop(
+      context,
+      ModuleRepository(name: _name.text.trim(), url: _url.text.trim()),
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final television = AppScope.of(context).television;
+    return AlertDialog(
+      title: Text(widget.repository == null ? '添加仓库' : '编辑仓库'),
+      content: SizedBox(
+        width: 480,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            FormTextField(
+              controller: _name,
+              autofocus: !television,
+              maxLength: 40,
+              decoration: const InputDecoration(
+                labelText: '仓库名',
+                hintText: '例如：我的应用商店',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 12),
+            FormTextField(
+              controller: _url,
+              url: true,
+              decoration: const InputDecoration(
+                labelText: 'index.json 地址',
+                hintText: 'https://…/index.json',
+                helperText: '填写应用商店的 index.json 完整地址',
+                helperMaxLines: 2,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            autofocus: television,
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: ListenableBuilder(
+            listenable: Listenable.merge([_name, _url]),
+            builder: (context, _) => FilledButton(
+              onPressed: _valid ? _submit : null,
+              child: const Text('确定'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
 /// 批量安装前的预览：逐项勾选要安装的模块，默认全选；确认后只安装选中的。
 /// 返回选中的 PreparedModule 列表，返回 null 表示取消。
 class _BatchInstallPreview extends StatefulWidget {
@@ -1121,9 +1474,7 @@ class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
       if (_allSelected) {
         _selected.clear();
       } else {
-        _selected.addAll({
-          for (final item in widget.items) item.module!.token,
-        });
+        _selected.addAll({for (final item in widget.items) item.module!.token});
       }
     });
   }
@@ -1133,9 +1484,12 @@ class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
     final colors = Theme.of(context).colorScheme;
     final items = widget.items;
     final failures = widget.failures;
-    final adult = items.where(
-      (item) => item.module!.adult && _selected.contains(item.module!.token),
-    ).length;
+    final adult = items
+        .where(
+          (item) =>
+              item.module!.adult && _selected.contains(item.module!.token),
+        )
+        .length;
     final selectedCount = _selected.length;
     return AlertDialog(
       title: Text('选择要安装的站源（共 ${items.length} 个）'),
@@ -1167,10 +1521,7 @@ class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
                     ),
                     Text(
                       '已选 $selectedCount / ${items.length}',
-                      style: TextStyle(
-                        fontSize: 12,
-                        color: colors.primary,
-                      ),
+                      style: TextStyle(fontSize: 12, color: colors.primary),
                     ),
                   ],
                 ),
@@ -1275,13 +1626,10 @@ class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
           child: FilledButton(
             onPressed: selectedCount == 0
                 ? null
-                : () => Navigator.pop(
-                    context,
-                    [
-                      for (final item in items)
-                        if (_selected.contains(item.module!.token)) item,
-                    ],
-                  ),
+                : () => Navigator.pop(context, [
+                    for (final item in items)
+                      if (_selected.contains(item.module!.token)) item,
+                  ]),
             child: Text(selectedCount == 0 ? '请勾选模块' : '安装 $selectedCount 个'),
           ),
         ),

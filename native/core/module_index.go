@@ -75,7 +75,8 @@ func parseModuleIndex(raw []byte) ([]moduleIndexEntry, error) {
 
 func (engine *nativeEngine) moduleIndex(ctx context.Context) ([]moduleIndexEntry, int, error) {
 	var failures []string
-	for mirror, address := range moduleIndexAddresses {
+	addresses := engine.activeModuleIndexAddresses()
+	for mirror, address := range addresses {
 		raw, err := engine.fetchModuleResource(ctx, address, moduleIndexBytes)
 		if err == nil {
 			var entries []moduleIndexEntry

@@ -146,12 +146,10 @@ abstract class AppRepository {
   }) async => throw AppFailure('当前环境不支持自定义源');
   Future<void> removeCustomSource(String id) async =>
       throw AppFailure('当前环境不支持自定义源');
-  Future<String> exportCustomSources() async =>
-      throw AppFailure('当前环境不支持自定义源');
+  Future<String> exportCustomSources() async => throw AppFailure('当前环境不支持自定义源');
   Future<Map<String, dynamic>> importCustomSources(String content) async =>
       throw AppFailure('当前环境不支持自定义源');
-  Future<int> resetCustomSources() async =>
-      throw AppFailure('当前环境不支持自定义源');
+  Future<int> resetCustomSources() async => throw AppFailure('当前环境不支持自定义源');
 
   /// 输入站点网址，抓取网页 HTML 自动反推 XBPQ 规则。只返回规则与诊断说明，
   /// 不会写入自定义源；是否保存由用户在表单里点「保存」决定。
@@ -160,6 +158,16 @@ abstract class AppRepository {
 
   Future<List<SourceModule>> modules() async => const [];
   Future<ModuleStore> moduleIndex() async => throw AppFailure('当前环境不支持模块商店');
+
+  /// 读取在线仓库配置（仓库名 + index.json 地址列表与当前启用项）。
+  Future<ModuleRepositories> moduleRepositories() async =>
+      throw AppFailure('当前环境不支持在线仓库');
+
+  /// 保存在线仓库配置；返回核心回传的最新配置。
+  Future<ModuleRepositories> saveModuleRepositories(
+    List<ModuleRepository> repositories,
+    int active,
+  ) async => throw AppFailure('当前环境不支持在线仓库');
   Future<SourceModule> prepareModule({
     String file = '',
     String url = '',
@@ -1023,6 +1031,24 @@ class NativeRepository extends AppRepository {
   }
 
   @override
+  Future<ModuleRepositories> moduleRepositories() async =>
+      ModuleRepositories.fromJson(
+        await _call({'action': 'moduleRepositories'}),
+      );
+
+  @override
+  Future<ModuleRepositories> saveModuleRepositories(
+    List<ModuleRepository> repositories,
+    int active,
+  ) async => ModuleRepositories.fromJson(
+    await _call({
+      'action': 'saveModuleRepositories',
+      'repositories': [for (final repo in repositories) repo.toJson()],
+      'activeRepository': active,
+    }),
+  );
+
+  @override
   Future<SourceModule> prepareModule({
     String file = '',
     String url = '',
@@ -1104,7 +1130,9 @@ class NativeRepository extends AppRepository {
     if (content.isEmpty) throw AppFailure('没有可导出的模块');
     return ModuleExport(
       bytes: base64Decode(content),
-      names: (result['names'] as List? ?? const []).whereType<String>().toList(),
+      names: (result['names'] as List? ?? const [])
+          .whereType<String>()
+          .toList(),
       count: result['count'] as int? ?? 0,
     );
   }

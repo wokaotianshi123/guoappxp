@@ -2378,6 +2378,36 @@ function moduleStore() {
     });
 }
 
+function moduleRepositories() {
+  return fetch('/api/modules/repositories')
+    .then(function (response) {
+      return response.json();
+    })
+    .then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '读取在线仓库失败');
+      }
+      return data.data || { items: [], active: 0, warning: '' };
+    });
+}
+
+function moduleSaveRepositories(repositories, active) {
+  return fetch('/api/modules/repositories', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ repositories: repositories, active: active }),
+  })
+    .then(function (response) {
+      return response.json();
+    })
+    .then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '保存在线仓库失败');
+      }
+      return data.data;
+    });
+}
+
 function moduleInstall(payload) {
   var options = { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) };
   return fetch('/api/modules/install', options)
@@ -2429,6 +2459,137 @@ function moduleInstallPrepared(items) {
 
 // 批量准备完成后弹出勾选层：默认全选，用户可只装合集里的部分模块。
 // 返回 Promise，resolve 选中的 items，取消则 resolve null。
+// 在线仓库管理弹层：新增 / 编辑 / 删除仓库名+index.json 地址，单选切换启用项。
+// 返回 {repositories:[{name,url}], active:int}；返回 null 表示取消。
+function openRepositoryManager(config) {
+  return new Promise(function (resolve) {
+    var repos = [];
+    ((config && config.items) || []).forEach(function (repo) {
+      repos.push({ name: repo.name || '', url: repo.url || '' });
+    });
+    if (!repos.length) repos.push({ name: '默认仓库', url: '' });
+    var active = config && typeof config.active === 'number' ? config.active : 0;
+    if (active < 0 || active >= repos.length) active = 0;
+
+    var overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center';
+    function rows() {
+      return repos.map(function (repo, index) {
+        return '<div style="display:flex;align-items:center;gap:8px;padding:8px 2px;border-bottom:1px solid var(--border,#333)">' +
+          '<input type="radio" name="repo-active" data-index="' + index + '"' + (index === active ? ' checked' : '') + ' />' +
+          '<div style="min-width:0;flex:1">' +
+          '<div style="font-weight:600">' + (repo.name ? escapeHTML(repo.name) : '未命名仓库') + '</div>' +
+          '<div style="font-size:12px;opacity:0.7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          (repo.url ? escapeHTML(repo.url) : '未填写地址') + '</div></div>' +
+          '<button type="button" class="btn" data-repo-edit="' + index + '" style="font-size:12px;padding:4px 10px">编辑</button>' +
+          '<button type="button" class="btn danger" data-repo-remove="' + index + '" style="font-size:12px;padding:4px 10px">删除</button>' +
+          '</div>';
+      }).join('');
+    }
+    function render() {
+      overlay.innerHTML =
+        '<div style="background:var(--panel,#1e2430);border:1px solid var(--border,#333);border-radius:12px;' +
+        'width:min(620px,94vw);padding:20px;box-sizing:border-box;max-height:88vh;display:flex;flex-direction:column">' +
+        '<h3 style="margin:0 0 6px">管理在线仓库</h3>' +
+        '<div style="font-size:12px;opacity:0.75;margin-bottom:10px">点击圆点切换启用的仓库，应用商店将从该地址的 index.json 读取模块列表。</div>' +
+        '<div style="overflow:auto;border:1px solid var(--border,#333);border-radius:8px;padding:2px 10px;min-height:48px" id="repo-list">' +
+        rows() + '</div>' +
+        '<div style="display:flex;gap:8px;margin-top:10px">' +
+        '<button type="button" class="btn" id="repo-add">添加仓库</button></div>' +
+        '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">' +
+        '<button type="button" class="btn" id="repo-cancel">取消</button>' +
+        '<button type="button" class="btn" id="repo-save">保存</button>' +
+        '</div></div>';
+      bind();
+    }
+    function valid() {
+      var seen = {};
+      for (var i = 0; i < repos.length; i++) {
+        if (!repos[i].name || !repos[i].name.trim()) return false;
+        var text = (repos[i].url || '').trim();
+        var uri;
+        try { uri = new URL(text); } catch (e) { return false; }
+        if (uri.protocol !== 'http:' && uri.protocol !== 'https:') return false;
+        if (!uri.hostname) return false;
+        var key = text.toLowerCase();
+        if (seen[key]) return false;
+        seen[key] = true;
+      }
+      return true;
+    }
+    function editRepo(index) {
+      var existing = repos[index];
+      var name = window.prompt('仓库名：', existing.name || '');
+      if (name === null) return;
+      var url = window.prompt(
+        'index.json 地址（以 http:// 或 https:// 开头）：',
+        existing.url || 'https://'
+      );
+      if (url === null) return;
+      repos[index] = { name: name.trim(), url: url.trim() };
+      render();
+    }
+    function addRepo() {
+      var name = window.prompt('仓库名：', '我的应用商店');
+      if (name === null) return;
+      var url = window.prompt(
+        'index.json 地址（以 http:// 或 https:// 开头）：',
+        'https://'
+      );
+      if (url === null) return;
+      repos.push({ name: name.trim(), url: url.trim() });
+      active = repos.length - 1;
+      render();
+    }
+    function bind() {
+      Array.prototype.forEach.call(overlay.querySelectorAll('input[name=repo-active]'), function (radio) {
+        radio.addEventListener('change', function () {
+          active = parseInt(radio.dataset.index, 10);
+        });
+      });
+      Array.prototype.forEach.call(overlay.querySelectorAll('[data-repo-edit]'), function (button) {
+        button.addEventListener('click', function () {
+          editRepo(parseInt(button.getAttribute('data-repo-edit'), 10));
+        });
+      });
+      Array.prototype.forEach.call(overlay.querySelectorAll('[data-repo-remove]'), function (button) {
+        button.addEventListener('click', function () {
+          var index = parseInt(button.getAttribute('data-repo-remove'), 10);
+          if (repos.length <= 1) {
+            window.alert('至少保留一个在线仓库');
+            return;
+          }
+          repos.splice(index, 1);
+          if (active >= repos.length) active = repos.length - 1;
+          if (active < 0) active = 0;
+          render();
+        });
+      });
+      var add = document.getElementById('repo-add');
+      if (add) add.addEventListener('click', addRepo);
+      var cancel = document.getElementById('repo-cancel');
+      if (cancel) cancel.addEventListener('click', function () { close(null); });
+      var save = document.getElementById('repo-save');
+      if (save) save.addEventListener('click', function () {
+        if (!valid()) {
+          window.alert('请填写有效的仓库名与 http(s) 地址，且地址不重复');
+          return;
+        }
+        close({
+          repositories: repos.map(function (r) { return { name: r.name.trim(), url: r.url.trim() }; }),
+          active: active,
+        });
+      });
+    }
+    function close(result) {
+      document.body.removeChild(overlay);
+      resolve(result);
+    }
+    render();
+  });
+}
+
 function openModuleSelectDialog(items, failures) {
   return new Promise(function (resolve) {
     var selected = {};
@@ -2666,9 +2827,13 @@ function renderModules() {
     moduleStore().catch(function (error) {
       return { items: [], warning: error.message || '读取模块商店失败' };
     }),
+    moduleRepositories().catch(function () {
+      return { items: [], active: 0, warning: '' };
+    }),
   ]).then(function (results) {
     var installed = results[0];
     var store = results[1];
+    var repos = results[2];
     var byId = {};
     installed.forEach(function (item) {
       byId[item.id] = item;
@@ -2755,12 +2920,23 @@ function renderModules() {
       '<div style="font-weight:600;padding:8px 2px 2px">已安装</div>' +
       installedRows +
       '<div style="font-weight:600;padding:12px 2px 2px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
-      '<span>模块商店</span>' +
+      '<span>模块商店' + (function () {
+        var list = (repos && repos.items) || [];
+        var index = repos && typeof repos.active === 'number' ? repos.active : 0;
+        var current = list[index];
+        return current && current.name
+          ? '（' + escapeHTML(current.name) + '）'
+          : '';
+      })() + '</span>' +
+      '<span style="display:flex;align-items:center;gap:8px">' +
+      '<button type="button" class="btn" id="module-manage-repos">管理仓库</button>' +
       installAllButton +
+      '</span>' +
       '</div>' +
+      (repos && repos.warning ? '<div class="empty">' + escapeHTML(repos.warning) + '</div>' : '') +
       storeRows +
       '</div>';
-    bindModuleView(pendingIds, installed);
+    bindModuleView(pendingIds, installed, repos);
   });
 }
 
@@ -2817,11 +2993,31 @@ function moduleInstallAll(ids, button) {
     });
 }
 
-function bindModuleView(installableIds, installed) {
+function bindModuleView(installableIds, installed, repos) {
   var back = document.getElementById('custom-tab-back');
   if (back) {
     back.addEventListener('click', function () {
       renderCustomSources();
+    });
+  }
+  var manageRepos = document.getElementById('module-manage-repos');
+  if (manageRepos) {
+    manageRepos.addEventListener('click', function () {
+      manageRepos.disabled = true;
+      openRepositoryManager(repos)
+        .then(function (result) {
+          if (!result) return null;
+          return moduleSaveRepositories(result.repositories, result.active);
+        })
+        .then(function () {
+          return renderModules();
+        })
+        .catch(function (error) {
+          window.alert(error.message || '保存在线仓库失败');
+        })
+        .then(function () {
+          manageRepos.disabled = false;
+        });
     });
   }
   var installAll = document.getElementById('module-install-all');

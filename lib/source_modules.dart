@@ -77,6 +77,40 @@ class ModuleStore {
   final String warning;
 }
 
+/// 在线仓库：一个仓库名对应一个 index.json 地址。
+class ModuleRepository {
+  const ModuleRepository({required this.name, required this.url});
+  factory ModuleRepository.fromJson(Map<String, dynamic> json) =>
+      ModuleRepository(
+        name: json['name'] as String? ?? '',
+        url: json['url'] as String? ?? '',
+      );
+  final String name;
+  final String url;
+  Map<String, dynamic> toJson() => {'name': name, 'url': url};
+}
+
+/// 已保存的仓库配置：列表与当前启用的下标。
+class ModuleRepositories {
+  const ModuleRepositories({
+    this.repositories = const [],
+    this.active = 0,
+    this.warning = '',
+  });
+  factory ModuleRepositories.fromJson(Map<String, dynamic> json) =>
+      ModuleRepositories(
+        repositories: [
+          for (final row in json['items'] as List? ?? const [])
+            ModuleRepository.fromJson(Map<String, dynamic>.from(row as Map)),
+        ],
+        active: json['active'] as int? ?? 0,
+        warning: json['warning'] as String? ?? '',
+      );
+  final List<ModuleRepository> repositories;
+  final int active;
+  final String warning;
+}
+
 /// 批量准备安装包时单项的结果：成功带 [module]（含 token），失败带 [error]。
 class PreparedModule {
   const PreparedModule({this.name = '', this.module, this.error = ''});

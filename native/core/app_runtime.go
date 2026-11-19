@@ -2,8 +2,8 @@ package core
 
 import (
 	"context"
-	"encoding/hex"
 	"crypto/tls"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -95,22 +95,25 @@ type nativeInput struct {
 	Quality         int                     `json:"quality"`
 	Session         string                  `json:"session"`
 	// Route 是播放线路下标（从 0 开始），仅 selectRoute 使用。
-	Route           int                     `json:"route"`
-	Sequence        int64                   `json:"sequence"`
-	Force           bool                    `json:"force"`
-	Bundled         bool                    `json:"bundled"`
-	Version         string                  `json:"version"`
-	Since           string                  `json:"since"`
-	Account         json.RawMessage         `json:"account"`
-	Device          string                  `json:"device"`
-	File            string                  `json:"file"`
-	URL             string                  `json:"url"`
-	Token           string                  `json:"token"`
+	Route    int             `json:"route"`
+	Sequence int64           `json:"sequence"`
+	Force    bool            `json:"force"`
+	Bundled  bool            `json:"bundled"`
+	Version  string          `json:"version"`
+	Since    string          `json:"since"`
+	Account  json.RawMessage `json:"account"`
+	Device   string          `json:"device"`
+	File     string          `json:"file"`
+	URL      string          `json:"url"`
+	Token    string          `json:"token"`
 	// Files / URLs 供批量安装模块使用：一次可提交多个本地安装包或下载地址。
 	Files []string `json:"files"`
 	URLs  []string `json:"urls"`
 	// IDs 供批量导出、批量卸载、恢复默认使用。
 	IDs []string `json:"ids"`
+	// Repositories / ActiveRepository 供在线仓库的增删改切换使用。
+	Repositories     []nativeModuleRepository `json:"repositories"`
+	ActiveRepository int                      `json:"activeRepository"`
 	// Content 供听书接口使用：Content 是听书请求的附加请求头 JSON。
 	Content string `json:"content"`
 	Offset  int    `json:"offset"`
@@ -140,25 +143,29 @@ type nativeCatalogResult struct {
 }
 
 type nativePlan struct {
-	ExpiresAt       int64             `json:"expiresAt,omitempty"`
-	PrefetchedBytes int64             `json:"prefetchedBytes,omitempty"`
-	DanmakuID       string            `json:"danmakuId,omitempty"`
-	Local           bool              `json:"local"`
-	URL             string            `json:"url"`
+	ExpiresAt       int64  `json:"expiresAt,omitempty"`
+	PrefetchedBytes int64  `json:"prefetchedBytes,omitempty"`
+	DanmakuID       string `json:"danmakuId,omitempty"`
+	Local           bool   `json:"local"`
+	URL             string `json:"url"`
 	// DirectURL 是站源给出的原始播放地址，投屏时优先直接交给电视。
-	DirectURL       string            `json:"directUrl,omitempty"`
-	Headers         map[string]string `json:"headers"`
-	Key             string            `json:"decryptionKey,omitempty"`
-	Quality         int               `json:"quality"`
-	Qualities       []int             `json:"qualities"`
-	Session         string            `json:"session,omitempty"`
-	RouteIndex      int               `json:"routeIndex"`
-	RouteCount      int               `json:"routeCount"`
+	DirectURL  string            `json:"directUrl,omitempty"`
+	Headers    map[string]string `json:"headers"`
+	Key        string            `json:"decryptionKey,omitempty"`
+	Quality    int               `json:"quality"`
+	Qualities  []int             `json:"qualities"`
+	Session    string            `json:"session,omitempty"`
+	RouteIndex int               `json:"routeIndex"`
+	RouteCount int               `json:"routeCount"`
 }
 
 type nativeEngine struct {
-	settingsMu          sync.Mutex
-	settings            nativeResourceSettings
+	settingsMu sync.Mutex
+	settings   nativeResourceSettings
+	// 在线仓库配置：仓库名 + index.json 地址列表与当前启用项，落盘在数据目录。
+	repositoriesMu      sync.Mutex
+	repositories        moduleRepositoriesConfig
+	repositoriesWarning string
 	readMu              sync.Mutex
 	reads               map[string]nativeReadRequest
 	readCount           int
@@ -316,6 +323,7 @@ func newNativeEngine(directory, cache, downloads string) (*nativeEngine, error) 
 	// 空指针 panic（表现为「本地核心处理失败」）。
 	engine.customRegistry = newCustomMaccmsRegistry(directory)
 	engine.customRegistry.load()
+	engine.loadModuleRepositories()
 	engine.loadResourceSettings()
 	d.loadRankingCache()
 	engine.loadCatalogCache()
@@ -425,6 +433,13 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return map[string]any{"items": items}, err
 	case "moduleIndex":
 		return engine.moduleStore(ctx)
+	case "moduleRepositories":
+		return engine.repositoriesView(), nil
+	case "saveModuleRepositories":
+		return engine.saveModuleRepositories(moduleRepositoriesConfig{
+			Repositories: input.Repositories,
+			Active:       input.ActiveRepository,
+		})
 	case "prepareModule":
 		return engine.prepareModule(ctx, input.File, input.URL, input.Source, input.Bundled)
 	// prepareModules：批量准备安装包，返回每个来源的结果（成功带 token，失败带原因）。

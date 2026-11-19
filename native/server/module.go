@@ -99,6 +99,34 @@ func moduleStoreItems() ([]map[string]any, string, error) {
 	return reply.Data.Items, reply.Data.Warning, nil
 }
 
+// moduleRepositories 读取在线仓库配置（仓库名 + index.json 地址列表与启用项）。
+func moduleRepositories() (map[string]any, error) {
+	reply, err := callCore(map[string]any{"action": "moduleRepositories"})
+	if err != nil {
+		return nil, err
+	}
+	if !reply.OK {
+		return nil, errors.New(moduleErrorText(reply.Error, "读取在线仓库失败"))
+	}
+	return reply.Data, nil
+}
+
+// moduleSaveRepositories 保存在线仓库配置；repositories 为 [{name,url}]，active 为启用下标。
+func moduleSaveRepositories(repositories []any, active int) (map[string]any, error) {
+	reply, err := callCore(map[string]any{
+		"action":           "saveModuleRepositories",
+		"repositories":     repositories,
+		"activeRepository": active,
+	})
+	if err != nil {
+		return nil, err
+	}
+	if !reply.OK {
+		return nil, errors.New(moduleErrorText(reply.Error, "保存在线仓库失败"))
+	}
+	return reply.Data, nil
+}
+
 // moduleInstall 走「准备安装包 → 安装」两步：核心先校验安装包并把 zip 暂存成一个
 // 一次性凭据，用户确认后再按凭据安装。三者互斥：file 本地路径 / address 下载地址 /
 // indexed 商店标识。
@@ -459,6 +487,8 @@ func handleModuleExport(writer http.ResponseWriter, request *http.Request) {
 //
 //	GET  /api/modules              已装模块列表
 //	GET  /api/modules/index        模块商店（含随包内置的模块）
+//	GET  /api/modules/repositories 在线仓库配置（仓库名 + index.json 地址）
+//	POST /api/modules/repositories 保存在线仓库配置 {"repositories":[{"name","url"}],"active":0}
 //	POST /api/modules/install      安装：{"url":"…"} / {"id":"…"} / 原始 zip 字节
 //	POST /api/modules/prepare      准备：展开安装包成待安装项（不安装，供勾选）
 //	POST /api/modules/install-prepared 安装：{"items":[{"token":"…","name":"…"}]}
@@ -482,6 +512,39 @@ func handleModules(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		writeJSON(writer, map[string]any{"ok": true, "items": items, "warning": warning})
+	case "/api/modules/repositories":
+		// 在线仓库：GET 读取配置；POST 保存 {repositories:[{name,url}], active}。
+		if request.Method == http.MethodGet {
+			data, err := moduleRepositories()
+			if err != nil {
+				writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+			writeJSON(writer, map[string]any{"ok": true, "data": data})
+			return
+		}
+		if request.Method == http.MethodPost {
+			payload := struct {
+				Repositories []map[string]any `json:"repositories"`
+				Active       int              `json:"active"`
+			}{}
+			if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
+				writeJSON(writer, map[string]any{"ok": false, "error": "请求格式无效"})
+				return
+			}
+			items := make([]any, 0, len(payload.Repositories))
+			for _, repo := range payload.Repositories {
+				items = append(items, repo)
+			}
+			data, err := moduleSaveRepositories(items, payload.Active)
+			if err != nil {
+				writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+				return
+			}
+			writeJSON(writer, map[string]any{"ok": true, "data": data})
+			return
+		}
+		writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
 	case "/api/modules/install":
 		if request.Method != http.MethodPost {
 			writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
