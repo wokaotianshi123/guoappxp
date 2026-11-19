@@ -30,14 +30,40 @@ type moduleRepositoriesConfig struct {
 	Active       int                      `json:"active"`
 }
 
-// 默认配置沿用内置的两处官方镜像，作为第一个仓库；同时 moduleIndex 在
-// 自定义仓库失败时仍会把它们当兜底镜像尝试（见 moduleIndexGroups）。
+// moduleBuiltinRepositories 是出厂自带的两家商店：guocheng1378（短剧 + 采集站
+// 合集）与 jqk4388（原生 JS 模块，含红果/黄豆/黄果系）。列表顺序即默认启用项。
+var moduleBuiltinRepositories = []nativeModuleRepository{
+	{Name: "guocheng1378", URL: "https://raw.githubusercontent.com/guocheng1378/guoapp-modules/refs/heads/main/index.json"},
+	{Name: "jqk4388", URL: "https://raw.githubusercontent.com/jqk4388/guoapp-modules-private/refs/heads/main/index.json"},
+}
+
+// 默认配置就是内置的两家商店；moduleIndex 在仓库失败时仍会把官方镜像
+// （moduleIndexAddresses）当兜底组尝试（见 moduleIndexGroups）。
 func defaultModuleRepositoriesConfig() moduleRepositoriesConfig {
-	config := moduleRepositoriesConfig{Repositories: []nativeModuleRepository{}}
-	for _, address := range moduleIndexAddresses {
-		config.Repositories = append(config.Repositories, nativeModuleRepository{Name: "官方仓库", URL: address})
+	return moduleRepositoriesConfig{
+		Repositories: append([]nativeModuleRepository(nil), moduleBuiltinRepositories...),
 	}
-	return config
+}
+
+// upgradeRepositories 把「只有内置官方镜像」的老默认配置换成新的内置两家商店。
+// 只要用户自己加过、删过、改过仓库就原样保留，不覆盖用户的配置。
+func upgradeRepositories(config moduleRepositoriesConfig) moduleRepositoriesConfig {
+	if len(config.Repositories) == 0 {
+		return config
+	}
+	for _, repo := range config.Repositories {
+		official := false
+		for _, address := range moduleIndexAddresses {
+			if strings.EqualFold(strings.TrimSpace(repo.URL), address) {
+				official = true
+				break
+			}
+		}
+		if !official {
+			return config
+		}
+	}
+	return defaultModuleRepositoriesConfig()
 }
 
 func (config moduleRepositoriesConfig) validate() error {
@@ -109,7 +135,7 @@ func (engine *nativeEngine) loadModuleRepositories() {
 		engine.repositories = defaultModuleRepositoriesConfig()
 		return
 	}
-	engine.repositories = stored.sanitized()
+	engine.repositories = upgradeRepositories(stored).sanitized()
 }
 
 // repositoriesView 供 UI 展示：带上当前启用项与可能的告警文案。

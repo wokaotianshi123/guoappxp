@@ -1,6 +1,6 @@
 import 'dart:typed_data';
 
-import 'models.dart' show SourceClass;
+import 'models.dart' show SourceClass, sourceClassOf;
 
 class SourceModule {
   const SourceModule({
@@ -49,10 +49,14 @@ class SourceModule {
   final String token;
   final String error;
 
-  /// 类目显示名；认不出的类目返回空，界面上不显示分组标签。
+  /// 类目：清单声明优先，没写的老模块按站源标识兜底——与站源菜单同一份判定
+  /// （`sourceClassOf`），内置模块因此也能落进短剧类 / 视频类 / 成人类。
+  String get classKey => sourceClassOf(id, category: category);
+
+  /// 类目显示名；认不出（或其他站源）时返回空，界面上归到「未分类」。
   String get classLabel {
-    final key = SourceClass.normalize(category);
-    return key == null ? '' : SourceClass.labelOf(key);
+    final key = classKey;
+    return key == SourceClass.other ? '' : SourceClass.labelOf(key);
   }
 }
 
@@ -177,10 +181,21 @@ bool isNewerModuleVersion(String latest, String installed) {
 /// 这三个，界面统一用「目录、详情和播放」一行表示，不重复列出。
 const moduleBaseCapabilityNames = {'catalog', 'detail', 'media'};
 
+/// 商店清单里会写、但本站没有对应实现的能力。列出来只会让人以为装了就有
+/// 这些功能，模块详情里一并跳过（装载时按「已声明但不实现」处理）。
+const moduleIgnoredCapabilityNames = {
+  'routes',
+  'homefeed',
+  'calendar',
+  'skippreset',
+};
+
 const moduleCapabilityNames = {
   'search': '搜索',
   'account': '账号登录',
   'suggestions': '搜索联想',
+  // guoappcheng 的清单把搜索联想写成 suggest，装载时折成 suggestions。
+  'suggest': '搜索联想',
   'recommendations': '推荐',
   'danmaku': '弹幕',
   'devices': '设备注册',

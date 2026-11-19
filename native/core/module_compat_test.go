@@ -1,6 +1,7 @@
 package core
 
 import (
+	"context"
 	"reflect"
 	"strings"
 	"testing"
@@ -78,5 +79,62 @@ func TestModuleSourceClass(t *testing.T) {
 				t.Fatalf("moduleInfo = %+v", info)
 			}
 		})
+	}
+}
+
+// TestParseModuleAcceptsStoreCapabilityAliases 覆盖 guoappcheng 清单里的两种写法：
+// 「搜索联想」写 suggest（本站叫 suggestions），以及 routes / homefeed /
+// calendar / skippreset 这些本站没有接口的能力——都按已知处理，不拦安装。
+func TestParseModuleAcceptsStoreCapabilityAliases(t *testing.T) {
+	manifest := []byte(`{
+		"id": "dongpiandi", "name": "真果鉴", "version": "1.5.0", "runtime": "js", "api": 1,
+		"adult": false, "category": "shortDrama",
+		"capabilities": ["catalog", "detail", "search", "suggest", "routes",
+			"homefeed", "calendar", "skippreset"]
+	}`)
+	module, err := parseModule(manifest, []byte("module.exports = {};"))
+	if err != nil {
+		t.Fatalf("parseModule: %v", err)
+	}
+	if !module.capabilities[reflect.TypeFor[Suggester]()] {
+		t.Fatal("suggest 应折回 suggestions 能力")
+	}
+	if !module.capabilities[reflect.TypeFor[Searcher]()] {
+		t.Fatal("search 能力丢失")
+	}
+}
+
+// TestModuleReadsManifestThroughHost 校验 host.manifest() / host.baseUrl()：
+// guoappcheng 的 maccms 模块族在脚本开头就读这两个成员，缺了会报
+// "object has no member 'manifest'"。
+func TestModuleReadsManifestThroughHost(t *testing.T) {
+	directory := writeTestModule(t, `{
+		"id": "manifesttest", "name": "清单测试", "runtime": "js", "api": 1, "adult": false,
+		"base": "https://api.example.invalid/v1",
+		"config": {"site": "demo", "pages": 3}
+	}`, `
+module.exports = {
+  categories() {
+    var manifest = host.manifest();
+    return [{ id: manifest.config.site, name: manifest.config.pages + "@" + host.baseUrl() }];
+  },
+  catalogPage() { return { items: [], hasMore: false }; },
+  detail() { return { drama: { sourceId: "x", title: "x" }, chapters: [] }; },
+  search() { return { items: [], hasMore: false }; }
+};`)
+	module, err := readModule(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories, err := module.provider(&moduleTestHost{}).Categories(context.Background(), false)
+	if err != nil {
+		t.Fatalf("categories: %v", err)
+	}
+	if len(categories) != 1 || categories[0].ID != "demo" || categories[0].Name != "3@https://api.example.invalid/v1" {
+		t.Fatalf("categories = %+v", categories)
+	}
+	// baseUrl 留空时退回清单的 base。
+	if manifest := module.descriptor(); manifest.BaseURL != "" {
+		t.Fatalf("baseUrl 不该被 base 覆盖：%q", manifest.BaseURL)
 	}
 }

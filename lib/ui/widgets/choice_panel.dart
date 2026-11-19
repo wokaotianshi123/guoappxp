@@ -59,6 +59,7 @@ Future<T?> showChoicePanel<T>({
   required T? selected,
   required ChoiceGrid grid,
   List<ChoiceGroup<T>>? groups,
+  List<ChoiceAction> actions = const [],
   ChoiceAction? action,
 }) {
   final form = AppScope.formFactorOf(context);
@@ -67,13 +68,14 @@ Future<T?> showChoicePanel<T>({
     title: title,
     options: options,
     groups: groups,
+    // 老调用点仍用单个 action，这里并进同一行按钮里。
+    actions: [?action, ...actions],
     selected: selected,
     columns: switch (form) {
       FormFactor.phone => grid.phone,
       FormFactor.pad || FormFactor.window => grid.wide,
       FormFactor.television => grid.television,
     },
-    action: action,
   );
   switch (form) {
     case FormFactor.phone:
@@ -149,7 +151,7 @@ class _ChoicePanel<T> extends StatelessWidget {
     required this.options,
     required this.selected,
     required this.columns,
-    required this.action,
+    required this.actions,
     this.groups,
   });
   final FormFactor form;
@@ -160,7 +162,7 @@ class _ChoicePanel<T> extends StatelessWidget {
   final List<ChoiceGroup<T>>? groups;
   final T? selected;
   final int columns;
-  final ChoiceAction? action;
+  final List<ChoiceAction> actions;
 
   @override
   Widget build(BuildContext context) {
@@ -194,7 +196,8 @@ class _ChoicePanel<T> extends StatelessWidget {
         ),
         // 附加操作放在右上角（原来在面板底部，手机上正好压在系统返回手势 /
         // 导航条上方，容易误触），手机只显示图标，其余形态带上文字。
-        if (action case final action?)
+        // 可以并排多个：站源面板同时给「管理模块项」和「管理XBPQ」。
+        for (final action in actions)
           FocusRing(
             radius: 999,
             child: form == FormFactor.phone
@@ -207,6 +210,11 @@ class _ChoicePanel<T> extends StatelessWidget {
                     icon: Icon(action.icon),
                   )
                 : TextButton.icon(
+                    // 并排两个按钮时要挤得下（面板宽 400 左右），把内边距收紧。
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(horizontal: 8),
+                      visualDensity: VisualDensity.compact,
+                    ),
                     onPressed: () {
                       Navigator.pop(context);
                       action.onPressed();

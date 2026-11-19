@@ -68,4 +68,57 @@ void main() {
     // 点完顺带把面板关掉，别把用户留在半透明页上。
     expect(find.text('全部站源'), findsNothing);
   });
+
+  testWidgets('两个管理入口并排显示，各跳各的页面', (tester) async {
+    var modules = 0;
+    var xbpq = 0;
+    await tester.pumpWidget(
+      AppScope(
+        repository: FakeRepository(),
+        formFactor: FormFactor.phone,
+        child: MaterialApp(
+          home: Builder(
+            builder: (context) => Scaffold(
+              body: Center(
+                child: ElevatedButton(
+                  onPressed: () => showChoicePanel<String>(
+                    context: context,
+                    title: '全部站源',
+                    options: const [ChoiceOption('a', '站源甲')],
+                    selected: 'a',
+                    grid: ChoiceGrid.sources,
+                    actions: [
+                      (
+                        label: '管理模块项',
+                        icon: Icons.extension_outlined,
+                        onPressed: () => modules++,
+                      ),
+                      (
+                        label: '管理XBPQ',
+                        icon: Icons.dns_outlined,
+                        onPressed: () => xbpq++,
+                      ),
+                    ],
+                  ),
+                  child: const Text('打开'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+
+    await tester.tap(find.text('打开'));
+    await tester.pumpAndSettle();
+
+    // 手机形态下按钮显示为图标，tooltip 就是标签。
+    expect(find.byTooltip('管理模块项'), findsOneWidget);
+    expect(find.byTooltip('管理XBPQ'), findsOneWidget);
+
+    await tester.tap(find.byTooltip('管理模块项'));
+    await tester.pumpAndSettle();
+    expect(modules, 1);
+    expect(xbpq, 0);
+  });
 }

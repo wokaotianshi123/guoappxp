@@ -42,6 +42,22 @@ var moduleBaseCapabilities = map[string]bool{
 	"media":   true,
 }
 
+// moduleCapabilityAliases 把商店里的另一种写法折回本站的能力名。
+// guoappcheng 的「搜索联想」写 suggest，本站接口叫 suggestions。
+var moduleCapabilityAliases = map[string]string{
+	"suggest": "suggestions",
+}
+
+// moduleIgnoredCapabilities 是商店清单里会出现、但本站没有对应接口的能力。
+// 这些能力只影响商店那边的几处界面（自定义路由、首页流、日历、跳过片头预设），
+// 装到本机后按「已声明但不实现」处理——不报错，也不假装有。
+var moduleIgnoredCapabilities = map[string]bool{
+	"routes":     true,
+	"homefeed":   true,
+	"calendar":   true,
+	"skippreset": true,
+}
+
 var moduleCapabilityTypes = map[string][]reflect.Type{
 	"search":          {reflect.TypeFor[Searcher](), reflect.TypeFor[WarningSearcher]()},
 	"account":         {reflect.TypeFor[AccountProvider]()},
@@ -79,19 +95,22 @@ type ModuleManifest struct {
 	// 是 guoappcheng 商店清单的分组字段（category 取 shortDrama/video/adult，
 	// family 取 huangguo）。两者互不影响：前者是条目分组，后者只决定界面类目
 	// （见 sourceClass）。
-	Group              string   `json:"group"`
-	GroupName          string   `json:"groupName"`
-	Category           string   `json:"category"`
-	Family             string   `json:"family"`
-	EntryName          string   `json:"entryName"`
-	SkipVIPPrompt      bool     `json:"skipVipPrompt"`
-	Aliases            []string `json:"aliases"`
-	HostSuffixes       []string `json:"hostSuffixes"`
-	BaseURL            string   `json:"baseUrl"`
-	NoHostRotation     bool     `json:"noHostRotation"`
-	KeepDetailEpisodes bool     `json:"keepDetailEpisodes"`
-	ContinuousFeed     bool     `json:"continuousFeed"`
-	BrowserFingerprint bool     `json:"browserFingerprint"`
+	Group         string   `json:"group"`
+	GroupName     string   `json:"groupName"`
+	Category      string   `json:"category"`
+	Family        string   `json:"family"`
+	EntryName     string   `json:"entryName"`
+	SkipVIPPrompt bool     `json:"skipVipPrompt"`
+	Aliases       []string `json:"aliases"`
+	HostSuffixes  []string `json:"hostSuffixes"`
+	BaseURL       string   `json:"baseUrl"`
+	// Base 是 guoappcheng 商店清单里的站点基址（baseUrl 常留空），模块脚本
+	// 通过 host.baseUrl() 取它；本站自己的清单写 baseUrl。
+	Base               string `json:"base"`
+	NoHostRotation     bool   `json:"noHostRotation"`
+	KeepDetailEpisodes bool   `json:"keepDetailEpisodes"`
+	ContinuousFeed     bool   `json:"continuousFeed"`
+	BrowserFingerprint bool   `json:"browserFingerprint"`
 
 	Rankings       []ModuleRanking `json:"rankings"`
 	MediaAuthPaths []string        `json:"mediaAuthPaths"`
@@ -102,6 +121,25 @@ type jsModule struct {
 	program      *goja.Program
 	capabilities map[reflect.Type]bool
 	active       atomic.Pointer[jsProvider]
+
+	// 清单原文与按原文解出来的通用结构：第三方商店的模块在 JS 里用
+	// host.manifest() 读 config / base 这类本站结构里没有的字段，只能给原文。
+	raw         []byte
+	rawOnce     sync.Once
+	rawManifest any
+}
+
+// manifestData 返回清单原文解析出的通用结构（map/slice/string/bool/float64），
+// 供 host.manifest() 转成每次运行时的 JS 对象用。
+func (module *jsModule) manifestData() any {
+	module.rawOnce.Do(func() {
+		var decoded any
+		if err := json.Unmarshal(module.raw, &decoded); err != nil {
+			decoded = map[string]any{}
+		}
+		module.rawManifest = decoded
+	})
+	return module.rawManifest
 }
 
 var loadedModules = struct {
@@ -163,8 +201,12 @@ func parseModule(raw, code []byte) (*jsModule, error) {
 	}
 	capabilities := map[reflect.Type]bool{}
 	for _, name := range manifest.Capabilities {
-		if moduleBaseCapabilities[name] {
+		name = strings.TrimSpace(name)
+		if moduleBaseCapabilities[name] || moduleIgnoredCapabilities[name] {
 			continue
+		}
+		if alias, aliased := moduleCapabilityAliases[name]; aliased {
+			name = alias
 		}
 		types, known := moduleCapabilityTypes[name]
 		if !known {
@@ -196,7 +238,7 @@ func parseModule(raw, code []byte) (*jsModule, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &jsModule{manifest: manifest, program: program, capabilities: capabilities}, nil
+	return &jsModule{manifest: manifest, raw: append([]byte(nil), raw...), program: program, capabilities: capabilities}, nil
 }
 
 // moduleClassKeys 是模块清单 category/family 认可的站源类目。类目标识沿用

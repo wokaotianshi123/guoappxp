@@ -8,6 +8,7 @@ import (
 	"maps"
 	"net/url"
 	"reflect"
+	"strings"
 	"sync"
 	"time"
 
@@ -367,6 +368,17 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 		"source":    id,
 		"dramaId":   func(sourceID string) string { return ProviderDramaID(id, sourceID) },
 		"chapterId": func(sourceID, key string) string { return ProviderChapterID(id, sourceID, key) },
+		// guoappcheng 商店的模块（maccms 采集站那一族）在脚本开头就读
+		// host.manifest() 拿 config / base，本站自带的模块则直接把常量写在
+		// 脚本里。缺了这两个成员，脚本一执行就报
+		// "object has no member 'manifest'"。
+		"manifest": func() any { return p.module.manifestData() },
+		"baseUrl": func() string {
+			if base := strings.TrimSpace(p.module.manifest.BaseURL); base != "" {
+				return base
+			}
+			return strings.TrimSpace(p.module.manifest.Base)
+		},
 		"fetch": func(request jsFetchRequest) jsFetchResponse {
 			response, err := p.fetch(instance.ctx, request)
 			if err != nil {

@@ -26,6 +26,9 @@ class ModulesPage extends StatefulWidget {
   State<ModulesPage> createState() => _ModulesPageState();
 }
 
+/// 没有声明类目的老模块在「已安装」里归到这一段的末尾。
+const _unclassified = '未分类';
+
 ModuleIndexEntry? _updateFor(SourceModule module, ModuleIndexEntry? entry) =>
     entry != null &&
         module.error.isEmpty &&
@@ -481,22 +484,62 @@ class _ModulesPageState extends State<ModulesPage>
       onExport: () => _exportModules(ids: [module.id]),
     );
     final header = [if (_error case final error?) _Note(error)];
-    if (modules != null &&
+    if (modules == null) {
+      return _list([
+        ...header,
+        if (_error == null) const _Loading(),
+      ]);
+    }
+    if (modules.isEmpty) {
+      return _list([
+        ...header,
+        const _Note('还没有安装模块。站源以模块的形式提供，可以从在线仓库、内置或手动安装。'),
+      ]);
+    }
+    // 装的模块一多，一长串列表很难找：按清单里的类目分段（短剧类 / 视频类 /
+    // 黄果类 / 成人类），没有类目声明的老模块放最后一段。
+    final groups = <String, List<SourceModule>>{};
+    for (final module in modules) {
+      final label = module.classLabel.isEmpty ? _unclassified : module.classLabel;
+      (groups[label] ??= []).add(module);
+    }
+    final labels = groups.keys.toList()
+      ..sort((a, b) => _classRank(a).compareTo(_classRank(b)));
+    final reorderable =
         modules.length > 1 &&
         _store.profile.admin &&
         !_store.locked &&
-        !AppScope.of(context).television) {
+        !AppScope.of(context).television;
+    // 只有一个类目时不用分段，仍然是可拖动排序的整列表。
+    if (labels.length <= 1 && reorderable) {
       return _reorderable(modules, header, card);
     }
     return _list([
       ...header,
-      if (modules == null && _error == null)
-        const _Loading()
-      else if (modules != null && modules.isEmpty)
-        const _Note('还没有安装模块。站源以模块的形式提供，可以从在线仓库、内置或手动安装。')
-      else if (modules != null)
-        for (final module in modules) card(module),
+      for (final label in labels) ...[
+        if (labels.length > 1)
+          Padding(
+            padding: const EdgeInsets.only(bottom: 2),
+            child: SectionHeader(
+              title: '$label · ${groups[label]!.length}',
+              padding: EdgeInsets.zero,
+            ),
+          ),
+        for (final module in groups[label]!) card(module),
+      ],
     ]);
+  }
+
+  /// 已安装列表的分段顺序：与站源菜单同一套类目，未分类排最后。
+  int _classRank(String label) {
+    final order = [
+      for (final key in SourceClass.order)
+        if (key != SourceClass.xbpq && key != SourceClass.other)
+          SourceClass.labelOf(key),
+      _unclassified,
+    ];
+    final index = order.indexOf(label);
+    return index < 0 ? order.length : index;
   }
 
   Widget _catalogTab({required bool bundled}) {
@@ -969,7 +1012,8 @@ class _ModuleDialog extends StatelessWidget {
     final version = module.version.isEmpty ? '未标注' : module.version;
     final capabilities = [
       for (final name in module.capabilities)
-        if (!moduleBaseCapabilityNames.contains(name))
+        if (!moduleBaseCapabilityNames.contains(name) &&
+            !moduleIgnoredCapabilityNames.contains(name))
           moduleCapabilityNames[name] ?? name,
     ];
     Widget section(String title, String body) => Padding(

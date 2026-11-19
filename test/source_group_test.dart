@@ -106,12 +106,26 @@ void main() {
     test('category 转成中文类目名', () {
       expect(
         SourceModule.fromJson({
-          'id': 'huangdou',
-          'name': '黄豆',
+          'id': 'yaguo',
+          'name': '鸭果',
           'category': 'shortDrama',
         }).classLabel,
         '短剧类',
       );
+      expect(
+        SourceModule.fromJson({
+          'id': '360zy',
+          'name': '360',
+          'category': 'video',
+        }).classLabel,
+        '视频类',
+      );
+    });
+
+    test('没写类目的内置模块按标识兜底，与站源菜单同一类', () {
+      // 内置模块清单里没有 category，靠标识归到黄果类 / 短剧类。
+      expect(SourceModule.fromJson({'id': 'huangdou', 'name': '黄豆'}).classLabel, '黄果类');
+      expect(SourceModule.fromJson({'id': 'hongguo', 'name': '红果'}).classLabel, '短剧类');
     });
 
     test('没写或不认识的类目不显示标签', () {

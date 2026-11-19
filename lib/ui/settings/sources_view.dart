@@ -3,7 +3,6 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 
 import '../../local_store.dart';
-import '../../models.dart';
 import '../app_scope.dart';
 import '../shell/app_shell.dart';
 import '../widgets/focus_ring.dart';
@@ -11,10 +10,10 @@ import '../widgets/group_card.dart';
 import 'custom_sources_view.dart';
 import 'settings_rows.dart';
 
-/// 站源管理：内置源的显示开关 + 自定义源（MacCMS 站点 / XBPQ 规则）管理入口。
+/// 自定义XBPQ 管理：自己添加的源（MacCMS 站点 / XBPQ 规则）的开关与增删改。
 ///
-/// 源显示属于「谁用谁看」的本机偏好，所有用户都能调整，不要求管理员身份。
-/// 每台设备、每个用户各自保存自己的开关状态，互不影响。
+/// 模块安装的站源不在这里——它们的开关在「我的 › 自定义模块 › 已安装」，
+/// 模块页与本站源页各管一件事。
 class SourcesView extends StatefulWidget {
   const SourcesView({super.key, required this.store});
   final LocalStore store;
@@ -50,15 +49,10 @@ class _SourcesViewState extends State<SourcesView> {
     }
   }
 
-  Future<void> _toggle(String id, bool value, bool downloadable) {
-    final repository = AppScope.of(context).repository;
-    return saveSetting(context, () async {
-      await widget.store.setSourceEnabled(id, value);
-      if (!value && downloadable && repository.supportsDownloads) {
-        await repository.controlDownloads('pauseSource', id: id);
-      }
-    });
-  }
+  Future<void> _toggle(String id, bool value) => saveSetting(
+    context,
+    () => widget.store.setSourceEnabled(id, value),
+  );
 
   Future<void> _openManager() async {
     final repository = AppScope.of(context).repository;
@@ -75,56 +69,24 @@ class _SourcesViewState extends State<SourcesView> {
     builder: (context, _) {
       final store = widget.store;
       final customs = store.customSources;
-      // 站源按类目分段（短剧类 / 视频类 / 黄果类 / 成人类 / 其他站源），
-      // 与发现页的站源菜单同一口径；只有一个类目时不画标题。
-      final sections = SourceGroup.byClass(SourceSite.values);
-      final headers = sections.length > 1;
+      // 这一页只负责用户自己加的源：模块装的站源各有各的开关，统一在
+      // 「我的 › 自定义模块 › 已安装」里管，不再在这里重复列一遍。
       return ListView(
         padding: const EdgeInsets.fromLTRB(16, 8, 16, 24),
         children: [
-          for (final (index, section) in sections.indexed) ...[
-            if (index > 0) const SizedBox(height: 16),
-            if (headers)
-              Padding(
-                padding: const EdgeInsets.only(bottom: 8),
-                child: SectionHeader(
-                  title: '${section.name} · ${section.sources.length}',
-                  padding: EdgeInsets.zero,
-                ),
-              ),
-            SettingsCard(
-              children: [
-                for (final site in section.sources)
-                  _SourceTile(
-                    title: site.name,
-                    subtitle: site.adult
-                        ? '${site.description} · 限制级，默认关闭'
-                        : site.description,
-                    enabled: store.sourceEnabled(site.id),
-                    onChanged: (value) => _toggle(site.id, value, true),
-                  ),
-              ],
-            ),
+          if (customs.isEmpty) ...[
+            const _Note('还没有自定义XBPQ。点下面的「管理自定义XBPQ」添加站点地址或爬虫规则。'),
+            const SizedBox(height: 12),
           ],
-          const SizedBox(height: 12),
-          const _Note(
-            '关闭的站源不在发现、搜索、追剧、观看记录和下载中显示，记录保留，重新开启后恢复。正在下载的集会暂停，重新开启后可在下载页继续。',
-          ),
-          const SizedBox(height: 20),
-          const SectionHeader(title: '自定义XBPQ', padding: EdgeInsets.zero),
-          const SizedBox(height: 8),
           SettingsCard(
             children: [
-              if (customs.isNotEmpty)
-                for (final site in customs)
-                  _SourceTile(
-                    title: site.name,
-                    subtitle: site.hasRule
-                        ? 'XBPQ 规则 · ${site.base}'
-                        : site.base,
-                    enabled: store.sourceEnabled(site.id),
-                    onChanged: (value) => _toggle(site.id, value, false),
-                  ),
+              for (final site in customs)
+                _SourceTile(
+                  title: site.name,
+                  subtitle: site.hasRule ? 'XBPQ 规则 · ${site.base}' : site.base,
+                  enabled: store.sourceEnabled(site.id),
+                  onChanged: (value) => _toggle(site.id, value),
+                ),
               SettingsTile(
                 icon: Icons.tune_rounded,
                 title: '管理自定义XBPQ',
@@ -139,6 +101,11 @@ class _SourcesViewState extends State<SourcesView> {
           const _Note(
             '自定义XBPQ 由你自行添加，支持 MacCMS 规范的站点地址或 XBPQ 爬虫规则 JSON。'
             '所有用户都可以添加、修改和删除，内容保存在本机。',
+          ),
+          const SizedBox(height: 12),
+          const _Note(
+            '关闭的源不在发现、搜索、追剧、观看记录和下载中显示，记录保留，重新开启后恢复。'
+            '模块安装的站源不在这里显示，开关在「我的 › 自定义模块 › 已安装」里。',
           ),
         ],
       );

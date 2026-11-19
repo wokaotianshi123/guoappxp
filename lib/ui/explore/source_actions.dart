@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 
 import '../../local_store.dart';
 import '../../models.dart';
+import '../modules/modules_page.dart';
 import '../search/search_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
@@ -34,16 +35,23 @@ Future<void> pickSource(BuildContext anchor, LocalStore store) async {
         : null,
     selected: store.source,
     grid: ChoiceGrid.sources,
-    action: store.profile.admin
-        ? (
-            label: '管理站源',
-            icon: Icons.tune_rounded,
-            // 站源页现在只有一页（内置站源开关 + 自定义XBPQ），模块已经提到
-            // 「我的 › 自定义模块」，这里不再需要指定页签。
-            onPressed: () =>
-                openPage<void>(anchor, (_) => SourcesPage(store: store)),
-          )
-        : null,
+    // 右上角两个入口：模块装的源去「自定义模块」管，自己加的源去「自定义XBPQ」管。
+    actions: store.profile.admin
+        ? [
+            (
+              label: '管理模块项',
+              icon: Icons.extension_outlined,
+              onPressed: () =>
+                  openPage<void>(anchor, (_) => ModulesPage(store: store)),
+            ),
+            (
+              label: '管理XBPQ',
+              icon: Icons.dns_outlined,
+              onPressed: () =>
+                  openPage<void>(anchor, (_) => SourcesPage(store: store)),
+            ),
+          ]
+        : const [],
   );
   if (value == null || value == store.source) return;
   try {

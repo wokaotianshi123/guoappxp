@@ -188,3 +188,41 @@ func TestRepositoriesViewJSON(t *testing.T) {
 		t.Fatalf("decoded = %+v", decoded)
 	}
 }
+
+// TestModuleRepositoriesUpgradeOfficialDefault 校验老默认配置（只有官方镜像）
+// 会自动换成出厂内置的 guocheng1378 / jqk4388 两家商店；用户自己配过的不动。
+func TestModuleRepositoriesUpgradeOfficialDefault(t *testing.T) {
+	directory := t.TempDir()
+	old := moduleRepositoriesConfig{Repositories: []nativeModuleRepository{
+		{Name: "官方仓库", URL: moduleIndexAddresses[0]},
+		{Name: "官方仓库", URL: moduleIndexAddresses[1]},
+	}}
+	data, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(directory, moduleRepositoriesFile), data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	engine := &nativeEngine{directory: directory}
+	engine.loadModuleRepositories()
+	names := []string{}
+	for _, repo := range engine.repositories.Repositories {
+		names = append(names, repo.Name)
+	}
+	if len(names) != len(moduleBuiltinRepositories) || names[0] != "guocheng1378" || names[1] != "jqk4388" {
+		t.Fatalf("repositories = %v", names)
+	}
+	if got := engine.activeModuleRepositoryURL(); got != moduleBuiltinRepositories[0].URL {
+		t.Fatalf("active = %q", got)
+	}
+
+	// 用户自己加的仓库不参与升级。
+	mixed := moduleRepositoriesConfig{Repositories: []nativeModuleRepository{
+		{Name: "官方仓库", URL: moduleIndexAddresses[0]},
+		{Name: "我的镜像", URL: "https://mirror.example.com/index.json"},
+	}}
+	if got := upgradeRepositories(mixed); len(got.Repositories) != 2 || got.Repositories[1].Name != "我的镜像" {
+		t.Fatalf("mixed upgraded = %+v", got.Repositories)
+	}
+}

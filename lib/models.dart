@@ -111,6 +111,17 @@ const _legacyClasses = <String, String>{
   'aosika': SourceClass.adult,
 };
 
+/// 站源 / 模块属于哪个类目。站源菜单、模块的「已安装」分段都用这一份判定，
+/// 保证两边把同一个源放进同一类：自定义XBPQ 的源自成一组；黄果类成员按标识
+/// 恒定归黄果类；其余以清单的 category/family 为准，没写的按标识查老表。
+String sourceClassOf(String id, {String category = ''}) {
+  if (SourceSite.isCustomId(id)) return SourceClass.xbpq;
+  if (_huangguoClasses.contains(id)) return SourceClass.huangguo;
+  return SourceClass.normalize(category) ??
+      _legacyClasses[id] ??
+      SourceClass.other;
+}
+
 class SourceSite {
   const SourceSite(
     this.id,
@@ -181,16 +192,10 @@ class SourceSite {
   String get groupName => groupLabel.isEmpty ? name : groupLabel;
   String get entryName => entryLabel.isEmpty ? name : entryLabel;
 
-  /// 菜单分段用的类目：黄果类成员按标识恒定归黄果类；在「自定义XBPQ」里
-  /// 添加的源自成一组；其余以清单声明的 category/family 为准，没声明的按
-  /// 标识查老表，都不认的归「其他站源」。
-  String get classKey {
-    if (SourceSite.isCustomId(id)) return SourceClass.xbpq;
-    if (_huangguoClasses.contains(id)) return SourceClass.huangguo;
-    return SourceClass.normalize(category) ??
-        _legacyClasses[id] ??
-        SourceClass.other;
-  }
+  /// 菜单分段用的类目：在「自定义XBPQ」里添加的源自成一组；黄果类成员按标识
+  /// 恒定归黄果类；其余以清单声明的 category/family 为准，没声明的按标识查
+  /// 老表，都不认的归「其他站源」。
+  String get classKey => sourceClassOf(id, category: category);
 
   static List<SourceSite> _installed = const [];
   static List<String> _order = const [];

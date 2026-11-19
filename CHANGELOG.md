@@ -1,5 +1,16 @@
 # 更新日志
 
+## 2.1.0+126
+
+模块与站源的分工再收一刀，并修好 guoappcheng 商店模块装不上/跑不起来的问题。
+
+- 「全部站源」面板右上角改成两个入口：「管理模块项」去自定义模块、「管理XBPQ」去自定义XBPQ（原来只有一个「管理站源」）。
+- 自定义XBPQ 页只保留自己添加的源与「管理自定义XBPQ」，不再列模块安装的站源——那些开关在「我的 › 自定义模块 › 已安装」里。
+- 自定义模块的「已安装」按类目分段（短剧类 / 视频类 / 黄果类 / 成人类 / 未分类），导出、卸载、可见性开关都保留。
+- 内置两家在线仓库：`guocheng1378`（guocheng1378/guoapp-modules）与 `jqk4388`（jqk4388/guoapp-modules-private）；只存过旧默认（官方镜像）的配置会自动升级成这两家，自己改过的配置不动。
+- 修复安装 guocheng1378 商店的模块报 `object has no member 'manifest'`：模块脚本可以正常调用 `host.manifest()` / `host.baseUrl()`，读清单里的 `config`、`base`。
+- 修复报「未知的模块能力 suggest」：`suggest` 按搜索联想处理，`routes` / `homefeed` / `calendar` / `skippreset` 按已知但不实现放行，不再拦安装。
+
 ## 2.1.0+125
 
 模块改为独立入口，与站源解耦（issue #7）。
