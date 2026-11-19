@@ -75,6 +75,9 @@ jobs:
       - run: go test -race ./...
         working-directory: native
         continue-on-error: true
+      # 内置站源覆盖全部平台是发布前提：漏一个平台就有一整类安装包没有站源，
+      # 因此这一项不设 continue-on-error。
+      - run: python scripts/check_bundled_platforms.py
 
   prepare:
     runs-on: ubuntu-latest

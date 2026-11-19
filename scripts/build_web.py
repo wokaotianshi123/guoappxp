@@ -1,9 +1,13 @@
 """构建小果影视本地服务版。
 
-只出一个 Windows 包，不内置任何站源（站源从站源页的模块商店安装）：
+只出一个 Windows 包，内置与 App 端相同的站源模块：
 
     guoapp-<版本>-web-windows-amd64.zip
         解压后双击 start.bat，内含 guoapp-web.exe + ffmpeg.exe + README.txt
+
+内置模块由 prepare_bundled_modules 从仓库 modules/ 复制到
+native/core/bundled/，再由 Go 以 go:embed 打进 exe。限制级模块同样内置，
+但服务端按清单的 adult 默认隐藏（见 native/server/visibility.go）。
 
 红果等加密 H.265 站源要靠服务端的 ffmpeg 解密转码才能播，而单文件装不下
 ffmpeg（静态版约 90 MB），所以 Windows 用 zip 而不是裸 exe。
@@ -18,16 +22,16 @@ import urllib.request
 import zipfile
 from pathlib import Path
 
-from app_build import app
+from app_build import app, prepare_bundled_modules
 from source_module import clean
 
 root = Path(__file__).resolve().parents[1]
 native = root / 'native'
 
-# 本地服务版不内置任何站源：站源从站源页的模块商店安装，与 App 端一致。
-# 这里顺手清掉可能残留的 go.work / sources_gen.go，残留的 workspace 会让
-# go build 走进另一个模块图。
+# 站源以模块形式内置，与 App 端一致。先清掉可能残留的 go.work /
+# sources_gen.go，残留的 workspace 会让 go build 走进另一个模块图。
 clean(native)
+prepare_bundled_modules()
 
 version = re.search(r'^version:\s*(\S+)', (root / 'pubspec.yaml').read_text(encoding='utf-8'), re.MULTILINE).group(1)
 
@@ -201,7 +205,9 @@ def readme():
         '  启动时会打印所有可用地址；换端口运行：start.bat 后加 -port 8001。',
         '',
         '站源：',
-        '  本版不内置站源，打开「我的 › 站源 › 模块」在模块商店里安装。',
+        '  本版内置与 App 端相同的站源模块，开箱即用；',
+        '  限制级站源默认关闭，可在「我的 › 站源」里开启。',
+        '  其余站源可在「我的 › 站源 › 模块」的模块商店安装。',
         '',
         '收藏夹：',
         '  网页顶部右侧「收藏夹」里有播放记录与收藏，可单项删除、批量删除或清空。',
