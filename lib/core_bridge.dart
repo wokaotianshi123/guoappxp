@@ -166,10 +166,30 @@ abstract class AppRepository {
     String indexed = '',
     bool bundled = false,
   }) async => throw AppFailure('当前环境不支持安装模块');
+
+  /// 批量准备安装包：可一次提交多个本地文件与多个在线地址，
+  /// 单个 zip 里含多个子模块 zip 时也会被展开。返回每一项的结果。
+  Future<List<PreparedModule>> prepareModules({
+    List<String> files = const [],
+    List<String> urls = const [],
+  }) async => throw AppFailure('当前环境不支持安装模块');
   Future<String> installModule(String token) async =>
       throw AppFailure('当前环境不支持安装模块');
   Future<void> uninstallModule(String id) async =>
       throw AppFailure('当前环境不支持卸载模块');
+
+  /// 批量卸载，返回成功与失败的标识。
+  Future<({List<String> removed, List<String> failures})> uninstallModules(
+    List<String> ids,
+  ) async => throw AppFailure('当前环境不支持卸载模块');
+
+  /// 恢复默认：删除全部用户安装的模块，并把内置模块重新装回来。
+  Future<({List<String> removed, int bundled})> resetModules() async =>
+      throw AppFailure('当前环境不支持恢复默认模块');
+
+  /// 导出模块为 zip 字节。ids 为空表示全部用户安装的模块。
+  Future<ModuleExport> exportModules({List<String> ids = const []}) async =>
+      throw AppFailure('当前环境不支持导出模块');
   Map<String, int> missingSourceDownloads() => const {};
   Future<List<String>> suggestions(String source, String query) async =>
       const [];
@@ -1031,6 +1051,62 @@ class NativeRepository extends AppRepository {
   Future<void> uninstallModule(String id) async {
     final result = await _call({'action': 'uninstallModule', 'source': id});
     _installSources(result['sources']);
+  }
+
+  @override
+  Future<List<PreparedModule>> prepareModules({
+    List<String> files = const [],
+    List<String> urls = const [],
+  }) async {
+    final result = await _call({
+      'action': 'prepareModules',
+      'files': files,
+      'urls': urls,
+    });
+    return [
+      for (final row in result['items'] as List? ?? const [])
+        PreparedModule.fromJson(Map<String, dynamic>.from(row as Map)),
+    ];
+  }
+
+  @override
+  Future<({List<String> removed, List<String> failures})> uninstallModules(
+    List<String> ids,
+  ) async {
+    final result = await _call({'action': 'uninstallModules', 'ids': ids});
+    _installSources(result['sources']);
+    return (
+      removed: (result['removed'] as List? ?? const [])
+          .whereType<String>()
+          .toList(),
+      failures: (result['failures'] as List? ?? const [])
+          .whereType<String>()
+          .toList(),
+    );
+  }
+
+  @override
+  Future<({List<String> removed, int bundled})> resetModules() async {
+    final result = await _call({'action': 'resetModules'});
+    _installSources(result['sources']);
+    return (
+      removed: (result['removed'] as List? ?? const [])
+          .whereType<String>()
+          .toList(),
+      bundled: (result['bundled'] as List? ?? const []).length,
+    );
+  }
+
+  @override
+  Future<ModuleExport> exportModules({List<String> ids = const []}) async {
+    final result = await _call({'action': 'exportModules', 'ids': ids});
+    final content = result['content'] as String? ?? '';
+    if (content.isEmpty) throw AppFailure('没有可导出的模块');
+    return ModuleExport(
+      bytes: base64Decode(content),
+      names: (result['names'] as List? ?? const []).whereType<String>().toList(),
+      count: result['count'] as int? ?? 0,
+    );
   }
 
   @override

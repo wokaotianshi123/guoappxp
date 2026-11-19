@@ -1,3 +1,5 @@
+import 'dart:typed_data';
+
 class SourceModule {
   const SourceModule({
     required this.id,
@@ -73,6 +75,36 @@ class ModuleStore {
   const ModuleStore(this.entries, {this.warning = ''});
   final List<ModuleIndexEntry> entries;
   final String warning;
+}
+
+/// 批量准备安装包时单项的结果：成功带 [module]（含 token），失败带 [error]。
+class PreparedModule {
+  const PreparedModule({this.name = '', this.module, this.error = ''});
+  factory PreparedModule.fromJson(Map<String, dynamic> json) => PreparedModule(
+    name: json['name'] as String? ?? '',
+    module: json['info'] is Map
+        ? SourceModule.fromJson(Map<String, dynamic>.from(json['info'] as Map))
+        : null,
+    error: json['error'] as String? ?? '',
+  );
+  final String name;
+  final SourceModule? module;
+  final String error;
+  bool get ok => module != null && module!.token.isNotEmpty;
+  String get displayName =>
+      module?.name.isNotEmpty == true ? module!.name : name;
+}
+
+/// 导出的模块包：内容为 zip 字节，另带导出的模块数与标识。
+class ModuleExport {
+  const ModuleExport({
+    required this.bytes,
+    this.names = const [],
+    this.count = 0,
+  });
+  final Uint8List bytes;
+  final List<String> names;
+  final int count;
 }
 
 bool isNewerModuleVersion(String latest, String installed) {

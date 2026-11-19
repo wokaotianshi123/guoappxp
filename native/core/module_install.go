@@ -4,8 +4,6 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
-	"crypto/rand"
-	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
@@ -93,27 +91,10 @@ func (engine *nativeEngine) prepareModule(ctx context.Context, file, address, in
 	if indexed != "" && module.manifest.ID != indexed {
 		return nativeModuleInfo{}, fmt.Errorf("索引里的 %s 实际是模块 %s", indexed, module.manifest.ID)
 	}
-	if err := moduleConflict(module.manifest); err != nil {
-		return nativeModuleInfo{}, err
-	}
-	folder := filepath.Join(engine.cacheDirectory, modulePackageFolder)
-	if err := os.RemoveAll(folder); err != nil {
-		return nativeModuleInfo{}, err
-	}
-	if err := os.MkdirAll(folder, 0o700); err != nil {
-		return nativeModuleInfo{}, err
-	}
-	token := make([]byte, 16)
-	_, _ = rand.Read(token)
-	info := moduleInfo(module.manifest)
-	info.Token = hex.EncodeToString(token)
-	if err := os.WriteFile(filepath.Join(folder, info.Token+".zip"), raw, 0o600); err != nil {
-		return nativeModuleInfo{}, err
-	}
-	if installed, err := readModule(filepath.Join(engine.downloader.moduleRoot(), module.manifest.ID)); err == nil {
-		info.Installed, info.Previous = true, installed.manifest.Version
-	}
-	return info, nil
+	// 校验通过后统一走 stageModulePackage：暂存、冲突检查、token 生成都在一起，
+	// 批量安装与单个安装共用同一条路径。
+	engine.clearModuleStaging()
+	return engine.stageModulePackage(raw)
 }
 
 func (engine *nativeEngine) installModule(token string) (map[string]any, error) {

@@ -182,34 +182,88 @@ class _ModulesPageState extends State<ModulesPage>
   }
 
   Future<void> _installFile() => _run(() async {
-    final file = await FilePicker.pickFile(
+    final files = await FilePicker.pickFiles(
       type: FileType.custom,
       allowedExtensions: ['zip'],
+      dialogTitle: '选择模块安装包（可多选）',
     );
-    if (file == null) return;
-    var location = file.path;
-    if (location == null) {
-      final size = await file.length();
-      if (size == null || size > 8 * 1024 * 1024) {
-        throw AppFailure('安装包过大或无法读取');
+    if (files.isEmpty) return;
+    // 每个文件先落到本地可读路径：移动端拿到的可能是内存字节。
+    final locations = <String>[];
+    for (final file in files) {
+      var location = file.path;
+      if (location == null) {
+        final size = await file.length();
+        if (size == null || size > 8 * 1024 * 1024) {
+          throw AppFailure('${file.name} 过大或无法读取');
+        }
+        location = path.join(
+          (await getApplicationCacheDirectory()).path,
+          'module-picked-${DateTime.now().microsecondsSinceEpoch}.zip',
+        );
+        await File(location).writeAsBytes(await file.readAsBytes());
       }
-      location = path.join(
-        (await getApplicationCacheDirectory()).path,
-        'module-picked.zip',
-      );
-      await File(location).writeAsBytes(await file.readAsBytes());
+      locations.add(location);
     }
-    await _install(await _repository.prepareModule(file: location));
+    await _installBatch(files: locations);
   });
 
   Future<void> _installAddress() async {
-    final address = await showDialog<String>(
+    final input = await showDialog<_AddressInput>(
       context: context,
       builder: (_) => const _AddressDialog(),
     );
-    if (address == null || address.isEmpty) return;
-    await _run(
-      () async => _install(await _repository.prepareModule(url: address)),
+    if (input == null) return;
+    final urls = input.urls;
+    if (urls.isEmpty) return;
+    await _installBatch(urls: urls);
+  }
+
+  /// 批量安装：一次把多个文件 / 多个地址交给核心展开并暂存，
+  /// 单个 zip 里含多个子模块 zip 时也会被展开成多项。
+  Future<void> _installBatch({
+    List<String> files = const [],
+    List<String> urls = const [],
+  }) async {
+    final prepared = await _repository.prepareModules(files: files, urls: urls);
+    if (!mounted) return;
+    final ready = [for (final item in prepared) if (item.ok) item];
+    final failed = [for (final item in prepared) if (!item.ok) item];
+    if (ready.isEmpty) {
+      throw AppFailure(
+        failed.isEmpty
+            ? '没有可安装的模块'
+            : '全部失败：${failed.map((item) => '${item.displayName}（${item.error}）').join('；')}',
+      );
+    }
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (_) => _BatchInstallPreview(
+        items: ready,
+        failures: failed,
+      ),
+    );
+    if (accepted != true) return;
+    var installed = 0;
+    final notices = <String>[];
+    final errors = <String>[];
+    for (final item in ready) {
+      final module = item.module!;
+      try {
+        final warning = await _applyInstall(module);
+        installed++;
+        if (warning != null) notices.add(warning);
+      } catch (failure) {
+        errors.add('${module.name}：$failure');
+      }
+    }
+    _show(
+      [
+        '已安装 $installed 个站源',
+        if (errors.isNotEmpty) '${errors.length} 个失败：${errors.join('；')}',
+        if (failed.isNotEmpty) '${failed.length} 个无法识别',
+        ...notices,
+      ].join('，'),
     );
   }
 
@@ -245,6 +299,61 @@ class _ModulesPageState extends State<ModulesPage>
       }
       await _repository.uninstallModule(module.id);
       _show('${module.name} 已卸载');
+    });
+  }
+
+  /// 导出模块：ids 为空表示全部用户安装的模块。
+  Future<void> _exportModules({List<String> ids = const []}) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+    try {
+      final export = await _repository.exportModules(ids: ids);
+      final stamp = DateTime.now().toIso8601String().substring(0, 10);
+      final name = ids.isEmpty
+          ? 'guoapp-modules-$stamp.zip'
+          : ids.length == 1
+          ? 'guoapp-module-${ids.first}-$stamp.zip'
+          : 'guoapp-modules-${ids.length}-$stamp.zip';
+      final saved = await FilePicker.saveFile(
+        fileName: name,
+        bytes: export.bytes,
+        mimeType: 'application/zip',
+      );
+      if (saved != null && mounted) {
+        _show('已导出 ${export.count} 个模块到 $saved');
+      }
+    } catch (failure) {
+      _show('$failure');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 选择要导出的模块。返回 null 表示取消。
+  Future<List<String>?> _chooseModulesToExport() async {
+    final modules = _modules ?? const <SourceModule>[];
+    if (modules.isEmpty) {
+      _show('还没有安装任何模块');
+      return null;
+    }
+    return showDialog<List<String>>(
+      context: context,
+      builder: (_) => _ModuleExportPicker(modules: modules),
+    );
+  }
+
+  /// 恢复默认：删除全部用户安装的模块，内置模块重新装回来。
+  Future<void> _resetModules() async {
+    final accepted = await showDialog<bool>(
+      context: context,
+      builder: (_) => const _ResetModulesDialog(),
+    );
+    if (accepted != true) return;
+    await _run(() async {
+      final result = await _repository.resetModules();
+      _show(
+        '已删除 ${result.removed.length} 个模块，恢复 ${result.bundled} 个内置站源',
+      );
     });
   }
 
@@ -336,6 +445,7 @@ class _ModulesPageState extends State<ModulesPage>
       onDetails: () => _details(module),
       onUpdate: enabled ? () => _installIndexed(latest[module.id]!) : null,
       onUninstall: enabled ? () => _uninstall(module) : null,
+      onExport: () => _exportModules(ids: [module.id]),
     );
     final header = [if (_error case final error?) _Note(error)];
     if (modules != null &&
@@ -408,11 +518,14 @@ class _ModulesPageState extends State<ModulesPage>
 
   Widget _manualTab() {
     final enabled = _canInstall;
+    final installed = _modules ?? const <SourceModule>[];
+    final exportable = installed.isNotEmpty;
     return _list([
       GroupCard(
         children: [
           SettingsTile(
             title: '选择本地文件',
+            subtitle: '可多选；支持一个 zip 里含多个子模块 zip',
             enabled: enabled,
             onTap: enabled ? _installFile : null,
           ),
@@ -422,8 +535,37 @@ class _ModulesPageState extends State<ModulesPage>
         children: [
           SettingsTile(
             title: '输入下载地址',
+            subtitle: '每行一个地址，可一次填多个',
             enabled: enabled,
             onTap: enabled ? _installAddress : null,
+          ),
+        ],
+      ),
+      GroupCard(
+        children: [
+          SettingsTile(
+            title: '导出模块',
+            subtitle: exportable
+                ? '可导出单个、多个或全部已安装模块'
+                : '还没有可导出的模块',
+            enabled: enabled && exportable,
+            onTap: enabled && exportable
+                ? () async {
+                    final ids = await _chooseModulesToExport();
+                    if (ids == null) return;
+                    await _exportModules(ids: ids);
+                  }
+                : null,
+          ),
+        ],
+      ),
+      GroupCard(
+        children: [
+          SettingsTile(
+            title: '恢复默认模块',
+            subtitle: '删除全部已安装模块，只保留安装包内置的站源',
+            enabled: enabled,
+            onTap: enabled ? _resetModules : null,
           ),
         ],
       ),
@@ -603,6 +745,7 @@ class _InstalledCard extends StatelessWidget {
     required this.onDetails,
     required this.onUpdate,
     required this.onUninstall,
+    required this.onExport,
   });
   final SourceModule module;
   final ModuleIndexEntry? update;
@@ -611,6 +754,7 @@ class _InstalledCard extends StatelessWidget {
   final VoidCallback onDetails;
   final VoidCallback? onUpdate;
   final VoidCallback? onUninstall;
+  final VoidCallback? onExport;
 
   @override
   Widget build(BuildContext context) {
@@ -642,6 +786,15 @@ class _InstalledCard extends StatelessWidget {
           SoraniAccountButton(style: _cardButton(colors)),
       ],
       actions: [
+        FocusRing(
+          radius: 20,
+          child: IconButton.filledTonal(
+            visualDensity: VisualDensity.compact,
+            tooltip: '导出这个模块',
+            onPressed: onExport,
+            icon: const Icon(Icons.save_alt_rounded),
+          ),
+        ),
         if (update != null) ...[
           FocusRing(
             radius: 20,
@@ -830,6 +983,12 @@ class _ModuleDialog extends StatelessWidget {
   }
 }
 
+/// 地址输入结果：可一次填多个地址，每行一个或用逗号 / 空格分隔。
+class _AddressInput {
+  const _AddressInput(this.urls);
+  final List<String> urls;
+}
+
 class _AddressDialog extends StatefulWidget {
   const _AddressDialog();
 
@@ -846,37 +1005,376 @@ class _AddressDialogState extends State<_AddressDialog> {
     super.dispose();
   }
 
-  void _submit() => Navigator.pop(context, _controller.text.trim());
+  /// 支持换行、逗号、空格分隔的多个地址；顺带去掉重复项。
+  List<String> get _parsed {
+    final seen = <String>{};
+    for (final part in _controller.text.split(RegExp(r'[\s,，;；]+'))) {
+      final value = part.trim();
+      if (value.isNotEmpty) seen.add(value);
+    }
+    return seen.toList();
+  }
+
+  void _submit() {
+    final urls = _parsed;
+    if (urls.isEmpty) return;
+    Navigator.pop(context, _AddressInput(urls));
+  }
 
   @override
-  Widget build(BuildContext context) => AlertDialog(
-    title: const Text('从地址安装'),
-    content: FormTextField(
-      controller: _controller,
-      autofocus: true,
-      url: true,
-      decoration: const InputDecoration(hintText: 'https://…/module.zip'),
-      onSubmitted: (_) => _submit(),
-    ),
-    actions: [
-      FocusRing(
-        radius: 20,
-        child: TextButton(
-          onPressed: () => Navigator.pop(context),
-          child: const Text('取消'),
+  Widget build(BuildContext context) {
+    final television = AppScope.of(context).television;
+    return AlertDialog(
+      title: const Text('从地址安装'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // 电视端没有软键盘，FormTextField 会切到原生输入框；
+            // 这里与「自定义源」导入保持一致的做法。
+            FormTextField(
+              controller: _controller,
+              autofocus: !television,
+              url: true,
+              decoration: const InputDecoration(
+                labelText: '安装包地址',
+                hintText: 'https://…/module.zip',
+                helperText: '可一次填多个地址，每行一个；单个 zip 里含多个模块时会一起识别',
+                helperMaxLines: 2,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+            const SizedBox(height: 12),
+            ListenableBuilder(
+              listenable: _controller,
+              builder: (context, _) {
+                final count = _parsed.length;
+                if (count <= 1) return const SizedBox.shrink();
+                return Text(
+                  '已识别 $count 个地址',
+                  style: TextStyle(
+                    fontSize: 12,
+                    color: Theme.of(context).colorScheme.primary,
+                  ),
+                );
+              },
+            ),
+          ],
         ),
       ),
-      FocusRing(
-        radius: 20,
-        child: FilledButton(onPressed: _submit, child: const Text('下一步')),
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            autofocus: television,
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: ListenableBuilder(
+            listenable: _controller,
+            builder: (context, _) => FilledButton(
+              onPressed: _parsed.isEmpty ? null : _submit,
+              child: const Text('下一步'),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 批量安装前的预览：列出能装的与无法识别的，确认后逐个安装。
+class _BatchInstallPreview extends StatefulWidget {
+  const _BatchInstallPreview({required this.items, this.failures = const []});
+
+  final List<PreparedModule> items;
+  final List<PreparedModule> failures;
+
+  @override
+  State<_BatchInstallPreview> createState() => _BatchInstallPreviewState();
+}
+
+class _BatchInstallPreviewState extends State<_BatchInstallPreview> {
+  final _scroll = ScrollController();
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final items = widget.items;
+    final failures = widget.failures;
+    final adult = items.where((item) => item.module!.adult).length;
+    return AlertDialog(
+      title: Text('安装 ${items.length} 个站源？'),
+      content: SizedBox(
+        width: 560,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 420),
+          child: Scrollbar(
+            controller: _scroll,
+            thumbVisibility: true,
+            child: ListView(
+              controller: _scroll,
+              shrinkWrap: true,
+              children: [
+                for (final item in items)
+                  Padding(
+                    padding: const EdgeInsets.symmetric(vertical: 4),
+                    child: Row(
+                      spacing: 8,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${item.module!.name} · ${item.module!.version}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                          ),
+                        ),
+                        if (item.module!.installed)
+                          Text(
+                            item.module!.previous.isEmpty
+                                ? '已安装'
+                                : '覆盖 ${item.module!.previous}',
+                            style: const TextStyle(fontSize: 12),
+                          ),
+                        if (item.module!.adult)
+                          Text(
+                            '限制级',
+                            style: TextStyle(fontSize: 12, color: colors.error),
+                          ),
+                      ],
+                    ),
+                  ),
+                if (failures.isNotEmpty) ...[
+                  const Divider(),
+                  Padding(
+                    padding: const EdgeInsets.only(bottom: 4),
+                    child: Text(
+                      '${failures.length} 项无法识别，将跳过',
+                      style: TextStyle(fontSize: 12, color: colors.error),
+                    ),
+                  ),
+                  for (final item in failures)
+                    Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 2),
+                      child: Text(
+                        '${item.displayName}：${item.error}',
+                        style: TextStyle(fontSize: 12, color: colors.error),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                    ),
+                ],
+                if (adult > 0) ...[
+                  const SizedBox(height: 8),
+                  Text(
+                    '包含 $adult 个限制级站源，安装后默认关闭。',
+                    style: TextStyle(fontSize: 12, color: colors.error),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
       ),
-    ],
-  );
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: Text('安装 ${items.length} 个'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 选择要导出的模块：可单选、多选，也可一键全选。
+class _ModuleExportPicker extends StatefulWidget {
+  const _ModuleExportPicker({required this.modules});
+
+  final List<SourceModule> modules;
+
+  @override
+  State<_ModuleExportPicker> createState() => _ModuleExportPickerState();
+}
+
+class _ModuleExportPickerState extends State<_ModuleExportPicker> {
+  late final Set<String> _selected = {
+    for (final module in widget.modules) module.id,
+  };
+  final _scroll = ScrollController();
+
+  bool get _allSelected => _selected.length == widget.modules.length;
+
+  @override
+  void dispose() {
+    _scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('导出模块'),
+      content: SizedBox(
+        width: 520,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              spacing: 8,
+              children: [
+                Expanded(
+                  child: Text(
+                    '已选 ${_selected.length} / ${widget.modules.length} 个',
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ),
+                FocusRing(
+                  radius: 20,
+                  child: TextButton(
+                    onPressed: () => setState(() {
+                      if (_allSelected) {
+                        _selected.clear();
+                      } else {
+                        _selected
+                          ..clear()
+                          ..addAll(widget.modules.map((module) => module.id));
+                      }
+                    }),
+                    child: Text(_allSelected ? '全不选' : '全选'),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 4),
+            ConstrainedBox(
+              constraints: const BoxConstraints(maxHeight: 360),
+              child: Scrollbar(
+                controller: _scroll,
+                thumbVisibility: true,
+                child: ListView(
+                  controller: _scroll,
+                  shrinkWrap: true,
+                  children: [
+                    for (final module in widget.modules)
+                      CheckboxListTile(
+                        value: _selected.contains(module.id),
+                        onChanged: (value) => setState(() {
+                          if (value == true) {
+                            _selected.add(module.id);
+                          } else {
+                            _selected.remove(module.id);
+                          }
+                        }),
+                        dense: true,
+                        contentPadding: EdgeInsets.zero,
+                        title: Text(
+                          module.name,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                        subtitle: Text(
+                          '${module.id} · ${module.version}',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                        ),
+                      ),
+                  ],
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              '导出的 zip 可以直接在「选择本地文件」里重新导入。',
+              style: TextStyle(fontSize: 12),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: FilledButton(
+            onPressed: _selected.isEmpty
+                ? null
+                : () => Navigator.pop(context, _selected.toList()),
+            child: const Text('导出'),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+/// 恢复默认模块前的确认。
+class _ResetModulesDialog extends StatelessWidget {
+  const _ResetModulesDialog();
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    return AlertDialog(
+      title: const Text('恢复默认模块？'),
+      content: const Text(
+        '会删除全部已安装的模块，只保留安装包内置的站源。'
+        '各站源的追剧、观看记录和已下载视频会保留。'
+        '如果还想留着现在装的模块，请先导出。',
+      ),
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            autofocus: true,
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: FilledButton(
+            style: FilledButton.styleFrom(backgroundColor: colors.error),
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('恢复默认'),
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class _Loading extends StatelessWidget {
   const _Loading();
-
   @override
   Widget build(BuildContext context) => const Padding(
     padding: EdgeInsets.all(24),

@@ -106,6 +106,11 @@ type nativeInput struct {
 	File            string                  `json:"file"`
 	URL             string                  `json:"url"`
 	Token           string                  `json:"token"`
+	// Files / URLs 供批量安装模块使用：一次可提交多个本地安装包或下载地址。
+	Files []string `json:"files"`
+	URLs  []string `json:"urls"`
+	// IDs 供批量导出、批量卸载、恢复默认使用。
+	IDs []string `json:"ids"`
 	// Content 供听书接口使用：Content 是听书请求的附加请求头 JSON。
 	Content string `json:"content"`
 	Offset  int    `json:"offset"`
@@ -422,10 +427,22 @@ func nativeDispatch(input nativeInput) (any, error) {
 		return engine.moduleStore(ctx)
 	case "prepareModule":
 		return engine.prepareModule(ctx, input.File, input.URL, input.Source, input.Bundled)
+	// prepareModules：批量准备安装包，返回每个来源的结果（成功带 token，失败带原因）。
+	// 本地 zip 支持「一个包里含多个子模块 zip」，在线地址也支持一次多个。
+	case "prepareModules":
+		return engine.prepareModules(ctx, input.Files, input.URLs)
 	case "installModule":
 		return engine.installModule(input.Token)
 	case "uninstallModule":
 		return engine.uninstallModule(input.Source)
+	// uninstallModules：批量卸载。resetModules 在此基础上再把内置模块恢复回来。
+	case "uninstallModules":
+		return engine.uninstallModules(input.IDs)
+	case "resetModules":
+		return engine.resetModules()
+	// exportModules：导出指定模块（为空时导出全部用户安装的模块）为 zip。
+	case "exportModules":
+		return engine.exportModules(input.IDs)
 	case "sourceDevices":
 		return engine.sourceDevices(ctx, nativeActionSource(input), input.Command == "register")
 	case "soraniAccount", "sourceAccount":

@@ -9,6 +9,7 @@ package main
 // 上传安装包（POST 原始 zip 字节）；「从地址安装」与「从商店安装」与桌面端一致。
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"io"
@@ -184,6 +185,167 @@ func moduleErrorText(message, fallback string) string {
 	return message
 }
 
+// coreReply 是核心 NativeRequest 的统一信封。
+type coreReply struct {
+	OK    bool           `json:"ok"`
+	Data  map[string]any `json:"data"`
+	Error string         `json:"error"`
+}
+
+func callCore(payload map[string]any) (coreReply, error) {
+	encoded, err := json.Marshal(payload)
+	if err != nil {
+		return coreReply{}, err
+	}
+	var reply coreReply
+	if err := json.Unmarshal([]byte(core.NativeRequest(string(encoded))), &reply); err != nil {
+		return coreReply{}, errors.New("核心响应无法解析")
+	}
+	return reply, nil
+}
+
+// moduleUninstallMany 批量卸载，返回成功与失败的标识。
+func moduleUninstallMany(ids []string) ([]string, []string, error) {
+	reply, err := callCore(map[string]any{"action": "uninstallModules", "ids": ids})
+	if err != nil {
+		return nil, nil, err
+	}
+	if !reply.OK {
+		return nil, nil, errors.New(moduleErrorText(reply.Error, "卸载失败"))
+	}
+	removed := stringList(reply.Data["removed"])
+	failures := stringList(reply.Data["failures"])
+	return removed, failures, nil
+}
+
+// moduleReset 恢复默认：删除全部用户模块，内置模块重新装回来。
+func moduleReset() ([]string, int, error) {
+	reply, err := callCore(map[string]any{"action": "resetModules"})
+	if err != nil {
+		return nil, 0, err
+	}
+	if !reply.OK {
+		return nil, 0, errors.New(moduleErrorText(reply.Error, "恢复默认失败"))
+	}
+	removed := stringList(reply.Data["removed"])
+	bundled := 0
+	if items, ok := reply.Data["bundled"].([]any); ok {
+		bundled = len(items)
+	}
+	return removed, bundled, nil
+}
+
+func stringList(value any) []string {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		if text, ok := item.(string); ok && strings.TrimSpace(text) != "" {
+			out = append(out, strings.TrimSpace(text))
+		}
+	}
+	return out
+}
+
+// handleModuleBatchInstall 批量安装：提交多个地址或标识，逐个准备并安装。
+func handleModuleBatchInstall(writer http.ResponseWriter, request *http.Request) {
+	payload := struct {
+		URLs []string `json:"urls"`
+		IDs  []string `json:"ids"`
+	}{}
+	if err := json.NewDecoder(io.LimitReader(request.Body, 1<<20)).Decode(&payload); err != nil {
+		writeJSON(writer, map[string]any{"ok": false, "error": "请求不是合法 JSON"})
+		return
+	}
+	urls := make([]string, 0, len(payload.URLs))
+	for _, value := range payload.URLs {
+		if value = strings.TrimSpace(value); value != "" {
+			urls = append(urls, value)
+		}
+	}
+	if len(urls) == 0 && len(payload.IDs) == 0 {
+		writeJSON(writer, map[string]any{"ok": false, "error": "请填写安装包地址或模块标识"})
+		return
+	}
+	installed := 0
+	failures := []string{}
+	// 在线地址交给核心的批量准备接口，能一次展开多个地址和合集包。
+	if len(urls) > 0 {
+		reply, err := callCore(map[string]any{"action": "prepareModules", "urls": urls})
+		if err != nil {
+			writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		if !reply.OK {
+			writeJSON(writer, map[string]any{"ok": false, "error": moduleErrorText(reply.Error, "安装包校验失败")})
+			return
+		}
+		var prepared []map[string]any
+		if items, ok := reply.Data["items"].([]any); ok {
+			for _, item := range items {
+				if entry, ok := item.(map[string]any); ok {
+					prepared = append(prepared, entry)
+				}
+			}
+		}
+		count, problems := installPreparedModules(prepared)
+		installed += count
+		failures = append(failures, problems...)
+	}
+	// 商店标识走单个安装路径。
+	for _, id := range payload.IDs {
+		id = strings.TrimSpace(id)
+		if id == "" {
+			continue
+		}
+		if _, err := moduleInstall("", "", id); err != nil {
+			failures = append(failures, id+"："+err.Error())
+			continue
+		}
+		installed++
+	}
+	writeJSON(writer, map[string]any{
+		"ok": true, "installed": installed, "failures": failures, "items": moduleItems(),
+	})
+}
+
+// handleModuleExport 导出模块 zip。GET 导出全部，POST {"ids":[...]} 导出指定项。
+func handleModuleExport(writer http.ResponseWriter, request *http.Request) {
+	var ids []string
+	if request.Method == http.MethodPost {
+		payload := struct {
+			IDs []string `json:"ids"`
+		}{}
+		if err := json.NewDecoder(io.LimitReader(request.Body, 1<<20)).Decode(&payload); err == nil {
+			ids = payload.IDs
+		}
+	} else if request.Method != http.MethodGet {
+		writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
+		return
+	}
+	reply, err := callCore(map[string]any{"action": "exportModules", "ids": ids})
+	if err != nil {
+		writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+		return
+	}
+	if !reply.OK {
+		writeJSON(writer, map[string]any{"ok": false, "error": moduleErrorText(reply.Error, "导出失败")})
+		return
+	}
+	content, _ := reply.Data["content"].(string)
+	raw, err := base64.StdEncoding.DecodeString(content)
+	if err != nil || len(raw) == 0 {
+		writeJSON(writer, map[string]any{"ok": false, "error": "导出内容无效"})
+		return
+	}
+	writer.Header().Set("Content-Type", "application/zip")
+	writer.Header().Set("Content-Disposition", `attachment; filename="guoapp-modules.zip"`)
+	writer.Header().Set("Cache-Control", "no-store")
+	_, _ = writer.Write(raw)
+}
+
 // handleModules 是模块页的接口：
 //
 //	GET  /api/modules           已装模块列表
@@ -221,17 +383,49 @@ func handleModules(writer http.ResponseWriter, request *http.Request) {
 			return
 		}
 		payload := struct {
-			ID string `json:"id"`
+			ID  string   `json:"id"`
+			IDs []string `json:"ids"`
 		}{}
-		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil || strings.TrimSpace(payload.ID) == "" {
+		if err := json.NewDecoder(request.Body).Decode(&payload); err != nil {
 			writeJSON(writer, map[string]any{"ok": false, "error": "缺少模块标识"})
 			return
 		}
-		if err := moduleUninstall(strings.TrimSpace(payload.ID)); err != nil {
+		// 单个 id 与批量 ids 都接受；批量用于「恢复默认」这类一次删多个的场景。
+		ids := payload.IDs
+		if strings.TrimSpace(payload.ID) != "" {
+			ids = append([]string{strings.TrimSpace(payload.ID)}, ids...)
+		}
+		if len(ids) == 0 {
+			writeJSON(writer, map[string]any{"ok": false, "error": "缺少模块标识"})
+			return
+		}
+		removed, failures, err := moduleUninstallMany(ids)
+		if err != nil {
 			writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
 			return
 		}
-		writeJSON(writer, map[string]any{"ok": true, "items": moduleItems()})
+		writeJSON(writer, map[string]any{"ok": true, "removed": removed, "failures": failures, "items": moduleItems()})
+	case "/api/modules/batch":
+		// 批量安装：一次提交多个地址或标识，核心展开后逐个安装。
+		if request.Method != http.MethodPost {
+			writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
+			return
+		}
+		handleModuleBatchInstall(writer, request)
+	case "/api/modules/reset":
+		if request.Method != http.MethodPost {
+			writeJSON(writer, map[string]any{"ok": false, "error": "不支持该请求方法"})
+			return
+		}
+		removed, bundled, err := moduleReset()
+		if err != nil {
+			writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
+			return
+		}
+		writeJSON(writer, map[string]any{"ok": true, "removed": removed, "bundled": bundled, "items": moduleItems()})
+	case "/api/modules/export":
+		// 导出模块为 zip：GET 全部，POST {"ids":[...]} 导出指定项。
+		handleModuleExport(writer, request)
 	default:
 		http.NotFound(writer, request)
 	}
@@ -287,10 +481,81 @@ func handleModuleInstall(writer http.ResponseWriter, request *http.Request) {
 		return
 	}
 	handle.Close()
-	result, err := moduleInstall(location, "", "")
+	// 走批量准备接口：单个模块 zip 与「一个 zip 里含多个子模块 zip」都能装。
+	installed, failures, err := moduleInstallFiles([]string{location})
 	if err != nil {
 		writeJSON(writer, map[string]any{"ok": false, "error": err.Error()})
 		return
 	}
-	writeJSON(writer, map[string]any{"ok": true, "module": result, "items": moduleItems()})
+	if installed == 0 {
+		message := "安装包校验失败"
+		if len(failures) > 0 {
+			message = strings.Join(failures, "；")
+		}
+		writeJSON(writer, map[string]any{"ok": false, "error": message})
+		return
+	}
+	writeJSON(writer, map[string]any{
+		"ok": true, "installed": installed, "failures": failures, "items": moduleItems(),
+	})
+}
+
+// moduleInstallFiles 把本地安装包交给核心批量准备并逐个安装，返回成功数与失败说明。
+func moduleInstallFiles(files []string) (int, []string, error) {
+	reply, err := callCore(map[string]any{"action": "prepareModules", "files": files})
+	if err != nil {
+		return 0, nil, err
+	}
+	if !reply.OK {
+		return 0, nil, errors.New(moduleErrorText(reply.Error, "安装包校验失败"))
+	}
+	count, failures := installPreparedModules(preparedEntries(reply.Data["items"]))
+	return count, failures, nil
+}
+
+// preparedEntries 从核心响应里取出待安装项。
+func preparedEntries(value any) []map[string]any {
+	items, ok := value.([]any)
+	if !ok {
+		return nil
+	}
+	out := make([]map[string]any, 0, len(items))
+	for _, item := range items {
+		if entry, ok := item.(map[string]any); ok {
+			out = append(out, entry)
+		}
+	}
+	return out
+}
+
+// installPreparedModules 逐个安装已暂存的模块，返回成功数与失败说明。
+func installPreparedModules(prepared []map[string]any) (int, []string) {
+	installed := 0
+	failures := []string{}
+	for _, entry := range prepared {
+		info, _ := entry["info"].(map[string]any)
+		token, _ := info["token"].(string)
+		name, _ := entry["name"].(string)
+		if message, _ := entry["error"].(string); strings.TrimSpace(message) != "" {
+			failures = append(failures, name+"："+message)
+			continue
+		}
+		if strings.TrimSpace(token) == "" {
+			failures = append(failures, name+"：安装包校验失败")
+			continue
+		}
+		reply, err := callCore(map[string]any{"action": "installModule", "token": token})
+		if err != nil || !reply.OK {
+			message := "安装失败"
+			if err != nil {
+				message = err.Error()
+			} else {
+				message = moduleErrorText(reply.Error, message)
+			}
+			failures = append(failures, name+"："+message)
+			continue
+		}
+		installed++
+	}
+	return installed, failures
 }

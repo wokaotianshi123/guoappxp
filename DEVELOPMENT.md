@@ -82,6 +82,13 @@ Flutter 界面 + Go 原生核心。站源请求、解析、签名、缓存、下
 - 位置：数据目录下的 `modules/<模块标识>/`，应用启动时加载。Windows 的数据目录是 `%APPDATA%\<包名>`，便携版是程序旁的 `userdata`。
 - 文件：`manifest.json` 与 `main.js`，写法参照 `native/module_example/jsexample`。
 - 安装包：zip，`manifest.json` 和 `main.js` 放在根目录或唯一的一层文件夹里，其余文件忽略，整包不超过 8 MB。在「模块」页里从文件或地址安装，同一标识覆盖旧版本，标识或别名与其他站源重复时拒绝安装；安装和卸载不用重启。
+- 批量导入导出（App 端与本地服务版一致）：
+  - 一次可选多个 zip；一个 zip 里装着多个子模块 zip（合集包）时会自动展开，最多嵌套 3 层、合计 256 个成员。
+  - 在线地址支持一次填多个（换行 / 逗号 / 空格分隔），同样支持合集包。
+  - 「导出模块」可导出单个、多个或全部已安装模块，产物是「每个模块一个子目录」的 zip，可直接再导入。
+  - 「恢复默认模块」删除全部已安装模块（含内置副本）并清空 `.bundled-removed.json`，下次加载时内置模块重新写入。
+  - 核心动作：`prepareModules`（批量暂存，返回每项结果与 token）、`installModule`（按 token 安装）、`uninstallModules`（批量卸载，如实报告未安装项）、`resetModules`、`exportModules`（返回 Base64 zip）。实现在 `native/core/module_batch.go`。
+  - 本地服务版对应接口：`POST /api/modules/install`（上传 zip，支持合集包）、`POST /api/modules/batch`（多个地址或标识）、`POST /api/modules/uninstall`（`{id}` 或 `{ids}`）、`POST /api/modules/reset`、`GET|POST /api/modules/export`。
 - 模块商店：读取 GitHub 组织 guoapp-modules 的 `index` 仓库里的 `index.json`（先 raw.githubusercontent.com，失败换 jsDelivr），按其中的仓库和标签下载 `manifest.json` 与 `main.js` 并核对 sha256，再走同样的安装确认。模块的发版和上架方式见该组织的 `template` 与 `index` 仓库。
 - 内置模块：`build_native.py` / `build_ios.py` 把 `--bundle <模块目录>`（可多次指定）和环境变量 `BUNDLED_MODULES`（逗号分隔）里的模块，连同仓库 `modules/` 下的全部子目录，一起复制到 `native/core/bundled/`（相对路径以仓库根目录为准），由 Go 以 `go:embed` 打进核心；该目录除 `.gitkeep` 外不入库，每次出包前清空重建。同一标识只内置一份，仓库副本优先。**五个产物都内置**：Android、Windows、macOS 经 `build_native.py`，iOS 直接调 `build_ios.py`，本地服务版在 `build_web.py` 里调用；`scripts/check_bundled_platforms.py` 在 CI 的 checks 里校验这一点，漏一个平台会让构建失败。应用启动时，未安装或内置版本更高的内置模块写入数据目录的 `modules/`，用户卸载过的不再自动安装（记在 `modules/.bundled-removed.json`），模块商店在「内置」里照常列出，从安装包内的副本安装，索引读不到时也能装；索引里也有同一模块时，「在线仓库」另列一项，从索引下载，已安装模块按两者中较高的版本提示更新。
 - 限制级内置模块：清单 `adult: true` 的模块同样内置，但用户没有主动开启前默认关闭——`LocalStore.sourceEnabled` 在用户未显式开关过时按 `SourceSite.isAdult` 返回 `false`，站源仍出现在 设置 › 站源 的开关列表里（`permittedSources`），手动开启后写入 `sourceSwitches`，之后以用户选择为准。本地服务版在 `native/server/visibility.go` 里用同样的规则：`adultModuleSources` 从注册表读 `Adult`，`hiddenLocked` 对未显式选择过的限制级源返回隐藏，显式选择记在 `source-visibility.json` 的 `explicit` 字段。

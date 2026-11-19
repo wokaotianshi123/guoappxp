@@ -2420,6 +2420,80 @@ function moduleUninstall(id) {
   });
 }
 
+// 批量安装：一次提交多个地址；核心会展开合集包里的子模块。
+function moduleInstallBatch(urls) {
+  return fetch('/api/modules/batch', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ urls: urls }),
+  }).then(function (response) {
+    return response.json().then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '安装模块失败');
+      }
+      return data;
+    });
+  });
+}
+
+// 恢复默认：删掉全部用户安装的模块，内置模块重新装回来。
+function moduleReset() {
+  return fetch('/api/modules/reset', { method: 'POST' }).then(function (response) {
+    return response.json().then(function (data) {
+      if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '恢复默认失败');
+      }
+      return data;
+    });
+  });
+}
+
+// 导出模块：ids 为空表示全部已安装模块，返回 zip 并触发浏览器下载。
+function moduleExport(ids) {
+  var options = { method: 'POST', headers: { 'Content-Type': 'application/json' } };
+  if (ids && ids.length) {
+    options.body = JSON.stringify({ ids: ids });
+  } else {
+    options.method = 'GET';
+    delete options.headers;
+  }
+  return fetch('/api/modules/export', options).then(function (response) {
+    var type = response.headers.get('Content-Type') || '';
+    if (type.indexOf('application/zip') < 0) {
+      return response.json().then(function (data) {
+        throw new Error(data && data.error ? data.error : '导出模块失败');
+      });
+    }
+    return response.blob().then(function (blob) {
+      var url = URL.createObjectURL(blob);
+      var link = document.createElement('a');
+      var stamp = new Date().toISOString().slice(0, 10);
+      link.href = url;
+      link.download = ids && ids.length === 1
+        ? 'guoapp-module-' + ids[0] + '-' + stamp + '.zip'
+        : 'guoapp-modules-' + stamp + '.zip';
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+      setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+    });
+  });
+}
+
+// 把多行文本拆成地址列表：支持换行、逗号、空格分隔。
+function splitAddresses(text) {
+  var seen = {};
+  var out = [];
+  String(text || '').split(/[\s,，;；]+/).forEach(function (part) {
+    var value = part.trim();
+    if (value && !seen[value]) {
+      seen[value] = true;
+      out.push(value);
+    }
+  });
+  return out;
+}
+
 // 版本比较：模块版本固定是 x.y.z，装上的比商店里的旧就提示可更新。
 function moduleNewerVersion(latest, installed) {
   var next = String(latest || '').split('.');
@@ -2470,6 +2544,7 @@ function renderModules() {
         (item.error ? ' · ' + escapeHTML(item.error) : '') + '</div>' +
         '</div>' +
         '<div style="display:flex;gap:6px;flex:none">' +
+        '<button type="button" class="btn" data-module-export="' + escapeHTML(item.id) + '">导出</button>' +
         '<button type="button" class="btn danger" data-module-remove="' + escapeHTML(item.id) + '" data-name="' +
         escapeHTML(item.name || item.id || '') + '">卸载</button>' +
         '</div>' +
@@ -2519,9 +2594,13 @@ function renderModules() {
       '<span class="lib-tab" id="custom-tab-back">自定义源</span>' +
       '<span class="lib-tab active">模块（' + installed.length + '）</span>' +
       '<span class="spacer"></span>' +
-      '<input type="file" id="module-install-file" accept=".zip,application/zip" style="display:none" />' +
-      '<button type="button" class="btn" id="module-install-file-btn">从文件安装</button>' +
-      '<button type="button" class="btn" id="module-install-url-btn">从地址安装</button>' +
+      '<input type="file" id="module-install-file" accept=".zip,application/zip" multiple style="display:none" />' +
+      '<button type="button" class="btn" id="module-install-file-btn" title="可多选；支持一个 zip 里含多个子模块 zip">从文件安装</button>' +
+      '<button type="button" class="btn" id="module-install-url-btn" title="可一次填多个地址，每行一个">从地址安装</button>' +
+      (installed.length
+        ? '<button type="button" class="btn" id="module-export-all">导出全部</button>'
+        : '') +
+      '<button type="button" class="btn danger" id="module-reset">恢复默认</button>' +
       '</div>' +
       '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
       '模块是可安装的站源。装上后它的站源出现在站源下拉框与「源显示」里，与本体同名的模块会另行标记并共存；卸载后其追剧、观看记录与已下载视频保留。' +
@@ -2535,7 +2614,7 @@ function renderModules() {
       '</div>' +
       storeRows +
       '</div>';
-    bindModuleView(pendingIds);
+    bindModuleView(pendingIds, installed);
   });
 }
 
@@ -2592,7 +2671,7 @@ function moduleInstallAll(ids, button) {
     });
 }
 
-function bindModuleView(installableIds) {
+function bindModuleView(installableIds, installed) {
   var back = document.getElementById('custom-tab-back');
   if (back) {
     back.addEventListener('click', function () {
@@ -2611,39 +2690,62 @@ function bindModuleView(installableIds) {
     fileButton.addEventListener('click', function () {
       fileInput.click();
     });
+    // 多选：一次把选中的 zip 全部提交，合集包由后端展开。
     fileInput.addEventListener('change', function () {
-      var file = fileInput.files && fileInput.files[0];
-      if (!file) {
+      var files = Array.prototype.slice.call(fileInput.files || []);
+      if (!files.length) {
         return;
       }
       fileButton.disabled = true;
-      moduleInstallFile(file)
-        .then(function () {
-          return loadSources();
-        })
-        .then(function () {
-          renderModules();
-        })
-        .catch(function (error) {
+      var failed = [];
+      var done = 0;
+      function next(index) {
+        if (index >= files.length) {
           fileButton.disabled = false;
-          window.alert(error.message || '安装模块失败');
-        });
+          fileInput.value = '';
+          return loadSources().then(function () {
+            renderModules();
+            if (failed.length) {
+              window.alert('以下安装包没能装上：\n' + failed.join('\n'));
+            }
+          });
+        }
+        moduleInstallFile(files[index])
+          .catch(function (error) {
+            failed.push(files[index].name + '：' + (error.message || '安装失败'));
+          })
+          .then(function () {
+            done++;
+            next(index + 1);
+          });
+      }
+      next(0);
     });
   }
   var urlButton = document.getElementById('module-install-url-btn');
   if (urlButton) {
     urlButton.addEventListener('click', function () {
-      var address = window.prompt('填写模块安装包（zip）的下载地址：', 'https://');
-      if (!address) {
+      var text = window.prompt(
+        '填写模块安装包（zip）的下载地址，可一次填多个（每行一个）：',
+        'https://'
+      );
+      if (!text) {
+        return;
+      }
+      var urls = splitAddresses(text);
+      if (!urls.length) {
         return;
       }
       urlButton.disabled = true;
-      moduleInstall({ url: address })
-        .then(function () {
-          return loadSources();
-        })
-        .then(function () {
-          renderModules();
+      moduleInstallBatch(urls)
+        .then(function (data) {
+          return loadSources().then(function () {
+            renderModules();
+            var failures = (data && data.failures) || [];
+            if (failures.length) {
+              window.alert('以下地址没能装上：\n' + failures.join('\n'));
+            }
+          });
         })
         .catch(function (error) {
           urlButton.disabled = false;
@@ -2651,6 +2753,52 @@ function bindModuleView(installableIds) {
         });
     });
   }
+  var exportAll = document.getElementById('module-export-all');
+  if (exportAll) {
+    exportAll.addEventListener('click', function () {
+      exportAll.disabled = true;
+      moduleExport([])
+        .catch(function (error) {
+          window.alert(error.message || '导出模块失败');
+        })
+        .then(function () {
+          exportAll.disabled = false;
+        });
+    });
+  }
+  var reset = document.getElementById('module-reset');
+  if (reset) {
+    reset.addEventListener('click', function () {
+      if (!window.confirm('恢复默认模块？会删除全部已安装的模块，只保留安装包内置的站源。各站源的追剧、观看记录和已下载视频会保留。')) {
+        return;
+      }
+      reset.disabled = true;
+      moduleReset()
+        .then(function (data) {
+          return loadSources().then(function () {
+            renderModules();
+            var removed = (data && data.removed) || [];
+            window.alert('已删除 ' + removed.length + ' 个模块，恢复 ' + ((data && data.bundled) || 0) + ' 个内置站源。');
+          });
+        })
+        .catch(function (error) {
+          reset.disabled = false;
+          window.alert(error.message || '恢复默认失败');
+        });
+    });
+  }
+  Array.prototype.forEach.call(view.querySelectorAll('[data-module-export]'), function (button) {
+    button.addEventListener('click', function () {
+      button.disabled = true;
+      moduleExport([button.getAttribute('data-module-export')])
+        .catch(function (error) {
+          window.alert(error.message || '导出模块失败');
+        })
+        .then(function () {
+          button.disabled = false;
+        });
+    });
+  });
   Array.prototype.forEach.call(view.querySelectorAll('[data-module-install]'), function (button) {
     button.addEventListener('click', function () {
       button.disabled = true;
