@@ -13,6 +13,7 @@ import '../../live/live_page.dart';
 import '../detail/detail_page.dart';
 import '../downloads/downloads_page.dart';
 import '../history/history_page.dart';
+import '../modules/modules_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../settings/settings_page.dart';
@@ -69,8 +70,14 @@ class MinePage extends StatelessWidget {
   Widget _userCard(BuildContext context) =>
       _UserCard(store: store, onTap: () => openUsers(context, store));
 
-  /// 站源入口：仅管理员可见。里面分两块——站源开关与自定义源管理、
-  /// 以及站源模块（安装 / 更新 / 卸载）。
+  /// 自定义模块入口：站源模块的安装、更新、导出与在线仓库。模块曾经藏在
+  /// 「站源 › 模块」里面，改成和 下载 / 直播 / 设置 平级的独立入口，
+  /// 模块页不再套在站源页的页签里（issue #7）。
+  void _openModules(BuildContext context) =>
+      openPage<void>(context, (_) => ModulesPage(store: store));
+
+  /// 自定义XBPQ 入口：内置站源的开关与自定义源管理。原来这一项叫「站源」，
+  /// 还兼着模块商店的入口；模块独立之后按实际内容改名。
   void _openSources(BuildContext context) =>
       openPage<void>(context, (_) => SourcesPage(store: store));
 
@@ -93,8 +100,13 @@ class MinePage extends StatelessWidget {
         onTap: () => unawaited(openLive(context, store: store)),
       ),
       _Entry(
+        icon: Icons.extension_outlined,
+        title: '自定义模块',
+        onTap: () => _openModules(context),
+      ),
+      _Entry(
         icon: Icons.dns_outlined,
-        title: '站源',
+        title: '自定义XBPQ',
         onTap: () => _openSources(context),
       ),
       _Entry(
@@ -323,9 +335,17 @@ class MinePage extends StatelessWidget {
                     ),
                     Expanded(
                       child: _TelevisionEntry(
+                        icon: Icons.extension_outlined,
+                        title: '自定义模块',
+                        subtitle: '安装、更新与在线仓库',
+                        onTap: () => _openModules(context),
+                      ),
+                    ),
+                    Expanded(
+                      child: _TelevisionEntry(
                         icon: Icons.dns_outlined,
-                        title: '站源',
-                        subtitle: '站源开关、自定义源与模块',
+                        title: '自定义XBPQ',
+                        subtitle: '内置站源开关与自定义XBPQ',
                         onTap: () => _openSources(context),
                       ),
                     ),

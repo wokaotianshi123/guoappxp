@@ -630,7 +630,7 @@ class _ModulesPageState extends State<ModulesPage>
     listenable: _store,
     builder: (context, _) => Scaffold(
       appBar: AppBar(
-        title: const Text('模块'),
+        title: const Text('自定义模块'),
         actions: [
           if (_tabs.index == 1)
             BarButton(

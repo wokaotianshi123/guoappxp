@@ -111,7 +111,7 @@ class _SourcesViewState extends State<SourcesView> {
             '关闭的站源不在发现、搜索、追剧、观看记录和下载中显示，记录保留，重新开启后恢复。正在下载的集会暂停，重新开启后可在下载页继续。',
           ),
           const SizedBox(height: 20),
-          const SectionHeader(title: '自定义源', padding: EdgeInsets.zero),
+          const SectionHeader(title: '自定义XBPQ', padding: EdgeInsets.zero),
           const SizedBox(height: 8),
           SettingsCard(
             children: [
@@ -127,7 +127,7 @@ class _SourcesViewState extends State<SourcesView> {
                   ),
               SettingsTile(
                 icon: Icons.tune_rounded,
-                title: '管理自定义源',
+                title: '管理自定义XBPQ',
                 subtitle: customs.isEmpty
                     ? '添加 MacCMS 站点或 XBPQ 爬虫规则'
                     : '共 ${customs.length} 个 · 新增、编辑、导入导出',
@@ -137,7 +137,7 @@ class _SourcesViewState extends State<SourcesView> {
           ),
           const SizedBox(height: 12),
           const _Note(
-            '自定义源由你自行添加，支持 MacCMS 规范的站点地址或 XBPQ 爬虫规则 JSON。'
+            '自定义XBPQ 由你自行添加，支持 MacCMS 规范的站点地址或 XBPQ 爬虫规则 JSON。'
             '所有用户都可以添加、修改和删除，内容保存在本机。',
           ),
         ],

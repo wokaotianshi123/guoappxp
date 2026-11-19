@@ -12,13 +12,18 @@ Future<void> pickSource(BuildContext anchor, LocalStore store) async {
   // 站源菜单按类目分段（短剧类 / 视频类 / 黄果类 / 成人类 / 其他站源），
   // 与站源管理页同一口径；只有一个类目时不画分段标题，保持原来的扁平外观。
   final sections = SourceGroup.byClass(sources);
+  // 分段显示的条件：有两个以上类目，或者本机加过自定义XBPQ 源——后者即使
+  // 只剩这一组也要把「XBPQ」标出来，否则用户看不出自己加的源在哪儿。
+  final grouped =
+      sections.length > 1 ||
+      sections.any((section) => section.id == SourceClass.xbpq);
   final value = await showChoicePanel<String>(
     context: anchor,
     title: '全部站源',
     options: [
       for (final source in sources) ChoiceOption(source.id, source.name),
     ],
-    groups: sections.length > 1
+    groups: grouped
         ? [
             for (final section in sections)
               ChoiceGroup(section.id, section.name, [
@@ -33,8 +38,8 @@ Future<void> pickSource(BuildContext anchor, LocalStore store) async {
         ? (
             label: '管理站源',
             icon: Icons.tune_rounded,
-            // 站源页两个页签：站源与自定义源 / 模块。原来只跳模块页，
-            // 自定义源的增删改在那边进不去。
+            // 站源页现在只有一页（内置站源开关 + 自定义XBPQ），模块已经提到
+            // 「我的 › 自定义模块」，这里不再需要指定页签。
             onPressed: () =>
                 openPage<void>(anchor, (_) => SourcesPage(store: store)),
           )

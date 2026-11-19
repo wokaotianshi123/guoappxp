@@ -533,6 +533,10 @@ class LocalStore extends ChangeNotifier {
   ThemeColor get themeColor =>
       ThemeColor.byName(_settings['themeColor']) ?? ThemeColor.orange;
   bool get sideBarExpanded => preferences.getBool('sideBarExpanded') ?? true;
+
+  /// 「模块已移到 我的 › 自定义模块」这条提示是否已经弹过。只弹一次，之后不再打扰。
+  bool get modulesMovedHintShown =>
+      preferences.getBool('modulesMovedHintShown') ?? false;
   bool get playerWide => preferences.getBool('playerWide') ?? false;
   double get playerVolume => preferences.getDouble('playerVolume') ?? 100;
   ({double left, double top, double extent})? get miniWindow {
@@ -673,6 +677,10 @@ class LocalStore extends ChangeNotifier {
       _setting('themeColor', value.name);
   Future<void> setSideBarExpanded(bool value) => _queue(() async {
     await preferences.setBool('sideBarExpanded', value);
+    _notify();
+  });
+  Future<void> setModulesMovedHintShown(bool value) => _queue(() async {
+    await preferences.setBool('modulesMovedHintShown', value);
     _notify();
   });
   Future<void> setPlayerWide(bool value) => _queue(() async {

@@ -106,7 +106,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
     setState(() => _busy = true);
     try {
       final content = await widget.repository.exportCustomSources();
-      if (content.isEmpty) throw const FormatException('没有可导出的自定义源');
+      if (content.isEmpty) throw const FormatException('没有可导出的自定义XBPQ');
       final saved = await FilePicker.saveFile(
         fileName:
             'duanju-custom-sources-'
@@ -155,7 +155,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
       builder: (context) => AlertDialog(
         title: const Text('恢复默认源'),
         content: const Text(
-          '将删除全部自定义源（含 XBPQ 规则），仅保留内置源。'
+          '将删除全部自定义XBPQ（含爬虫规则），仅保留内置源。'
           '此操作不可撤销，建议先「导出 JSON」备份。',
         ),
         actions: [
@@ -184,7 +184,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
       await widget.store.syncCustomSources(
         await widget.repository.customSources(),
       );
-      if (mounted) _showMessage('已删除 $removed 个自定义源，恢复为默认内置源');
+      if (mounted) _showMessage('已删除 $removed 个自定义XBPQ，恢复为默认内置源');
     } catch (error) {
       if (mounted) _showMessage('$error');
     } finally {
@@ -196,7 +196,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除自定义源'),
+        title: const Text('删除自定义XBPQ'),
         content: Text('确定删除「${source.name}」吗？已加载的剧集仍会保留在设备上。'),
         actions: [
           FocusRing(
@@ -290,7 +290,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
   @override
   Widget build(BuildContext context) => Scaffold(
     appBar: AppBar(
-      title: const Text('自定义源'),
+      title: const Text('自定义XBPQ'),
       actions: [
         IconButton(
           tooltip: '刷新',
@@ -329,7 +329,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
       builder: (context, _) {
         if (_error case final error?) {
           return StatusView(
-            title: '无法读取自定义源',
+            title: '无法读取自定义XBPQ',
             message: error,
             icon: Icons.error_outline_rounded,
             action: '重试',
@@ -338,11 +338,11 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
         }
         final sources = widget.store.customSources;
         if (_loading && sources.isEmpty) {
-          return const StatusView.loading(title: '正在读取自定义源');
+          return const StatusView.loading(title: '正在读取自定义XBPQ');
         }
         if (sources.isEmpty) {
           return const StatusView(
-            title: '还没有自定义源',
+            title: '还没有自定义XBPQ',
             message:
                 '点击「新增」填入 MacCMS 站点地址或粘贴 XBPQ 爬虫规则；'
                 '也可以导入文件批量添加，导出 JSON 备份迁移。',
@@ -355,7 +355,7 @@ class _CustomSourcesPageState extends State<CustomSourcesPage> {
             Padding(
               padding: const EdgeInsets.fromLTRB(4, 0, 4, 12),
               child: Text(
-                '自定义源会读取网站地址并判断是否符合 MacCMS 规范；'
+                '自定义XBPQ 会读取网站地址并判断是否符合 MacCMS 规范；'
                 '符合后套用通用规则自动完成列表展示、搜索与播放。'
                 '录入 XBPQ 爬虫规则的站点按规则字段逐项截取。',
                 style: Theme.of(context).textTheme.bodyMedium?.copyWith(
@@ -563,7 +563,7 @@ class _CustomSourceEditorState extends State<_CustomSourceEditor> {
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(widget.existing == null ? '新增自定义源' : '编辑自定义源'),
+    title: Text(widget.existing == null ? '新增自定义XBPQ' : '编辑自定义XBPQ'),
     content: SizedBox(
       width: 480,
       child: SingleChildScrollView(
@@ -788,7 +788,7 @@ class _CustomSourceImportDialogState extends State<_CustomSourceImportDialog> {
   Widget build(BuildContext context) {
     final television = AppScope.of(context).television;
     return AlertDialog(
-      title: const Text('导入自定义源'),
+      title: const Text('导入自定义XBPQ'),
       content: SizedBox(
         width: 460,
         child: Column(

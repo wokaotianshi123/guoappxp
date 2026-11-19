@@ -119,7 +119,24 @@ class _AppShellState extends State<AppShell> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       unawaited(offerRestoredModules(context, widget.store));
+      unawaited(_announceModulesMoved());
     });
+  }
+
+  /// 模块从「站源 › 模块」搬到「我的 › 自定义模块」后，老用户升级第一次启动
+  /// 时提示一次就够。全新安装（没有任何观看记录）不提示——他们没见过旧结构，
+  /// 说「已移到」只会让人困惑；标记照样落库，之后也不再提。
+  Future<void> _announceModulesMoved() async {
+    final store = widget.store;
+    if (store.modulesMovedHintShown) return;
+    final upgrading = store.history.isNotEmpty;
+    await store.setModulesMovedHintShown(true);
+    if (!mounted || !upgrading) return;
+    ScaffoldMessenger.maybeOf(context)?.showSnackBar(
+      const SnackBar(
+        content: Text('模块已移到「我的 › 自定义模块」，原「站源」页现在叫「自定义XBPQ」'),
+      ),
+    );
   }
 
   @override

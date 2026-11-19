@@ -27,8 +27,10 @@ void main() {
       expect(site('huangdou').classKey, SourceClass.huangguo);
       expect(site('sorani').classKey, SourceClass.video);
       expect(site('missav').classKey, SourceClass.adult);
-      // 自定义源与未知模块归「其他站源」，不会被误判成某一类。
-      expect(site('custom:3f2a').classKey, SourceClass.other);
+      // 自定义XBPQ 添加的源自成一组，不会被误判成某一类。
+      expect(site('custom:3f2a').classKey, SourceClass.xbpq);
+      // 完全不认识的模块才归「其他站源」。
+      expect(site('some-new-module').classKey, SourceClass.other);
     });
 
     test('黄果类成员按标识恒定归类，清单的类别不改变它', () {
@@ -67,7 +69,7 @@ void main() {
         SourceClass.video,
         SourceClass.huangguo,
         SourceClass.adult,
-        SourceClass.other,
+        SourceClass.xbpq,
       ]);
       expect(groups.first.name, '短剧类');
       expect(groups.first.sources.map((source) => source.id), ['hongguo']);
@@ -76,8 +78,21 @@ void main() {
         groups[2].sources.map((source) => source.id),
         ['huangdou', 'huangju'],
       );
-      expect(groups.last.name, '其他站源');
+      // 自定义XBPQ 添加的源单独一组，排在模块类目之后。
+      expect(groups.last.name, 'XBPQ');
       expect(groups.last.sources.single.id, 'custom:1');
+    });
+
+    test('没有自定义XBPQ 源时不出现 XBPQ 分组', () {
+      final groups = SourceGroup.byClass([
+        site('hongguo'),
+        site('sorani'),
+      ]);
+      expect(groups.map((group) => group.id), [
+        SourceClass.shortDrama,
+        SourceClass.video,
+      ]);
+      expect(groups.any((group) => group.id == SourceClass.xbpq), isFalse);
     });
 
     test('只有一个类目时仍返回一组，界面据此不画标题', () {

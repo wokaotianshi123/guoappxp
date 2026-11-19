@@ -193,5 +193,5 @@ const moduleCapabilityNames = {
 
 String? missingSourceHint(Map<String, int> counts, String unit) {
   final total = counts.values.fold(0, (sum, count) => sum + count);
-  return total == 0 ? null : '有 $total $unit来自未安装的站源，在 我的 › 模块 安装后恢复显示';
+  return total == 0 ? null : '有 $total $unit来自未安装的站源，在 我的 › 自定义模块 安装后恢复显示';
 }

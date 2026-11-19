@@ -12,16 +12,21 @@ abstract final class SourceClass {
   static const video = 'video';
   static const huangguo = 'huangguo';
   static const adult = 'adult';
+
+  /// 用户在「自定义XBPQ」里自己添加的源（MacCMS 站点 / XBPQ 规则），
+  /// 与模块安装的源分开成组；本机没加过这类源时整组不出现。
+  static const xbpq = 'xbpq';
   static const other = 'other';
 
   /// 界面分段顺序。类目以外的自定义类目排在后面。
-  static const order = [shortDrama, video, huangguo, adult, other];
+  static const order = [shortDrama, video, huangguo, adult, xbpq, other];
 
   static String labelOf(String key) => switch (key) {
     shortDrama => '短剧类',
     video => '视频类',
     huangguo => '黄果类',
     adult => '成人类',
+    xbpq => 'XBPQ',
     other => '其他站源',
     _ => key,
   };
@@ -176,13 +181,16 @@ class SourceSite {
   String get groupName => groupLabel.isEmpty ? name : groupLabel;
   String get entryName => entryLabel.isEmpty ? name : entryLabel;
 
-  /// 菜单分段用的类目：黄果类成员按标识恒定归黄果类；其余以清单声明的
-  /// category/family 为准，没声明的按标识查老表，都不认的归「其他站源」。
-  String get classKey => _huangguoClasses.contains(id)
-      ? SourceClass.huangguo
-      : SourceClass.normalize(category) ??
-            _legacyClasses[id] ??
-            SourceClass.other;
+  /// 菜单分段用的类目：黄果类成员按标识恒定归黄果类；在「自定义XBPQ」里
+  /// 添加的源自成一组；其余以清单声明的 category/family 为准，没声明的按
+  /// 标识查老表，都不认的归「其他站源」。
+  String get classKey {
+    if (SourceSite.isCustomId(id)) return SourceClass.xbpq;
+    if (_huangguoClasses.contains(id)) return SourceClass.huangguo;
+    return SourceClass.normalize(category) ??
+        _legacyClasses[id] ??
+        SourceClass.other;
+  }
 
   static List<SourceSite> _installed = const [];
   static List<String> _order = const [];
