@@ -2392,17 +2392,163 @@ function moduleInstall(payload) {
     });
 }
 
-function moduleInstallFile(file) {
-  return fetch('/api/modules/install', { method: 'POST', body: file })
+// 准备：把 zip / 地址展开成待安装项，不安装，供用户勾选。
+function modulePrepare(body, isJSON) {
+  var options = { method: 'POST' };
+  if (isJSON) {
+    options.headers = { 'Content-Type': 'application/json' };
+  }
+  options.body = body;
+  return fetch('/api/modules/prepare', options)
     .then(function (response) {
       return response.json();
     })
     .then(function (data) {
       if (!data || data.ok !== true) {
+        throw new Error(data && data.error ? data.error : '解析安装包失败');
+      }
+      return (data.items || []);
+    });
+}
+
+// 按勾选的项安装：items 为 [{token, name}]。
+function moduleInstallPrepared(items) {
+  return fetch('/api/modules/install-prepared', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ items: items }),
+  }).then(function (response) {
+    return response.json().then(function (data) {
+      if (!data || data.ok !== true) {
         throw new Error(data && data.error ? data.error : '安装模块失败');
       }
       return data;
     });
+  });
+}
+
+// 批量准备完成后弹出勾选层：默认全选，用户可只装合集里的部分模块。
+// 返回 Promise，resolve 选中的 items，取消则 resolve null。
+function openModuleSelectDialog(items, failures) {
+  return new Promise(function (resolve) {
+    var selected = {};
+    (items || []).forEach(function (item) {
+      if (item.token) selected[item.token] = true;
+    });
+    var overlay = document.createElement('div');
+    overlay.style.cssText =
+      'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:1000;display:flex;align-items:center;justify-content:center';
+    function itemLabel(item) {
+      var label = escapeHTML(item.displayName || item.name || item.id || '模块') +
+        (item.version ? ' · ' + escapeHTML(item.version) : '');
+      if (item.adult) label += '（限制级）';
+      if (item.installed) {
+        label += item.previous ? '（覆盖 ' + escapeHTML(item.previous) + '）' : '（已安装）';
+      }
+      return label;
+    }
+    var rows = (items || []).map(function (item) {
+      return '<label style="display:flex;align-items:center;gap:8px;padding:7px 2px;border-bottom:1px solid var(--border,#333)">' +
+        '<input type="checkbox" data-token="' + escapeHTML(item.token || '') + '" checked' +
+        (item.token ? '' : ' disabled') + ' />' +
+        '<span style="min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+        itemLabel(item) + '</span></label>';
+    }).join('');
+    var failureRows = (failures || []).filter(function (item) {
+      return item.error;
+    }).map(function (item) {
+      return '<div style="font-size:12px;color:#ff8b90;padding:4px 2px">' +
+        escapeHTML(item.name || '模块') + '：' + escapeHTML(item.error) + '</div>';
+    }).join('');
+    var errorCount = (failures || []).filter(function (item) {
+      return item.error;
+    }).length;
+    overlay.innerHTML =
+      '<div style="background:var(--panel,#1e2430);border:1px solid var(--border,#333);border-radius:12px;' +
+      'width:min(520px,92vw);padding:20px;box-sizing:border-box;max-height:88vh;display:flex;flex-direction:column">' +
+      '<h3 style="margin:0 0 6px">选择要安装的站源（共 ' + (items || []).length + ' 个）</h3>' +
+      '<div style="font-size:12px;opacity:0.75;margin-bottom:10px">合集里识别出多个模块，勾选后只安装选中的。</div>' +
+      '<div style="display:flex;align-items:center;gap:8px;margin-bottom:6px">' +
+      '<button type="button" class="btn" id="mod-sel-all" style="font-size:12px;padding:4px 10px">全选</button>' +
+      '<button type="button" class="btn" id="mod-sel-none" style="font-size:12px;padding:4px 10px">全不选</button>' +
+      '<span id="mod-sel-count" style="font-size:12px;opacity:0.7"></span>' +
+      '</div>' +
+      '<div style="overflow:auto;border:1px solid var(--border,#333);border-radius:8px;padding:2px 10px;min-height:40px">' +
+      (rows || '<div class="empty">没有可安装的模块</div>') + failureRows + '</div>' +
+      (errorCount ? '<div style="font-size:12px;color:#ff8b90;margin-top:6px">' + errorCount + ' 项无法识别，将跳过。</div>' : '') +
+      '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:14px">' +
+      '<button type="button" class="btn" id="mod-sel-cancel">取消</button>' +
+      '<button type="button" class="btn" id="mod-sel-go" disabled>安装</button>' +
+      '</div></div>';
+    document.body.appendChild(overlay);
+    var checkboxes = Array.prototype.slice.call(overlay.querySelectorAll('input[type=checkbox]'));
+    var countLabel = document.getElementById('mod-sel-count');
+    var goButton = document.getElementById('mod-sel-go');
+    function refresh() {
+      var chosen = checkboxes.filter(function (box) {
+        return box.checked && !box.disabled;
+      });
+      if (countLabel) countLabel.textContent = '已选 ' + chosen.length + ' / ' + checkboxes.length;
+      if (goButton) goButton.disabled = chosen.length === 0;
+    }
+    function close(result) {
+      document.body.removeChild(overlay);
+      resolve(result);
+    }
+    checkboxes.forEach(function (box) {
+      box.addEventListener('change', function () {
+        if (box.dataset.token) {
+          if (box.checked) selected[box.dataset.token] = true;
+          else delete selected[box.dataset.token];
+        }
+        refresh();
+      });
+    });
+    var all = document.getElementById('mod-sel-all');
+    var none = document.getElementById('mod-sel-none');
+    if (all) all.addEventListener('click', function () {
+      checkboxes.forEach(function (box) {
+        if (!box.disabled) box.checked = true;
+      });
+      selected = {};
+      (items || []).forEach(function (item) {
+        if (item.token) selected[item.token] = true;
+      });
+      refresh();
+    });
+    if (none) none.addEventListener('click', function () {
+      checkboxes.forEach(function (box) { box.checked = false; });
+      selected = {};
+      refresh();
+    });
+    var cancel = document.getElementById('mod-sel-cancel');
+    if (cancel) cancel.addEventListener('click', function () { close(null); });
+    if (goButton) goButton.addEventListener('click', function () {
+      var chosen = (items || []).filter(function (item) {
+        return item.token && selected[item.token];
+      }).map(function (item) {
+        return { token: item.token, name: item.displayName || item.name || item.id || '' };
+      });
+      close(chosen);
+    });
+    refresh();
+  });
+}
+
+// 安装流程：先准备、弹勾选层，再安装选中的模块。
+function moduleInstallWithSelection(preparePromise) {
+  return preparePromise.then(function (items) {
+    var ready = items.filter(function (item) { return item.token; });
+    var failures = items.filter(function (item) { return !item.token; });
+    if (!ready.length) {
+      var reason = failures.length && failures[0].error ? failures[0].error : '没有可安装的模块';
+      throw new Error(reason);
+    }
+    return openModuleSelectDialog(ready, failures);
+  }).then(function (chosen) {
+    if (!chosen) return null;
+    return moduleInstallPrepared(chosen);
+  });
 }
 
 function moduleUninstall(id) {
@@ -2595,7 +2741,7 @@ function renderModules() {
       '<span class="lib-tab active">模块（' + installed.length + '）</span>' +
       '<span class="spacer"></span>' +
       '<input type="file" id="module-install-file" accept=".zip,application/zip" multiple style="display:none" />' +
-      '<button type="button" class="btn" id="module-install-file-btn" title="可多选；支持一个 zip 里含多个子模块 zip">从文件安装</button>' +
+      '<button type="button" class="btn" id="module-install-file-btn" title="可多选；合集包内多个站源可勾选安装">从文件安装</button>' +
       '<button type="button" class="btn" id="module-install-url-btn" title="可一次填多个地址，每行一个">从地址安装</button>' +
       (installed.length
         ? '<button type="button" class="btn" id="module-export-all">导出全部</button>'
@@ -2698,24 +2844,38 @@ function bindModuleView(installableIds, installed) {
       }
       fileButton.disabled = true;
       var failed = [];
-      var done = 0;
+      var installed = 0;
+      var skipped = 0;
+      // 每个文件先展开暂存并让用户勾选，只安装选中的模块。
       function next(index) {
         if (index >= files.length) {
           fileButton.disabled = false;
           fileInput.value = '';
           return loadSources().then(function () {
             renderModules();
+            var summary = '已安装 ' + installed + ' 个模块';
+            if (skipped) summary += '，跳过 ' + skipped + ' 个未勾选';
             if (failed.length) {
-              window.alert('以下安装包没能装上：\n' + failed.join('\n'));
+              summary += '\n以下安装包没能装上：\n' + failed.join('\n');
             }
+            window.alert(summary);
           });
         }
-        moduleInstallFile(files[index])
+        var file = files[index];
+        moduleInstallWithSelection(modulePrepare(file, false))
+          .then(function (data) {
+            if (!data) {
+              skipped++;
+            } else {
+              installed += data.installed || 0;
+              var problems = data.failures || [];
+              if (problems.length) failed.push(file.name + '：' + problems.join('；'));
+            }
+          })
           .catch(function (error) {
-            failed.push(files[index].name + '：' + (error.message || '安装失败'));
+            failed.push(file.name + '：' + (error.message || '安装失败'));
           })
           .then(function () {
-            done++;
             next(index + 1);
           });
       }
@@ -2737,19 +2897,27 @@ function bindModuleView(installableIds, installed) {
         return;
       }
       urlButton.disabled = true;
-      moduleInstallBatch(urls)
+      moduleInstallWithSelection(
+        modulePrepare(JSON.stringify({ urls: urls }), true)
+      )
         .then(function (data) {
           return loadSources().then(function () {
             renderModules();
-            var failures = (data && data.failures) || [];
-            if (failures.length) {
-              window.alert('以下地址没能装上：\n' + failures.join('\n'));
+            if (data) {
+              var failures = data.failures || [];
+              var summary = '已安装 ' + (data.installed || 0) + ' 个模块';
+              if (failures.length) {
+                summary += '\n以下没能装上：\n' + failures.join('\n');
+              }
+              window.alert(summary);
             }
           });
         })
         .catch(function (error) {
-          urlButton.disabled = false;
           window.alert(error.message || '安装模块失败');
+        })
+        .then(function () {
+          urlButton.disabled = false;
         });
     });
   }
