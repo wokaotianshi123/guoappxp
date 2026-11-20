@@ -16,6 +16,7 @@
 - 站源分组在本地服务版补齐：首页站源下拉框按清单的 `group` 折叠成 `optgroup`，黄果系三个源归到「黄果」一组，与 App 端一致。
 - 本地服务版搜索页新增「选源」：可逐源勾选参与并发搜索的站源（含模块与自定义源），与 App 端的站源勾选条一致。
 - 修复部分模块请求时 `providerHosts` 未初始化导致的崩溃。
+- 修复 Windows 构建在 VS 18（MSVC 14.51）下失败：C++/WinRT 仍在用 `<experimental/coroutine>`，微软把它的弃用断言升成了硬错误（C2338 / STL1011），`flutter_inappwebview_windows` 因此编不过。`windows/CMakeLists.txt` 加了微软官方的 `_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS` 开关。
 
 已用 guocheng1378 商店的 48 个模块实测：全部可安装、可加载，站点可访问的模块都能出播放地址。搜索页「全部源」已加测试锁住：必须覆盖所有可见模块与自定义 XBPQ 源。
 

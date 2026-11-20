@@ -32,6 +32,11 @@ set(CMAKE_CXX_FLAGS_PROFILE "${CMAKE_CXX_FLAGS_RELEASE}")
 # Use Unicode for all projects.
 add_definitions(-DUNICODE -D_UNICODE)
 
+# C++/WinRT 仍用 <experimental/coroutine>，VS 18（MSVC 14.51）把它的弃用断言
+# 从警告升成了硬错误（C2338 / STL1011），flutter_inappwebview_windows 这类
+# 用 C++/WinRT 的插件会直接编不过。这个宏是微软给的官方逃生开关。
+add_compile_definitions(_SILENCE_EXPERIMENTAL_COROUTINE_DEPRECATION_WARNINGS)
+
 # Compilation settings that should be applied to most targets.
 #
 # Be cautious about adding new options here, as plugins use this function by
