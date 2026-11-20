@@ -157,6 +157,9 @@ type nativePlan struct {
 	Session    string            `json:"session,omitempty"`
 	RouteIndex int               `json:"routeIndex"`
 	RouteCount int               `json:"routeCount"`
+	// Verify 非空表示这一集要先用隐藏浏览器完成验证；值是 browser:// 后面的
+	// 短链地址。前端拿到后走验证，再把落地地址写回分集重新解析。
+	Verify string `json:"verify,omitempty"`
 }
 
 type nativeEngine struct {
@@ -835,6 +838,11 @@ func (engine *nativeEngine) nativeResolve(ctx context.Context, input nativeInput
 	task := Task{DramaID: input.Drama.ID, DramaTitle: input.Drama.Title, Chapter: input.Chapter, Index: input.Index}
 	media, err := engine.downloader.resolveProviderMedia(ctx, task)
 	if err != nil {
+		// 需要浏览器验证时不算失败：把短链地址回给前端，由它走完验证再重新解析。
+		var verify BrowserVerifyError
+		if errors.As(err, &verify) {
+			return nativePlan{Verify: verify.Address}, nil
+		}
 		return nativePlan{}, err
 	}
 	choice := nativePlaybackChoices(media, input.Quality)

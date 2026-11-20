@@ -573,10 +573,32 @@ function loadSources() {
       var visibleItems = items.filter(function (item) {
         return item.visible !== false;
       });
+      // 按清单的分组（group / groupName）折叠成 optgroup：黄果系三个源归到
+      // 「黄果」一组，与 App 端站源面板的分组保持一致；没分组的平铺在最外层。
+      var groups = [];
+      var groupIndex = {};
+      visibleItems.forEach(function (item) {
+        var key = item.group || '';
+        if (key === '') {
+          groups.push({ key: '', name: '', items: [item] });
+          return;
+        }
+        if (groupIndex[key] === undefined) {
+          groupIndex[key] = groups.length;
+          groups.push({ key: key, name: item.groupName || item.group || key, items: [item] });
+          return;
+        }
+        groups[groupIndex[key]].items.push(item);
+      });
+      function optionOf(item) {
+        return '<option value="' + escapeHTML(item.id) + '">' + escapeHTML(item.name) + '</option>';
+      }
       sourceSelect.innerHTML = visibleItems.length
-        ? visibleItems
-            .map(function (item) {
-              return '<option value="' + escapeHTML(item.id) + '">' + escapeHTML(item.name) + '</option>';
+        ? groups
+            .map(function (group) {
+              if (!group.key) return group.items.map(optionOf).join('');
+              return '<optgroup label="' + escapeHTML(group.name) + '">' +
+                group.items.map(optionOf).join('') + '</optgroup>';
             })
             .join('')
         : '<option value="">无显示中的站源</option>';
@@ -677,6 +699,121 @@ function hashFor(overrides) {
 // 快照，哪个站源先回来就先画哪批，不必等最慢的那几个站源。
 var crossSearch = { token: 0, id: '', timer: null, painted: '' };
 
+// 逐源勾选：与 App 端搜索页的站源勾选条等价。空数组表示「跟随全部源开关」，
+// 非空时只并发搜索勾中的这些源。选择记在 localStorage，跨刷新保留。
+var PICKED_SOURCES_KEY = 'duanjuweb:pickedSources';
+
+function readPickedSources() {
+  try {
+    var raw = window.localStorage.getItem(PICKED_SOURCES_KEY);
+    var parsed = raw ? JSON.parse(raw) : [];
+    return Array.isArray(parsed)
+      ? parsed.filter(function (item) { return typeof item === 'string' && item; })
+      : [];
+  } catch (error) {
+    return [];
+  }
+}
+
+function writePickedSources(ids) {
+  try {
+    if (ids && ids.length) {
+      window.localStorage.setItem(PICKED_SOURCES_KEY, JSON.stringify(ids));
+    } else {
+      window.localStorage.removeItem(PICKED_SOURCES_KEY);
+    }
+  } catch (error) {
+    /* 隐私模式下写不进去，忽略 */
+  }
+}
+
+// searchSourceIDs 返回本轮参与搜索的站源：优先用逐源勾选，否则用全部可见源。
+function searchSourceIDs(items) {
+  var visible = items
+    .filter(function (item) { return item.visible; })
+    .map(function (item) { return item.id; });
+  var picked = readPickedSources();
+  if (!picked.length) return visible;
+  // 只保留仍然可见的源，避免勾过的源被关掉后还去打它。
+  var allowed = {};
+  visible.forEach(function (id) { allowed[id] = true; });
+  var filtered = picked.filter(function (id) { return allowed[id]; });
+  return filtered.length ? filtered : visible;
+}
+
+// pickSources 弹出逐源勾选面板。
+function pickSources() {
+  return visibilityList().then(function (items) {
+    var visible = items.filter(function (item) { return item.visible; });
+    if (!visible.length) {
+      window.alert('没有开启显示的站源，请先在「源显示」里开启');
+      return;
+    }
+    var picked = readPickedSources();
+    var selected = {};
+    if (!picked.length) {
+      visible.forEach(function (item) { selected[item.id] = true; });
+    } else {
+      picked.forEach(function (id) { selected[id] = true; });
+    }
+    var mask = document.createElement('div');
+    mask.className = 'modal-mask';
+    mask.innerHTML =
+      '<div class="modal" style="max-width:520px">' +
+      '<h3 style="margin:0 0 6px">选择搜索站源</h3>' +
+      '<div style="font-size:12px;opacity:0.75;margin-bottom:10px">' +
+      '勾选后，搜索会并发查询这些站源（含模块与自定义源）。全不勾等于跟随「全部源」开关。' +
+      '</div>' +
+      '<div id="pick-sources-list" style="max-height:50vh;overflow:auto">' +
+      visible
+        .map(function (item) {
+          return (
+            '<label style="display:flex;align-items:center;gap:8px;padding:6px 2px">' +
+            '<input type="checkbox" data-source="' + escapeHTML(item.id) + '"' +
+            (selected[item.id] ? ' checked' : '') +
+            ' />' +
+            '<span>' + escapeHTML(item.name) + '</span>' +
+            (item.groupName ? '<span style="font-size:11px;opacity:0.6">' + escapeHTML(item.groupName) + '</span>' : '') +
+            '</label>'
+          );
+        })
+        .join('') +
+      '</div>' +
+      '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px">' +
+      '<button type="button" class="btn" id="pick-sources-all">全选</button>' +
+      '<button type="button" class="btn" id="pick-sources-cancel">取消</button>' +
+      '<button type="button" class="btn" id="pick-sources-ok">确定</button>' +
+      '</div></div>';
+    document.body.appendChild(mask);
+    function close() {
+      if (mask.parentNode) mask.parentNode.removeChild(mask);
+    }
+    mask.addEventListener('click', function (event) {
+      if (event.target === mask) close();
+    });
+    mask.querySelector('#pick-sources-cancel').addEventListener('click', close);
+    mask.querySelector('#pick-sources-all').addEventListener('click', function () {
+      Array.prototype.forEach.call(
+        mask.querySelectorAll('input[data-source]'),
+        function (input) { input.checked = true; }
+      );
+    });
+    mask.querySelector('#pick-sources-ok').addEventListener('click', function () {
+      var ids = [];
+      Array.prototype.forEach.call(
+        mask.querySelectorAll('input[data-source]'),
+        function (input) { if (input.checked) ids.push(input.getAttribute('data-source')); }
+      );
+      // 全选等于「跟随全部源」，不写偏好；否则记住勾选。
+      writePickedSources(ids.length === visible.length ? [] : ids);
+      close();
+      if (state.query) {
+        render();
+      }
+    });
+  });
+}
+
 function cancelCrossSearch() {
   var previous = crossSearch;
   crossSearch = { token: previous.token + 1, id: '', timer: null, painted: '' };
@@ -697,9 +834,7 @@ function renderCrossSearch() {
     '<div class="cross-progress"><span>正在联系各站源…</span></div>' +
     '<div class="grid"><div class="empty">正在搜索，结果会边搜边显示…</div></div>';
   return visibilityList().then(function (items) {
-    var ids = items.filter(function (item) { return item.visible; }).map(function (item) {
-      return item.id;
-    });
+    var ids = searchSourceIDs(items);
     if (!ids.length) {
       throw new Error('没有开启显示的站源，请先在「源显示」里开启');
     }
@@ -1646,8 +1781,96 @@ function apiPlay(payload) {
       if (!data.ok) {
         throw new Error(data.error || '解析播放地址失败');
       }
+      // 服务端回 verify 表示这一集要先用浏览器完成验证（广告短链带 Cloudflare
+      // 挑战）。本地服务版跑在浏览器里，直接开一个窗口让用户走完验证，
+      // 拿到落地地址后带上 pageUrl 重新解析。
+      if (data.data && data.data.verify) {
+        return verifyInBrowser(data.data.verify).then(function (landed) {
+          if (!landed) {
+            throw new Error('没有完成验证，已取消播放');
+          }
+          var retry = Object.assign({}, payload);
+          retry.chapter = Object.assign({}, payload.chapter || {}, {
+            pageUrl: landed,
+            videoUrl: '',
+          });
+          return apiPlay(retry);
+        });
+      }
       return data.data;
     });
+}
+
+// verifyInBrowser 在浏览器里打开短链验证页，返回落地地址。
+//
+// 本地服务版没有隐藏浏览器，用一个居中的小窗口打开短链：用户在里面完成
+// Cloudflare 挑战后，窗口把最终地址回传给主页面。窗口被关掉时返回空串。
+function verifyInBrowser(address) {
+  return new Promise(function (resolve) {
+    var width = 520;
+    var height = 680;
+    var left = Math.max(0, Math.round((window.screen.width - width) / 2));
+    var top = Math.max(0, Math.round((window.screen.height - height) / 2));
+    var popup = window.open(
+      address,
+      'guoapp-verify',
+      'width=' + width + ',height=' + height + ',left=' + left + ',top=' + top
+    );
+    if (!popup) {
+      resolve('');
+      return;
+    }
+    var settled = false;
+    function finish(value) {
+      if (settled) return;
+      settled = true;
+      clearInterval(timer);
+      try {
+        if (popup && !popup.closed) popup.close();
+      } catch (error) {
+        /* 跨域时关不掉，忽略 */
+      }
+      resolve(value || '');
+    }
+    // 短链会在验证后跳转到播放器站点；同源能读到 location，跨域读不到时
+    // 退到「地址变了就认为已落地」。最多等 3 分钟。
+    var started = Date.now();
+    var last = address;
+    var timer = setInterval(function () {
+      if (Date.now() - started > 180000) {
+        finish('');
+        return;
+      }
+      if (!popup || popup.closed) {
+        finish('');
+        return;
+      }
+      var current = '';
+      try {
+        current = popup.location.href || '';
+      } catch (error) {
+        current = '';
+      }
+      if (!current || current === 'about:blank') return;
+      if (current === last) return;
+      last = current;
+      if (/^(https?:)/.test(current) && !isVerifyLanding(current, address)) {
+        finish(current);
+      }
+    }, 800);
+  });
+}
+
+// isVerifyLanding 判断当前地址是否还停在短链/广告页（没落地到播放器）。
+function isVerifyLanding(current, origin) {
+  try {
+    var now = new URL(current);
+    var from = new URL(origin);
+    if (now.host === from.host) return true;
+  } catch (error) {
+    return true;
+  }
+  return false;
 }
 
 // 红果等站源的视频是加密的 H.265，浏览器既不能解密也不能解码，
@@ -5506,6 +5729,17 @@ if (allSourcesInput) {
   allSourcesInput.addEventListener('change', function () {
     state.allSources = allSourcesInput.checked;
     writeAllSources(allSourcesInput.checked);
+  });
+}
+
+// 「选源」：逐源勾选参与搜索的站源，与 App 端搜索页的站源勾选条一致。
+var pickSourcesButton = document.getElementById('pick-sources-btn');
+if (pickSourcesButton) {
+  pickSourcesButton.addEventListener('click', function (event) {
+    event.preventDefault();
+    pickSources().catch(function (error) {
+      window.alert(error.message || '读取站源失败');
+    });
   });
 }
 

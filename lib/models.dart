@@ -569,6 +569,7 @@ class PlaybackPlan {
     this.routeCount = 1,
     this.local = false,
     this.directUrl = '',
+    this.verify = '',
   });
   final String url;
 
@@ -586,11 +587,14 @@ class PlaybackPlan {
   final int routeIndex;
   final int routeCount;
   final bool local;
+  /// 非空表示这一集要先用隐藏浏览器完成验证；值是短链地址。
+  final String verify;
   bool get hasAlternative => session.isNotEmpty && routeIndex + 1 < routeCount;
   factory PlaybackPlan.fromJson(Map<String, dynamic> json) => PlaybackPlan(
     url: json['url'] as String? ?? '',
     directUrl: json['directUrl'] as String? ?? '',
     local: json['local'] == true,
+    verify: json['verify'] as String? ?? '',
     headers: (json['headers'] as Map? ?? {}).map(
       (key, value) => MapEntry(key.toString(), value.toString()),
     ),

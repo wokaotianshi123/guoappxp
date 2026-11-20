@@ -10,6 +10,7 @@ import '../app_device.dart';
 import '../core_bridge.dart';
 import '../local_store.dart';
 import '../theme_color.dart';
+import '../web_verify.dart';
 import 'app_scope.dart';
 import 'cover_blur.dart';
 import 'device_registration.dart';
@@ -320,7 +321,9 @@ class _DuanjuAppState extends State<DuanjuApp> with WidgetsBindingObserver {
                           policy: ReadingOrderTraversalPolicy(
                             requestFocusCallback: revealFocus,
                           ),
-                          child: child!,
+                          // 隐藏浏览器挂在导航器外层：验证页盖住整屏，
+                          // 落地后自己收起，不影响页面栈。
+                          child: WebVerifyHost(child: child!),
                         ),
                       ),
                     );

@@ -63,6 +63,20 @@ func (transport *huangguoBrowserTransport) source(address *url.URL) string {
 				return descriptor.ID
 			}
 		}
+		// hostSuffixes 声明的是「子域名」，写法可以是 .example.com 或 example.com，
+		// 两者都按后缀匹配；媒体 CDN（如 *.mxcontent.net）也靠它走指纹通道。
+		for _, suffix := range descriptor.HostSuffixes {
+			suffix = strings.ToLower(strings.TrimSpace(suffix))
+			if suffix == "" {
+				continue
+			}
+			if !strings.HasPrefix(suffix, ".") {
+				suffix = "." + suffix
+			}
+			if strings.HasSuffix(hostname, suffix) {
+				return descriptor.ID
+			}
+		}
 	}
 	return ""
 }

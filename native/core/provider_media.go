@@ -86,11 +86,43 @@ func (d *Downloader) providerURLCandidates(ctx context.Context, raw string) []st
 	return candidates
 }
 
+// BrowserVerifyPrefix 标记「需要先用浏览器完成验证」的分集地址。
+//
+// 站源把 videoUrl 写成 browser://<短链地址> 时，应用先用隐藏浏览器走完
+// Cloudflare 挑战，把落地地址写回 pageUrl，再调用 resolveMedia 取直链。
+const BrowserVerifyPrefix = "browser://"
+
+// BrowserVerifyError 表示这一集需要先在浏览器里完成验证。
+// 应用据此启动隐藏浏览器，而不是当成普通失败。
+type BrowserVerifyError struct {
+	// Address 是 browser:// 后面的短链地址。
+	Address string
+}
+
+func (err BrowserVerifyError) Error() string {
+	return "这一集需要在应用内浏览器完成验证后才能播放"
+}
+
+// browserVerifyAddress 判断分集地址是不是 browser:// 短链，返回后面的地址。
+func browserVerifyAddress(videoURL string) (string, bool) {
+	trimmed := strings.TrimSpace(videoURL)
+	if !strings.HasPrefix(trimmed, BrowserVerifyPrefix) {
+		return "", false
+	}
+	address := strings.TrimSpace(strings.TrimPrefix(trimmed, BrowserVerifyPrefix))
+	return address, address != ""
+}
+
 func (d *Downloader) resolveProviderMedia(ctx context.Context, task Task) (ProviderMedia, error) {
 	chapter := task.Chapter
 	chapter.Source = canonicalProviderSource(chapter.Source)
 	if chapter.Source == "" {
 		chapter.Source = SourceFromDramaID(task.DramaID)
+	}
+	// 分集地址带 browser:// 前缀时，先让应用去走浏览器验证。
+	// 落地地址会被写回 pageUrl，此时 videoUrl 已清空，才继续正常解析。
+	if address, needed := browserVerifyAddress(chapter.VideoURL); needed {
+		return ProviderMedia{}, BrowserVerifyError{Address: address}
 	}
 	// 编译期接入的站源自己解析取流（抓当集播放页、算令牌、取线路表等），
 	// 不能落到下面按 chapter.VideoURL 直连的通用兜底。
@@ -230,6 +262,9 @@ func (d *Downloader) fetchProviderRequest(ctx context.Context, rawURL, referer s
 					effectiveURL = resp.Request.URL
 				}
 				d.providerMu.Lock()
+				if d.providerHosts == nil {
+					d.providerHosts = map[string]string{}
+				}
 				d.providerHosts[source] = effectiveURL.Scheme + "://" + effectiveURL.Host
 				d.providerMu.Unlock()
 			}

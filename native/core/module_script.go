@@ -31,6 +31,45 @@ var moduleInvoker = goja.MustCompile("module-invoker", `(function(exports) {
 	};
 })`, true)
 
+// moduleByteHelpers 给 goja 的 Uint8Array 补上标准库有、goja 没实现的方法。
+//
+// goja 目前没有 Uint8Array.prototype.concat，而商店里的模块（如 cloudfront）
+// 会把多段字节拼起来当 AES 密钥/向量用，缺了它会报
+// "Object has no member 'concat'"。这里按规范补一个，返回新的 Uint8Array。
+var moduleByteHelpers = goja.MustCompile("module-byte-helpers", `(function() {
+	if (typeof Uint8Array.prototype.concat === "function") return;
+	Object.defineProperty(Uint8Array.prototype, "concat", {
+		value: function() {
+			var total = this.length;
+			var parts = [];
+			for (var i = 0; i < arguments.length; i++) {
+				var item = arguments[i];
+				parts.push(item);
+				total += item && typeof item.length === "number" ? item.length : 0;
+			}
+			var out = new Uint8Array(total);
+			out.set(this, 0);
+			var offset = this.length;
+			for (var j = 0; j < parts.length; j++) {
+				var part = parts[j];
+				if (part && typeof part.length === "number") {
+					out.set(part, offset);
+					offset += part.length;
+				}
+			}
+			return out;
+		},
+		writable: true,
+		configurable: true
+	});
+})();`, true)
+
+// installByteArrayHelpers 在每个新实例里装上字节数组补丁。
+func installByteArrayHelpers(vm *goja.Runtime) error {
+	_, err := vm.RunProgram(moduleByteHelpers)
+	return err
+}
+
 type jsProvider struct {
 	module    *jsModule
 	host      Host
@@ -44,6 +83,7 @@ type jsProvider struct {
 type jsInstance struct {
 	vm        *goja.Runtime
 	invoke    goja.Callable
+	exports   *goja.Object
 	ctx       context.Context
 	exclusive bool
 }
@@ -90,11 +130,24 @@ type jsTextRequest struct {
 	NoCache   bool     `json:"noCache"`
 	Body      string   `json:"body"`
 	Mirrors   []string `json:"mirrors"`
+	// 商店里的模块常把 fetch 的写法套在 fetchText 上（method / headers /
+	// anyStatus / limit / followRedirects / timeoutMs）。这些字段这里全部接受，
+	// 让同一个请求对象在两种接口下都能用。
+	Method          string            `json:"method"`
+	Headers         map[string]string `json:"headers"`
+	AnyStatus       bool              `json:"anyStatus"`
+	Limit           int64             `json:"limit"`
+	FollowRedirects bool              `json:"followRedirects"`
+	TimeoutMS       int64             `json:"timeoutMs"`
 }
 
 type jsTextResponse struct {
 	Body string `json:"body"`
 	URL  string `json:"url"`
+	// Status 与 Headers 让模块能读到响应码与响应头（例如 set-cookie）。
+	// 老模块不读这两个字段，返回它们不影响兼容性。
+	Status  int                 `json:"status"`
+	Headers map[string][]string `json:"headers"`
 }
 
 type jsPlaylistRequest struct {
@@ -253,11 +306,39 @@ func (p *jsProvider) Account(ctx context.Context, command string, payload json.R
 }
 
 func (p *jsProvider) ResolveMedia(ctx context.Context, task Task) (ProviderMedia, error) {
+	// 有的模块不给 resolveMedia，而是在 detail 里把直链写进 chapter.videoUrl
+	// （采集站常见：分集本身就带 m3u8/mp4）。这时直接用清单里的地址，
+	// 不要报「模块未导出函数 resolveMedia」。
+	if !p.exportsFunction("resolveMedia") {
+		if url := strings.TrimSpace(task.Chapter.VideoURL); url != "" {
+			return ProviderMedia{URL: url, Referer: task.Chapter.Referer}, nil
+		}
+		return ProviderMedia{}, errors.New("这个模块没有提供播放地址，请刷新详情后重试")
+	}
 	var media jsMedia
 	if err := p.call(ctx, "resolveMedia", &media, task); err != nil {
 		return ProviderMedia{}, err
 	}
 	return media.providerMedia(), nil
+}
+
+// exportsFunction 判断模块是否导出了某个函数，用于兼容不实现可选函数的模块。
+func (p *jsProvider) exportsFunction(name string) bool {
+	instance, err := p.acquire(context.Background())
+	if err != nil {
+		// 拿不到实例时按「已导出」处理，让 call 报出真实错误。
+		return true
+	}
+	defer func() { p.idle <- instance }()
+	if instance.exports == nil {
+		return false
+	}
+	target := instance.exports.Get(name)
+	if target == nil || goja.IsUndefined(target) || goja.IsNull(target) {
+		return false
+	}
+	_, ok := goja.AssertFunction(target)
+	return ok
 }
 
 func (p *jsProvider) call(ctx context.Context, function string, result any, arguments ...any) error {
@@ -340,6 +421,9 @@ func (p *jsProvider) newInstance() (*jsInstance, error) {
 	if err := module.Set("exports", exports); err != nil {
 		return nil, err
 	}
+	if err := installByteArrayHelpers(vm); err != nil {
+		return nil, err
+	}
 	wrapper, err := vm.RunProgram(p.module.program)
 	if err != nil {
 		return nil, moduleError(instance.ctx, err)
@@ -358,6 +442,10 @@ func (p *jsProvider) newInstance() (*jsInstance, error) {
 		return nil, moduleError(instance.ctx, err)
 	}
 	instance.invoke, _ = goja.AssertFunction(bound)
+	// 记下 exports，供 exportsFunction 判断模块是否实现了可选函数。
+	if exported := module.Get("exports"); exported != nil && !goja.IsUndefined(exported) && !goja.IsNull(exported) {
+		instance.exports = exported.ToObject(vm)
+	}
 	return instance, nil
 }
 
@@ -504,9 +592,33 @@ func (p *jsProvider) fetchText(ctx context.Context, request jsTextRequest) (jsTe
 			mirrors = append(mirrors, mirror)
 		}
 	}
+	// 模块把 fetch 的写法套在 fetchText 上时（带 method / headers / anyStatus /
+	// limit / followRedirects / timeoutMs），改走 fetch 通道，这样响应码与响应头
+	// 都能拿到。商店里的 dongpiandi 就是这种写法，走原路径会拿不到 status。
+	if request.usesFetchShape() {
+		response, err := p.fetch(ctx, jsFetchRequest{
+			Method:          request.Method,
+			URL:             request.URL,
+			Headers:         request.Headers,
+			Body:            request.Body,
+			TimeoutMS:       request.TimeoutMS,
+			Limit:           request.Limit,
+			FollowRedirects: request.FollowRedirects,
+			AnyStatus:       request.AnyStatus,
+		})
+		return jsTextResponse{
+			Body: response.Body, URL: request.URL, Status: response.Status, Headers: response.Headers,
+		}, err
+	}
 	response, err := p.host.FetchText(ctx, TextRequest{URL: request.URL, Referer: request.Referer, UserAgent: request.UserAgent,
 		Cookie: request.Cookie, NoCache: request.NoCache, Body: moduleBody(request.Body), Mirrors: mirrors})
-	return jsTextResponse{Body: response.Body, URL: response.URL}, err
+	return jsTextResponse{Body: response.Body, URL: response.URL, Status: 200}, err
+}
+
+// usesFetchShape 判断这次 fetchText 调用是否用了 fetch 风格的字段。
+func (request jsTextRequest) usesFetchShape() bool {
+	return strings.TrimSpace(request.Method) != "" || len(request.Headers) > 0 ||
+		request.AnyStatus || request.Limit > 0 || request.FollowRedirects || request.TimeoutMS > 0
 }
 
 func (p *jsProvider) fetch(ctx context.Context, request jsFetchRequest) (jsFetchResponse, error) {

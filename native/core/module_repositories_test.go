@@ -210,7 +210,8 @@ func TestModuleRepositoriesUpgradeOfficialDefault(t *testing.T) {
 	for _, repo := range engine.repositories.Repositories {
 		names = append(names, repo.Name)
 	}
-	if len(names) != len(moduleBuiltinRepositories) || names[0] != "guocheng1378" || names[1] != "jqk4388" {
+	if len(names) != len(moduleBuiltinRepositories) || names[0] != "官方仓库" ||
+		names[1] != "guocheng1378" || names[2] != "jqk4388" {
 		t.Fatalf("repositories = %v", names)
 	}
 	if got := engine.activeModuleRepositoryURL(); got != moduleBuiltinRepositories[0].URL {

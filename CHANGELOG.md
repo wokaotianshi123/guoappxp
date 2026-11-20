@@ -1,5 +1,24 @@
 # 更新日志
 
+## 2.1.0+127
+
+补齐 guoappcheng 商店模块的解析能力，移植 TLS 指纹与短链浏览器验证，并让官方仓库重新出现在在线仓库里可切换。
+
+- 新增 `host.hmacSha256(key, data)`：真果·鉴等用 HMAC 签名的模块不再报 `object has no member 'hmacSha256'`。
+- 补齐 `Uint8Array.prototype.concat`：goja 缺这个方法，黄果旧版等模块拼 AES 密钥时报 `Object has no member 'concat'`。
+- `aesCbcEncrypt` / `aesCbcDecrypt` 改为按 PKCS#7 补齐与去填充，与 Node、Java 的默认行为一致；之前明文长度不是 16 的倍数会直接报「AES 向量或数据长度无效」。
+- 模块没导出 `resolveMedia` 时，回退使用 `detail` 里给的 `chapter.videoUrl`，不再报「模块未导出函数 resolveMedia」。
+- `fetchText` 兼容 `fetch` 的写法（`method` / `headers` / `anyStatus` / `limit` / `followRedirects` / `timeoutMs`），并返回 `status` 与 `headers`。
+- 清单缺 `adult` 字段时按「非限制级」接受，商店里不写该字段的模块不再装不上。
+- TLS 指纹通道补上 `hostSuffixes`：清单用 `aliases`（精确域名）与 `hostSuffixes`（子域名）声明的域名都走 Chrome 指纹，媒体 CDN（如 `*.mxcontent.net`）同样生效。
+- 支持 `browser://<短链>` 分集地址：应用先用浏览器走完 Cloudflare 挑战，把落地地址写回 `pageUrl` 再解析直链。Android / iOS / macOS / Windows 用应用内 WebView，本地服务版用浏览器窗口。
+- 内置在线仓库新增「官方仓库」（guoapp-modules/index），与 `guocheng1378`、`jqk4388` 并列，可在「在线仓库」里切换；只存过旧默认的配置会自动补齐，自己改过的配置不动。
+- 站源分组在本地服务版补齐：首页站源下拉框按清单的 `group` 折叠成 `optgroup`，黄果系三个源归到「黄果」一组，与 App 端一致。
+- 本地服务版搜索页新增「选源」：可逐源勾选参与并发搜索的站源（含模块与自定义源），与 App 端的站源勾选条一致。
+- 修复部分模块请求时 `providerHosts` 未初始化导致的崩溃。
+
+已用 guocheng1378 商店的 48 个模块实测：全部可安装、可加载，站点可访问的模块都能出播放地址。搜索页「全部源」已加测试锁住：必须覆盖所有可见模块与自定义 XBPQ 源。
+
 ## 2.1.0+126
 
 模块与站源的分工再收一刀，并修好 guoappcheng 商店模块装不上/跑不起来的问题。

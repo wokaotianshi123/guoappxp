@@ -6,6 +6,7 @@ import (
 	"crypto/cipher"
 	"crypto/ecdh"
 	"crypto/hkdf"
+	"crypto/hmac"
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
@@ -189,6 +190,12 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			sum := sha256.Sum256(bytesOf(data))
 			return bytesValue(sum[:])
 		},
+		// hmacSha256(key, data) 返回原始字节，需要十六进制请再 hexEncode。
+		"hmacSha256": func(key, data goja.Value) goja.Value {
+			mac := hmac.New(sha256.New, bytesOf(key))
+			mac.Write(bytesOf(data))
+			return bytesValue(mac.Sum(nil))
+		},
 		"randomBytes": func(size int) (goja.Value, error) {
 			if size < 0 || size > moduleRandomBytes {
 				return nil, errors.New("随机字节数无效")
@@ -199,21 +206,25 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			}
 			return bytesValue(data), nil
 		},
+		// aesCbcEncrypt / aesCbcDecrypt 按 PKCS#7 补齐到块长度。
+		//
+		// 标准实现（Node 的 createCipheriv、Java 的 Cipher）默认就带填充，商店里的
+		// 模块也是按这个语义写的：明文长度不是 16 的倍数时直接交给它们，由底层补
+		// 填充；解密后再由模块自己去掉尾部填充。早期这里不做填充，cloudfront 这类
+		// 模块会直接报「AES 向量或数据长度无效」。
 		"aesCbcEncrypt": func(key, iv, data goja.Value) (goja.Value, error) {
-			block, vector, plain, err := moduleCBC(bytesOf(key), bytesOf(iv), bytesOf(data))
+			out, err := aesCBCEncryptBytes(bytesOf(key), bytesOf(iv), bytesOf(data))
 			if err != nil {
 				return nil, err
 			}
-			cipher.NewCBCEncrypter(block, vector).CryptBlocks(plain, plain)
-			return bytesValue(plain), nil
+			return bytesValue(out), nil
 		},
 		"aesCbcDecrypt": func(key, iv, data goja.Value) (goja.Value, error) {
-			block, vector, sealed, err := moduleCBC(bytesOf(key), bytesOf(iv), bytesOf(data))
+			out, err := aesCBCDecryptBytes(bytesOf(key), bytesOf(iv), bytesOf(data))
 			if err != nil {
 				return nil, err
 			}
-			cipher.NewCBCDecrypter(block, vector).CryptBlocks(sealed, sealed)
-			return bytesValue(sealed), nil
+			return bytesValue(out), nil
 		},
 		"aesGcmSeal": func(key, nonce, plain, extra goja.Value) (goja.Value, error) {
 			aead, vector, err := moduleGCM(bytesOf(key), bytesOf(nonce))
@@ -269,6 +280,93 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			return bytesValue(key), nil
 		},
 	}
+}
+
+// moduleCBCKeyIV 只校验密钥与向量，不要求数据已按块对齐（填充由调用方处理）。
+func moduleCBCKeyIV(key, iv []byte) (cipher.Block, []byte, error) {
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		return nil, nil, errors.New("AES 密钥长度无效")
+	}
+	if len(iv) != aes.BlockSize {
+		return nil, nil, errors.New("AES 向量或数据长度无效")
+	}
+	return block, iv, nil
+}
+
+// aesCBCEncryptBytes 按 PKCS#7 补齐后做 AES-CBC 加密。
+//
+// 标准实现（Node 的 createCipheriv、Java 的 Cipher）默认就带填充，商店里的模块
+// 也按这个语义写：明文长度不是 16 的倍数时直接交给底层补填充。
+func aesCBCEncryptBytes(key, iv, data []byte) ([]byte, error) {
+	block, vector, err := moduleCBCKeyIV(key, iv)
+	if err != nil {
+		return nil, err
+	}
+	plain := modulePadPKCS7(data, block.BlockSize())
+	cipher.NewCBCEncrypter(block, vector).CryptBlocks(plain, plain)
+	return plain, nil
+}
+
+// aesCBCDecryptBytes 做 AES-CBC 解密并去掉 PKCS#7 填充。
+func aesCBCDecryptBytes(key, iv, data []byte) ([]byte, error) {
+	block, vector, err := moduleCBCKeyIV(key, iv)
+	if err != nil {
+		return nil, err
+	}
+	if len(data) == 0 || len(data)%block.BlockSize() != 0 {
+		return nil, errors.New("AES 向量或数据长度无效")
+	}
+	plain := append([]byte(nil), data...)
+	cipher.NewCBCDecrypter(block, vector).CryptBlocks(plain, plain)
+	// 填充不合法时原样返回，交给模块自己判断。
+	if unpadded, ok := moduleUnpadPKCS7(plain, block.BlockSize()); ok {
+		plain = unpadded
+	}
+	return plain, nil
+}
+
+// 纯计算辅助，供 host 成员与测试共用。
+func hexEncodeBytes(data []byte) string            { return hex.EncodeToString(data) }
+func base64EncodeBytes(data []byte) string         { return base64.StdEncoding.EncodeToString(data) }
+func base64DecodeText(text string) ([]byte, error) { return base64.StdEncoding.DecodeString(strings.TrimSpace(text)) }
+func sha256Bytes(data []byte) []byte               { sum := sha256.Sum256(data); return sum[:] }
+func md5Bytes(data []byte) []byte                  { sum := md5.Sum(data); return sum[:] }
+
+// modulePadPKCS7 按 PKCS#7 补齐到块长度；已对齐时补一整块，与标准实现一致。
+func modulePadPKCS7(data []byte, size int) []byte {
+	if size <= 0 {
+		return data
+	}
+	padding := size - len(data)%size
+	out := make([]byte, len(data)+padding)
+	copy(out, data)
+	for index := len(data); index < len(out); index++ {
+		out[index] = byte(padding)
+	}
+	return out
+}
+
+// moduleUnpadPKCS7 去掉 PKCS#7 填充；填充不合法时返回 false，调用方保留原文。
+func moduleUnpadPKCS7(data []byte, size int) ([]byte, bool) {
+	if size <= 0 || len(data) == 0 || len(data)%size != 0 {
+		return data, false
+	}
+	padding := int(data[len(data)-1])
+	if padding <= 0 || padding > size || padding > len(data) {
+		return data, false
+	}
+	for index := len(data) - padding; index < len(data); index++ {
+		if int(data[index]) != padding {
+			return data, false
+		}
+	}
+	return data[:len(data)-padding], true
+}
+func hmacSha256Bytes(key, data []byte) []byte {
+	mac := hmac.New(sha256.New, key)
+	mac.Write(data)
+	return mac.Sum(nil)
 }
 
 func moduleCBC(key, iv, data []byte) (cipher.Block, []byte, []byte, error) {

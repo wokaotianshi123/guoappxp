@@ -223,6 +223,8 @@ type playPlan struct {
 	RouteCount    int    `json:"routeCount"`
 	DecryptionKey string `json:"decryptionKey"`
 	Session       string `json:"session"`
+	// Verify 非空表示这一集要先用浏览器完成验证；值是短链地址。
+	Verify string `json:"verify"`
 }
 
 type playReply struct {
@@ -368,6 +370,14 @@ func handlePlay(writer http.ResponseWriter, request *http.Request) {
 			message = "解析播放地址失败"
 		}
 		writeJSON(writer, map[string]any{"ok": false, "error": message})
+		return
+	}
+	// 需要浏览器验证时直接回给前端：本地服务版跑在浏览器里，由前端开窗口
+	// 走完挑战，再把落地地址带回重新解析。这里不做画质探测与编码嗅探。
+	if first.Data.Verify != "" {
+		writeJSON(writer, map[string]any{"ok": true, "data": map[string]any{
+			"verify": first.Data.Verify, "mode": "verify",
+		}})
 		return
 	}
 	wanted := pickQuality(first.Data.Qualities, quality)
@@ -605,8 +615,10 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 	items := []map[string]any{}
 	for _, source := range sourceNames {
 		if sourceAvailable(source.ID) {
+			group, groupName := sourceGroupOf(source.ID)
 			items = append(items, map[string]any{
 				"id": source.ID, "name": source.Name, "visible": !isSourceHidden(source.ID),
+				"group": group, "groupName": groupName,
 			})
 		}
 	}
@@ -636,6 +648,7 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 		}
 		items = append(items, map[string]any{
 			"id": descriptor.ID, "name": name, "visible": !isSourceHidden(descriptor.ID),
+			"group": descriptor.Group, "groupName": descriptor.GroupName,
 		})
 	}
 	// 并入用户自定义的 maccms 站源，使其出现在站源下拉框。
@@ -678,8 +691,17 @@ func handleSources(writer http.ResponseWriter, request *http.Request) {
 	writeJSON(writer, map[string]any{"items": items})
 }
 
-func sourceAvailable(source string) bool {
-	// 自定义源（custom: 前缀）不在注册表里，问 core 会得到「不可用」。能出现在
+// sourceGroupOf 返回静态站源表里某个源的分组。与 App 端 SourceSite 的分组一致：
+// 黄果系三个源归到 huangguo 组，其余各自独立（返回空串表示不分组）。
+func sourceGroupOf(id string) (string, string) {
+	switch id {
+	case "huangguo-video", "huangguoai", "cloudfront":
+		return "huangguo", "黄果"
+	}
+	return "", ""
+}
+
+func sourceAvailable(source string) bool {	// 自定义源（custom: 前缀）不在注册表里，问 core 会得到「不可用」。能出现在
 	// customSources 列表里的自定义源本身就已经登记成功，这里直接放行。
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(source)), "custom:") {
 		return true

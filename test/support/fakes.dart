@@ -159,6 +159,8 @@ class FakeRepository extends AppRepository {
   final catalogRequests = <String>[];
   final rankingRequests = <String>[];
   final recommendRequests = <({bool more, bool force})>[];
+  /// 每次 searchStart 的入参，用来断言「全部源」确实把可见模块与 XBPQ 源都带上了。
+  final searchRequests = <({List<String> sources, String query})>[];
   String failure = '';
   List<DownloadJob>? jobs;
   int downloadRequests = 0;
@@ -279,6 +281,17 @@ class FakeRepository extends AppRepository {
   @override
   Future<List<String>> suggestions(String source, String query) async =>
       suggestionList;
+
+  @override
+  Future<SearchProgress> searchStart(List<String> sources, String query) async {
+    searchRequests.add((sources: List<String>.of(sources), query: query));
+    return SearchProgress(
+      id: 'fake-search',
+      query: query,
+      pending: const [],
+      total: sources.length,
+    );
+  }
 
   @override
   Future<String> cover(Drama drama, {bool force = false}) async =>

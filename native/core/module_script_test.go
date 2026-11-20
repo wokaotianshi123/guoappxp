@@ -292,7 +292,9 @@ module.exports = {
 		t.Fatal("search capability does not expose warnings")
 	}
 	items, more, warning, err := searcher.SearchWithWarning(ctx, 1, "红果")
-	want := "900150983cd24fb0d6963f7d28e17f72|ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad|oYSMQruLXhpGrNlYzP7FTw==|红果|红果|null|5|https://a.example/z?q=1"
+	// aesCbcEncrypt 现在按 PKCS#7 补齐（与 Node/Java 默认行为一致），
+	// 16 字节明文会补一整块，所以密文是 32 字节。
+	want := "900150983cd24fb0d6963f7d28e17f72|ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad|oYSMQruLXhpGrNlYzP7FT6C4wzJ/149bo/da959INLg=|红果|红果|null|5|https://a.example/z?q=1"
 	if err != nil || !more || warning != "注意" || len(items) != 1 || items[0].Title != want || items[0].ID != "utiltest:7701280094358096920" {
 		t.Fatalf("search = %+v, %v, %q, %v", items, more, warning, err)
 	}
@@ -387,8 +389,11 @@ module.exports = {
 	if _, err := parseModule([]byte(`{"id":"x","name":"x","runtime":"js","api":1,"adult":false,"capabilities":["mediaAuth"]}`), []byte("")); err == nil {
 		t.Fatal("media authorization without paths was accepted")
 	}
-	if _, err := parseModule([]byte(`{"id":"x","name":"x","runtime":"js","api":1}`), []byte("")); err == nil {
-		t.Fatal("manifest without adult was accepted")
+	// 缺 adult 的清单现在按「非限制级」接受（商店里的模块普遍不写这个字段）。
+	if module, err := parseModule([]byte(`{"id":"x","name":"x","runtime":"js","api":1}`), []byte("")); err != nil {
+		t.Fatalf("manifest without adult should be accepted: %v", err)
+	} else if module.manifest.Adult == nil || *module.manifest.Adult {
+		t.Fatal("missing adult should default to non-adult")
 	}
 	if _, err := parseModule([]byte(`{"id":"x","name":"x","runtime":"js","api":1,"adult":"yes"}`), []byte("")); err == nil {
 		t.Fatal("manifest with non-boolean adult was accepted")

@@ -30,9 +30,12 @@ type moduleRepositoriesConfig struct {
 	Active       int                      `json:"active"`
 }
 
-// moduleBuiltinRepositories 是出厂自带的两家商店：guocheng1378（短剧 + 采集站
-// 合集）与 jqk4388（原生 JS 模块，含红果/黄豆/黄果系）。列表顺序即默认启用项。
+// moduleBuiltinRepositories 是出厂自带的在线仓库列表，顺序即默认启用项。
+//
+// 「官方仓库」是本项目原本使用的 guoapp-modules/index，保留在最前面作为默认项；
+// 后两家是社区合集，用户可在「在线仓库」里随时切换。
 var moduleBuiltinRepositories = []nativeModuleRepository{
+	{Name: "官方仓库", URL: "https://raw.githubusercontent.com/guoapp-modules/index/main/index.json"},
 	{Name: "guocheng1378", URL: "https://raw.githubusercontent.com/guocheng1378/guoapp-modules/refs/heads/main/index.json"},
 	{Name: "jqk4388", URL: "https://raw.githubusercontent.com/jqk4388/guoapp-modules-private/refs/heads/main/index.json"},
 }
@@ -45,25 +48,53 @@ func defaultModuleRepositoriesConfig() moduleRepositoriesConfig {
 	}
 }
 
-// upgradeRepositories 把「只有内置官方镜像」的老默认配置换成新的内置两家商店。
-// 只要用户自己加过、删过、改过仓库就原样保留，不覆盖用户的配置。
+// upgradeRepositories 把老版本的默认配置补齐成当前的内置列表。
+//
+// 老默认配置（只有内置官方镜像、或只有 guocheng1378 + jqk4388 两家）会被换成
+// 新的三家里；只要用户自己加过、删过、改过仓库就原样保留，不覆盖用户配置。
 func upgradeRepositories(config moduleRepositoriesConfig) moduleRepositoriesConfig {
 	if len(config.Repositories) == 0 {
 		return config
 	}
 	for _, repo := range config.Repositories {
-		official := false
-		for _, address := range moduleIndexAddresses {
-			if strings.EqualFold(strings.TrimSpace(repo.URL), address) {
-				official = true
-				break
-			}
-		}
-		if !official {
+		if !isBuiltinRepositoryURL(repo.URL) {
 			return config
 		}
 	}
-	return defaultModuleRepositoriesConfig()
+	if len(config.Repositories) == len(moduleBuiltinRepositories) {
+		return config
+	}
+	upgraded := defaultModuleRepositoriesConfig()
+	// 尽量保住用户当时选中的仓库：按地址找到它在旧列表里的位置。
+	if config.Active >= 0 && config.Active < len(config.Repositories) {
+		activeURL := strings.ToLower(strings.TrimSpace(config.Repositories[config.Active].URL))
+		for index, repo := range upgraded.Repositories {
+			if strings.ToLower(strings.TrimSpace(repo.URL)) == activeURL {
+				upgraded.Active = index
+				break
+			}
+		}
+	}
+	return upgraded
+}
+
+// isBuiltinRepositoryURL 判断某个地址是否属于出厂自带的仓库（含官方镜像）。
+func isBuiltinRepositoryURL(address string) bool {
+	key := strings.ToLower(strings.TrimSpace(address))
+	if key == "" {
+		return false
+	}
+	for _, repo := range moduleBuiltinRepositories {
+		if strings.ToLower(strings.TrimSpace(repo.URL)) == key {
+			return true
+		}
+	}
+	for _, official := range moduleIndexAddresses {
+		if strings.ToLower(strings.TrimSpace(official)) == key {
+			return true
+		}
+	}
+	return false
 }
 
 func (config moduleRepositoriesConfig) validate() error {

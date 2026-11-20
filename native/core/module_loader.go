@@ -196,8 +196,11 @@ func parseModule(raw, code []byte) (*jsModule, error) {
 	if manifest.API != moduleAPIVersion {
 		return nil, fmt.Errorf("模块接口版本为 %d，当前应用支持 %d", manifest.API, moduleAPIVersion)
 	}
+	// guoappcheng 商店的模块清单普遍不写 adult。缺省按「非限制级」处理，
+	// 否则整批模块会因为缺这一个字段装不上；写了就必须是布尔值。
 	if manifest.Adult == nil {
-		return nil, errors.New("模块缺少 adult 声明")
+		adult := false
+		manifest.Adult = &adult
 	}
 	capabilities := map[reflect.Type]bool{}
 	for _, name := range manifest.Capabilities {

@@ -1,7 +1,7 @@
 name: duanju_app
 description: 独立运行的多端短剧应用
 publish_to: none
-version: 2.1.0+126
+version: 2.1.0+127
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
@@ -36,6 +36,9 @@ dependencies:
   # 这里显式声明只是为了能直接引用，不会引入新的原生插件。
   wakelock_plus: ^1.8.0
   lpinyin: ^2.0.3
+  # 隐藏浏览器：站源把分集地址写成 browser://<短链> 时，用它走完 Cloudflare
+  # 挑战，把落地地址交回站源模块。只在取播放地址时用，不影响其它功能。
+  flutter_inappwebview: 6.2.0-beta.3
 
 dev_dependencies:
   flutter_test:
