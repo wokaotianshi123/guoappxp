@@ -333,7 +333,11 @@ module.exports = {
   catalogPage() { return { items: [], hasMore: false }; },
   search() {
     const key = host.hexDecode("000102030405060708090a0b0c0d0e0f");
-    const plain = host.utf8Decode(host.aesCbcDecrypt(key, key, host.aesCbcEncrypt(key, key, host.utf8Encode("0123456789abcdef"))));
+    // 解密不去填充（模块自己 unpad，与 beabox/yeguo 的真实写法一致）。
+    let block = host.aesCbcDecrypt(key, key, host.aesCbcEncrypt(key, key, host.utf8Encode("0123456789abcdef")));
+    const pad = block[block.length - 1];
+    if (pad > 0 && pad <= 16) block = block.slice(0, block.length - pad);
+    const plain = host.utf8Decode(block);
     const nonce = host.hexDecode("000000000000000000000001");
     const sealed = host.aesGcmSeal(key, nonce, "红果", "aad");
     const opened = host.utf8Decode(host.aesGcmOpen(key, nonce, sealed, "aad"));

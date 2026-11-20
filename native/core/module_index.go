@@ -23,6 +23,13 @@ const (
 	moduleIndexBytes   = 1 << 20
 	moduleIndexTimeout = 12 * time.Second
 	moduleFetchTimeout = 20 * time.Second
+	// moduleMirrorTimeout 是「单个镜像」的超时，比总预算短得多。
+	//
+	// 镜像可用性差异极大：实测 fastly.jsdelivr.net 在部分网络下会卡满 30 秒
+	// 才报 i/o timeout，而 raw.githubusercontent.com 只要 0.6 秒。如果所有镜像
+	// 共用一份总预算，慢镜像会把时间耗光，后面能用的镜像根本没机会跑，表现为
+	// 「全部镜像都超时」。
+	moduleMirrorTimeout = 6 * time.Second
 )
 
 var (
@@ -31,12 +38,13 @@ var (
 		"https://raw.githubusercontent.com/guoapp-modules/index/main/index.json",
 		"https://cdn.jsdelivr.net/gh/guoapp-modules/index@main/index.json",
 	}
-	// 模块文件的下载模板：jsDelivr、fastly、raw 三处各试一次。
-	// 顺序与 moduleIndexMirrors 一致，都失败后再走 api.github.com 兜底。
+	// 模块文件的下载模板，按实测可用性排序：raw 最快最稳（0.6s），
+	// jsDelivr 的 CDN 在部分网络会被重置或卡满超时，放后面。
+	// 全部失败后再走 api.github.com 兜底。
 	moduleFileAddresses = []string{
+		"https://raw.githubusercontent.com/%s/%s/%s",
 		"https://cdn.jsdelivr.net/gh/%s@%s/%s",
 		"https://fastly.jsdelivr.net/gh/%s@%s/%s",
-		"https://raw.githubusercontent.com/%s/%s/%s",
 	}
 	moduleIndexRepo = regexp.MustCompile(`^[A-Za-z0-9-]+/[A-Za-z0-9._-]+$`)
 	// moduleRepositoryAPI 是 GitHub contents 接口的根地址。镜像全灭时用它兜底；
@@ -360,7 +368,11 @@ func (engine *nativeEngine) fetchIndexedFile(ctx context.Context, entry moduleIn
 	expected := entry.SHA256[name]
 	var failures []string
 	for _, pattern := range moduleFileAddresses {
-		data, err := engine.fetchModuleResource(ctx, fmt.Sprintf(pattern, entry.Repo, entry.Tag, file), limit)
+		// 每个镜像用自己的短超时：慢镜像不能吃掉整轮预算，
+		// 否则后面的镜像连尝试的机会都没有。
+		mirrorCtx, cancel := context.WithTimeout(ctx, moduleMirrorTimeout)
+		data, err := engine.fetchModuleResource(mirrorCtx, fmt.Sprintf(pattern, entry.Repo, entry.Tag, file), limit)
+		cancel()
 		if err == nil {
 			sum := sha256.Sum256(data)
 			if hex.EncodeToString(sum[:]) == expected {

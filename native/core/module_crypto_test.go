@@ -39,7 +39,10 @@ func TestPKCS7UnpadRejectsInvalid(t *testing.T) {
 	}
 }
 
-// 用固定 key/iv 验证 AES-CBC 加解密往返（模块的 encryptParams/decryptData 就靠这个）。
+// 用固定 key/iv 验证 AES-CBC 加解密往返。
+//
+// 加密自动补 PKCS#7，解密**不去填充**（模块自己 unpad），所以这里解密结果要
+// 手动去填充才能还原原文。这也是 beabox / yeguo / huangdou 的真实写法。
 func TestAesCbcRoundTripWithPadding(t *testing.T) {
 	vm := newTestRuntime(t)
 	key := []byte("1234567890123456")
@@ -60,7 +63,15 @@ func TestAesCbcRoundTripWithPadding(t *testing.T) {
 		t.Fatalf("解密失败: %v", err)
 	}
 	opened := exportBytes(t, vm, "opened")
-	if string(opened) != string(plain) {
-		t.Fatalf("往返不一致: %q != %q", opened, plain)
+	// 解密结果保持块对齐，模块据此判断填充是否合法。
+	if len(opened)%16 != 0 {
+		t.Fatalf("解密结果长度 %d 不是 16 的倍数（不应由宿主去填充）", len(opened))
+	}
+	unpadded, ok := moduleUnpadPKCS7(opened, 16)
+	if !ok {
+		t.Fatal("解密结果不是合法的 PKCS#7 填充")
+	}
+	if string(unpadded) != string(plain) {
+		t.Fatalf("往返不一致: %q != %q", unpadded, plain)
 	}
 }

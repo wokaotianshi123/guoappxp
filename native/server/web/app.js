@@ -699,6 +699,10 @@ function hashFor(overrides) {
 // 快照，哪个站源先回来就先画哪批，不必等最慢的那几个站源。
 var crossSearch = { token: 0, id: '', timer: null, painted: '' };
 
+// 模块页当前页签：installed / repos / builtin。
+// 源显示已并入「已安装」，在线仓库独立成一页，与 App 端模块页一致。
+var moduleTab = 'installed';
+
 // 逐源勾选：与 App 端搜索页的站源勾选条等价。空数组表示「跟随全部源开关」，
 // 非空时只并发搜索勾中的这些源。选择记在 localStorage，跨刷新保留。
 var PICKED_SOURCES_KEY = 'duanjuweb:pickedSources';
@@ -742,11 +746,38 @@ function searchSourceIDs(items) {
 }
 
 // pickSources 弹出逐源勾选面板。
+// pickSources 打开/收起逐源勾选面板。
+//
+// 面板是单例：重复点击不会叠出多个弹层，再点一次「选源」就收起（需求里
+// 明确要求「点击弹出、再次点击收起」）。打开时每次重新拉一次可见源，
+// 避免用过期列表。
+var pickSourcesPanel = null;
+
+function pickSourcesOpen() {
+  return pickSourcesPanel !== null;
+}
+
+function closePickSources() {
+  if (pickSourcesPanel && pickSourcesPanel.parentNode) {
+    pickSourcesPanel.parentNode.removeChild(pickSourcesPanel);
+  }
+  pickSourcesPanel = null;
+  var button = document.getElementById('pick-sources-btn');
+  if (button) button.classList.remove('active');
+}
+
 function pickSources() {
+  // 已打开就收起，不再新建。
+  if (pickSourcesOpen()) {
+    closePickSources();
+    return Promise.resolve();
+  }
   return visibilityList().then(function (items) {
+    // 拉列表期间可能又被点了一次，重新检查，避免连点叠两层。
+    if (pickSourcesOpen()) return;
     var visible = items.filter(function (item) { return item.visible; });
     if (!visible.length) {
-      window.alert('没有开启显示的站源，请先在「源显示」里开启');
+      window.alert('没有开启显示的站源，请先在「自定义模块」里开启');
       return;
     }
     var picked = readPickedSources();
@@ -785,13 +816,14 @@ function pickSources() {
       '<button type="button" class="btn" id="pick-sources-ok">确定</button>' +
       '</div></div>';
     document.body.appendChild(mask);
-    function close() {
-      if (mask.parentNode) mask.parentNode.removeChild(mask);
-    }
+    pickSourcesPanel = mask;
+    var button = document.getElementById('pick-sources-btn');
+    if (button) button.classList.add('active');
+
     mask.addEventListener('click', function (event) {
-      if (event.target === mask) close();
+      if (event.target === mask) closePickSources();
     });
-    mask.querySelector('#pick-sources-cancel').addEventListener('click', close);
+    mask.querySelector('#pick-sources-cancel').addEventListener('click', closePickSources);
     mask.querySelector('#pick-sources-all').addEventListener('click', function () {
       Array.prototype.forEach.call(
         mask.querySelectorAll('input[data-source]'),
@@ -806,7 +838,7 @@ function pickSources() {
       );
       // 全选等于「跟随全部源」，不写偏好；否则记住勾选。
       writePickedSources(ids.length === visible.length ? [] : ids);
-      close();
+      closePickSources();
       if (state.query) {
         render();
       }
@@ -3053,6 +3085,9 @@ function renderModules() {
     moduleRepositories().catch(function () {
       return { items: [], active: 0, warning: '' };
     }),
+    visibilityList().catch(function () {
+      return [];
+    }),
   ]).then(function (results) {
     var installed = results[0];
     var store = results[1];
@@ -3066,7 +3101,13 @@ function renderModules() {
         (item.version ? ' · ' + escapeHTML(item.version) : '') +
         (item.adult ? '（限制级）' : '');
     }
+    // 已安装模块带上「首页显示」开关：源显示的职责已并到这里，
+    // 模块源的可见性、导出、卸载都在本页完成。
+    var visibleById = {};
+    var visItems = results[3] || [];
+    visItems.forEach(function (item) { visibleById[item.id] = item.visible !== false; });
     var installedRows = installed.map(function (item) {
+      var shown = visibleById[item.id] !== false;
       return (
         '<div style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
         '<div style="min-width:0">' +
@@ -3077,7 +3118,11 @@ function renderModules() {
         '<div style="font-size:12px;opacity:0.55">站源：' + escapeHTML(item.sourceId || item.id || '') +
         (item.error ? ' · ' + escapeHTML(item.error) : '') + '</div>' +
         '</div>' +
-        '<div style="display:flex;gap:6px;flex:none">' +
+        '<div style="display:flex;gap:6px;flex:none;align-items:center">' +
+        '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-right:4px" title="关闭后不出现在首页站源下拉框，追剧与记录保留">' +
+        '<span style="font-size:12px;opacity:0.8">' + (shown ? '显示' : '隐藏') + '</span>' +
+        '<input type="checkbox" class="vis-toggle" data-id="' + escapeHTML(item.id) + '"' + (shown ? ' checked' : '') + ' />' +
+        '</label>' +
         '<button type="button" class="btn" data-module-export="' + escapeHTML(item.id) + '">导出</button>' +
         '<button type="button" class="btn danger" data-module-remove="' + escapeHTML(item.id) + '" data-name="' +
         escapeHTML(item.name || item.id || '') + '">卸载</button>' +
@@ -3122,43 +3167,110 @@ function renderModules() {
     var installAllButton = pendingIds.length
       ? '<button type="button" class="btn" id="module-install-all" title="在线仓库里还有 ' + pendingIds.length + ' 个未安装或可更新">安装全部站源（' + pendingIds.length + '）</button>'
       : '';
-    view.innerHTML =
-      '<div class="lib">' +
+    // 在线仓库列表：内置 3 个（官方仓库 / guocheng1378 / jqk4388）+ 用户自加。
+    // 点单选框切换启用项，与 App 端「在线仓库」的交互一致。
+    var repoList = (repos && repos.items) || [];
+    var repoActive = repos && typeof repos.active === 'number' ? repos.active : 0;
+    var repoRows = repoList
+      .map(function (repo, index) {
+        var active = index === repoActive;
+        return (
+          '<div style="display:flex;align-items:center;gap:10px;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
+          '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:none">' +
+          '<input type="radio" name="module-repo" data-repo="' + index + '"' + (active ? ' checked' : '') + ' />' +
+          '<span style="font-size:12px;opacity:0.8">' + (active ? '当前' : '切换') + '</span>' +
+          '</label>' +
+          '<div style="min-width:0;flex:1">' +
+          '<div style="font-weight:600">' + escapeHTML(repo.name || '未命名仓库') + '</div>' +
+          '<div style="font-size:12px;opacity:0.6;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+          escapeHTML(repo.url || '') + '</div>' +
+          '</div>' +
+          '<div style="display:flex;gap:6px;flex:none">' +
+          '<button type="button" class="btn" data-repo-edit="' + index + '">编辑</button>' +
+          (repoList.length > 1
+            ? '<button type="button" class="btn danger" data-repo-remove="' + index + '">删除</button>'
+            : '') +
+          '</div>' +
+          '</div>'
+        );
+      })
+      .join('');
+    if (!repoRows) {
+      repoRows = '<div class="empty">还没有配置在线仓库。</div>';
+    }
+
+    // 页签：已安装 / 在线仓库 / 内置。源显示已并入「已安装」，
+    // 与 App 端「自定义模块 › 已安装」的职责一致。
+    var tab = moduleTab;
+    var tabBar =
       '<div class="lib-tabs">' +
-      '<span class="lib-tab" id="custom-tab-back">自定义源</span>' +
-      '<span class="lib-tab active">模块（' + installed.length + '）</span>' +
+      '<span class="lib-tab' + (tab === 'installed' ? ' active' : '') + '" data-module-tab="installed">已安装（' + installed.length + '）</span>' +
+      '<span class="lib-tab' + (tab === 'repos' ? ' active' : '') + '" data-module-tab="repos">在线仓库（' + repoList.length + '）</span>' +
+      '<span class="lib-tab' + (tab === 'builtin' ? ' active' : '') + '" data-module-tab="builtin">内置</span>' +
       '<span class="spacer"></span>' +
-      '<input type="file" id="module-install-file" accept=".zip,application/zip" multiple style="display:none" />' +
-      '<button type="button" class="btn" id="module-install-file-btn" title="可多选；合集包内多个站源可勾选安装">从文件安装</button>' +
-      '<button type="button" class="btn" id="module-install-url-btn" title="可一次填多个地址，每行一个">从地址安装</button>' +
-      (installed.length
-        ? '<button type="button" class="btn" id="module-export-all">导出全部</button>'
-        : '') +
-      '<button type="button" class="btn danger" id="module-reset">恢复默认</button>' +
-      '</div>' +
-      '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
-      '模块是可安装的站源。装上后它的站源出现在站源下拉框与「源显示」里，与本体同名的模块会另行标记并共存；卸载后其追剧、观看记录与已下载视频保留。' +
-      '</div>' +
-      (store.warning ? '<div class="empty">' + escapeHTML(store.warning) + '</div>' : '') +
-      '<div style="font-weight:600;padding:8px 2px 2px">已安装</div>' +
-      installedRows +
-      '<div style="font-weight:600;padding:12px 2px 2px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
-      '<span>模块商店' + (function () {
-        var list = (repos && repos.items) || [];
-        var index = repos && typeof repos.active === 'number' ? repos.active : 0;
-        var current = list[index];
-        return current && current.name
-          ? '（' + escapeHTML(current.name) + '）'
-          : '';
-      })() + '</span>' +
-      '<span style="display:flex;align-items:center;gap:8px">' +
-      '<button type="button" class="btn" id="module-manage-repos">管理仓库</button>' +
-      installAllButton +
-      '</span>' +
-      '</div>' +
-      (repos && repos.warning ? '<div class="empty">' + escapeHTML(repos.warning) + '</div>' : '') +
-      storeRows +
+      (tab === 'repos'
+        ? '<button type="button" class="btn" id="repo-add">新增仓库</button>'
+        : '<input type="file" id="module-install-file" accept=".zip,application/zip" multiple style="display:none" />' +
+          '<button type="button" class="btn" id="module-install-file-btn" title="可多选；合集包内多个站源可勾选安装">从文件安装</button>' +
+          '<button type="button" class="btn" id="module-install-url-btn" title="可一次填多个地址，每行一个">从地址安装</button>' +
+          (installed.length
+            ? '<button type="button" class="btn" id="module-export-all">导出全部</button>'
+            : '') +
+          '<button type="button" class="btn danger" id="module-reset">恢复默认</button>') +
       '</div>';
+
+    var body = '';
+    if (tab === 'repos') {
+      body =
+        '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
+        '点单选框切换启用的仓库，模块商店从该地址的 index.json 读取模块列表。内置官方仓库与两个社区合集，也可以自己新增。' +
+        '</div>' +
+        (repos && repos.warning ? '<div class="empty">' + escapeHTML(repos.warning) + '</div>' : '') +
+        repoRows;
+    } else if (tab === 'builtin') {
+      body =
+        '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
+        '这些模块随安装包内置，版本更高时自动升级；卸载过的不会自动装回。' +
+        '</div>' +
+        (store.items.filter(function (entry) { return entry.bundled; }).length
+          ? store.items.filter(function (entry) { return entry.bundled; }).map(function (entry) {
+              var have = byId[entry.id];
+              var update = have && moduleNewerVersion(entry.version, have.version);
+              var action = !have
+                ? '<button type="button" class="btn" data-module-install="' + escapeHTML(entry.id) + '">安装</button>'
+                : update
+                  ? '<button type="button" class="btn" data-module-install="' + escapeHTML(entry.id) + '">更新</button>'
+                  : '<span style="font-size:12px;opacity:0.6">已安装</span>';
+              return (
+                '<div style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
+                '<div style="min-width:0">' +
+                '<div style="font-weight:600">' + moduleLabel(entry) + '（内置）</div>' +
+                '<div style="font-size:12px;opacity:0.7">' + escapeHTML(entry.description || entry.id || '') + '</div>' +
+                '</div>' +
+                '<div style="flex:none">' + action + '</div>' +
+                '</div>'
+              );
+            }).join('')
+          : '<div class="empty">这个安装包没有内置模块。</div>');
+    } else {
+      body =
+        '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
+        '模块是可安装的站源。右侧开关控制它在首页是否显示；导出、卸载也在这里。卸载后追剧、观看记录与已下载视频保留。' +
+        '</div>' +
+        (store.warning ? '<div class="empty">' + escapeHTML(store.warning) + '</div>' : '') +
+        '<div style="font-weight:600;padding:8px 2px 2px">已安装</div>' +
+        installedRows +
+        '<div style="font-weight:600;padding:12px 2px 2px;display:flex;align-items:center;justify-content:space-between;gap:8px">' +
+        '<span>模块商店' + (function () {
+          var current = repoList[repoActive];
+          return current && current.name ? '（' + escapeHTML(current.name) + '）' : '';
+        })() + '</span>' +
+        installAllButton +
+        '</div>' +
+        storeRows;
+    }
+
+    view.innerHTML = '<div class="lib">' + tabBar + body + '</div>';
     bindModuleView(pendingIds, installed, repos);
   });
 }
@@ -3217,29 +3329,96 @@ function moduleInstallAll(ids, button) {
 }
 
 function bindModuleView(installableIds, installed, repos) {
-  var back = document.getElementById('custom-tab-back');
-  if (back) {
-    back.addEventListener('click', function () {
-      renderCustomSources();
+  // 页签切换：只改状态再重渲染，不重新拉远程数据。
+  Array.prototype.forEach.call(view.querySelectorAll('[data-module-tab]'), function (tab) {
+    tab.addEventListener('click', function () {
+      moduleTab = tab.getAttribute('data-module-tab') || 'installed';
+      renderModules();
     });
-  }
-  var manageRepos = document.getElementById('module-manage-repos');
-  if (manageRepos) {
-    manageRepos.addEventListener('click', function () {
-      manageRepos.disabled = true;
-      openRepositoryManager(repos)
-        .then(function (result) {
-          if (!result) return null;
-          return moduleSaveRepositories(result.repositories, result.active);
-        })
-        .then(function () {
-          return renderModules();
-        })
+  });
+
+  // 已安装列表里的「显示/隐藏」开关：源显示已并入模块页。
+  Array.prototype.forEach.call(view.querySelectorAll('.vis-toggle'), function (input) {
+    input.addEventListener('change', function () {
+      input.disabled = true;
+      visibilitySet(input.getAttribute('data-id'), input.checked)
+        .then(function () { return loadSources(); })
+        .then(function () { return renderModules(); })
+        .catch(function (error) {
+          input.disabled = false;
+          window.alert(error.message || '保存源显示设置失败');
+        });
+    });
+  });
+
+  // 在线仓库：切换启用项 / 编辑 / 删除 / 新增。
+  var repoList = (repos && repos.items) || [];
+  var repoActive = repos && typeof repos.active === 'number' ? repos.active : 0;
+  Array.prototype.forEach.call(view.querySelectorAll('input[data-repo]'), function (input) {
+    input.addEventListener('change', function () {
+      var index = Number(input.getAttribute('data-repo'));
+      if (!Number.isInteger(index) || index === repoActive) return;
+      input.disabled = true;
+      moduleSaveRepositories(repoList, index)
+        .then(function () { return renderModules(); })
+        .catch(function (error) {
+          input.disabled = false;
+          window.alert(error.message || '切换在线仓库失败');
+        });
+    });
+  });
+  Array.prototype.forEach.call(view.querySelectorAll('[data-repo-edit]'), function (button) {
+    button.addEventListener('click', function () {
+      var index = Number(button.getAttribute('data-repo-edit'));
+      var current = repoList[index];
+      if (!current) return;
+      var name = window.prompt('仓库名：', current.name || '');
+      if (name === null) return;
+      var url = window.prompt('index.json 地址：', current.url || '');
+      if (url === null) return;
+      var next = repoList.map(function (repo, i) {
+        return i === index ? { name: name.trim(), url: url.trim() } : repo;
+      });
+      moduleSaveRepositories(next, repoActive)
+        .then(function () { return renderModules(); })
         .catch(function (error) {
           window.alert(error.message || '保存在线仓库失败');
-        })
-        .then(function () {
-          manageRepos.disabled = false;
+        });
+    });
+  });
+  Array.prototype.forEach.call(view.querySelectorAll('[data-repo-remove]'), function (button) {
+    button.addEventListener('click', function () {
+      var index = Number(button.getAttribute('data-repo-remove'));
+      var current = repoList[index];
+      if (!current) return;
+      if (!window.confirm('删除在线仓库「' + (current.name || '未命名') + '」？')) return;
+      var next = repoList.filter(function (_, i) { return i !== index; });
+      if (!next.length) {
+        window.alert('至少保留一个在线仓库');
+        return;
+      }
+      var active = repoActive;
+      if (index < active) active -= 1;
+      if (index === active && active >= next.length) active = next.length - 1;
+      moduleSaveRepositories(next, active)
+        .then(function () { return renderModules(); })
+        .catch(function (error) {
+          window.alert(error.message || '删除在线仓库失败');
+        });
+    });
+  });
+  var repoAdd = document.getElementById('repo-add');
+  if (repoAdd) {
+    repoAdd.addEventListener('click', function () {
+      var name = window.prompt('仓库名：', '我的应用商店');
+      if (name === null) return;
+      var url = window.prompt('index.json 地址：', 'https://');
+      if (url === null) return;
+      var next = repoList.concat([{ name: name.trim(), url: url.trim() }]);
+      moduleSaveRepositories(next, repoActive)
+        .then(function () { return renderModules(); })
+        .catch(function (error) {
+          window.alert(error.message || '新增在线仓库失败');
         });
     });
   }
@@ -3449,7 +3628,6 @@ function renderCustomSources() {
       '<div class="lib">' +
       '<div class="lib-tabs">' +
       '<span class="lib-tab active">自定义源（' + items.length + '）</span>' +
-      '<span class="lib-tab" id="modules-tab">模块</span>' +
       '<span class="spacer"></span>' +
       '<input type="file" id="custom-import-file" accept=".json,.txt,application/json,text/plain" style="display:none" />' +
       '<button type="button" class="btn" id="custom-import">导入文件</button>' +
@@ -3459,7 +3637,8 @@ function renderCustomSources() {
       '<button type="button" class="btn" id="custom-add">新增</button>' +
       '</div>' +
       '<div style="font-size:12px;opacity:0.7;padding:4px 2px 8px">' +
-      '自定义源读取网址并判断是否符合 MacCMS 规范；符合后套用通用规则自动完成列表、搜索与播放。粘贴 XBPQ 规则时按规则字段逐项截取。</div>' +
+      '自定义源读取网址并判断是否符合 MacCMS 规范；符合后套用通用规则自动完成列表、搜索与播放。粘贴 XBPQ 规则时按规则字段逐项截取。' +
+      '</div>' +
       rows +
       '</div>';
     bindCustomSourcesView(items);
@@ -3467,12 +3646,6 @@ function renderCustomSources() {
 }
 
 function bindCustomSourcesView(items) {
-  var modulesTab = document.getElementById('modules-tab');
-  if (modulesTab) {
-    modulesTab.addEventListener('click', function () {
-      renderModules();
-    });
-  }
   var addButton = document.getElementById('custom-add');
   if (addButton) {
     addButton.addEventListener('click', function () {
@@ -5622,9 +5795,9 @@ function render() {
   if (customSourcesButton) {
     customSourcesButton.classList.toggle('active', current.path === 'custom-sources');
   }
-  var visibilityButton = document.getElementById('visibility-btn');
-  if (visibilityButton) {
-    visibilityButton.classList.toggle('active', current.path === 'source-visibility');
+  var modulesButton = document.getElementById('modules-btn');
+  if (modulesButton) {
+    modulesButton.classList.toggle('active', current.path === 'modules');
   }
   var task;
   // #/drama 与 #/play 统一渲染融合观看页（播放器在上、选集居中、详情沉底）；
@@ -5637,8 +5810,8 @@ function render() {
     task = renderFavorites(params.get('tab') || '');
   } else if (current.path === 'custom-sources') {
     task = Promise.resolve().then(renderCustomSources);
-  } else if (current.path === 'source-visibility') {
-    task = renderSourceVisibility();
+  } else if (current.path === 'modules') {
+    task = Promise.resolve().then(renderModules);
   } else if (current.path === 'live') {
     task = Promise.resolve().then(renderLiveView);
   } else if (current.path === 'audiobook') {

@@ -308,7 +308,12 @@ func aesCBCEncryptBytes(key, iv, data []byte) ([]byte, error) {
 	return plain, nil
 }
 
-// aesCBCDecryptBytes 做 AES-CBC 解密并去掉 PKCS#7 填充。
+// aesCBCDecryptBytes 做 AES-CBC 解密，返回**带填充**的明文。
+//
+// 不去填充是刻意的：站源模块自己会调 unpad（beabox、yeguo、huangdou 都是
+// `unpad(host.aesCbcDecrypt(...))` 这种写法），并且它们用「长度必须是 16 的
+// 倍数」来判断填充是否合法。宿主提前去掉填充会让它们的 unpad 直接判失败，
+// 表现为「笔盒接口数据解码失败」。
 func aesCBCDecryptBytes(key, iv, data []byte) ([]byte, error) {
 	block, vector, err := moduleCBCKeyIV(key, iv)
 	if err != nil {
@@ -319,10 +324,6 @@ func aesCBCDecryptBytes(key, iv, data []byte) ([]byte, error) {
 	}
 	plain := append([]byte(nil), data...)
 	cipher.NewCBCDecrypter(block, vector).CryptBlocks(plain, plain)
-	// 填充不合法时原样返回，交给模块自己判断。
-	if unpadded, ok := moduleUnpadPKCS7(plain, block.BlockSize()); ok {
-		plain = unpadded
-	}
 	return plain, nil
 }
 
