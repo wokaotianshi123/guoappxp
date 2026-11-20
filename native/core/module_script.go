@@ -346,7 +346,11 @@ func (p *jsProvider) ResolveMedia(ctx context.Context, task Task) (ProviderMedia
 
 // exportsFunction 判断模块是否导出了某个函数，用于兼容不实现可选函数的模块。
 func (p *jsProvider) exportsFunction(name string) bool {
-	instance, err := p.acquire(context.Background())
+	// 必须带超时：实例池只有 moduleInstanceLimit 个，并发搜索时可能全被占用，
+	// 用 context.Background() 会在这里永久阻塞（点分类/搜索时表现为卡死）。
+	ctx, cancel := context.WithTimeout(context.Background(), moduleQuickTimeout)
+	defer cancel()
+	instance, err := p.acquire(ctx)
 	if err != nil {
 		// 拿不到实例时按「已导出」处理，让 call 报出真实错误。
 		return true

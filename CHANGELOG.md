@@ -14,6 +14,7 @@
 - 修复点分类报「内容分类无效」：商店里 `maccmsweb` 模板模块（花生、网果、伍果、发果、360zy 等）只导出 `categories` / `catalogPage` / `detail` / `search`，没有 `validCategory`。宿主原来在「模块没导出该函数」和「provider 还没创建」两种情况下都判 false，导致模块自己报的分类点进去就被拦。现在这两种情况都按分类 id 形态校验放行，真正的判断交给模块的 `catalogPage`。
 - 修复列表报「站源暂未返回剧集，请稍后刷新」：这类模块的清单只写 `base`、`baseUrl` 留空，`providerBaseURL` 因此返回空串，`RehostProviderURL` 拼不出地址，候选列表直接变空，请求静默失败。现在清单基址取 `baseUrl` 或 `base`，候选地址也始终保留原始地址兜底。
 - 分类菜单不再出现两个「全部」：模块 `categories()` 返回的空 id 条目（`[{id:"", name:"全部"}]`）会与预置的「全部」重复，现已按 id 去重；模块只给一条「全部」也不再当成「站源暂未返回内容分类」报错。
+- 修复并发搜索时可能卡死：`exportsFunction` 判断模块是否导出某个函数时用 `context.Background()` 取实例，实例池只有 4 个，全被占用时会永久阻塞。现在改为带 5 秒超时。
 
 ## 2.1.0+127
 
