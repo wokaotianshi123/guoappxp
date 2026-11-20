@@ -234,14 +234,36 @@ func (module *jsModule) provider(host Host) Provider {
 }
 
 func (module *jsModule) validCategory(category string) bool {
+	// 空分类永远有效（应用的「全部」入口），不必起 VM 问模块。
+	if strings.TrimSpace(category) == "" {
+		return true
+	}
 	p := module.active.Load()
 	if p == nil {
-		return false
+		// provider 还没创建时（模块刚注册、用户第一次点分类）不能直接判无效，
+		// 否则表现为「点击分类提示内容分类无效」。此时按「合法 id」放行，
+		// 真正的校验交给模块自己的 catalogPage（它内部会再判一次）。
+		return validCategoryIDShape(category)
+	}
+	// 模块没导出 validCategory 时（商店里很多 maccmsweb 模板模块就是如此），
+	// 不能一律判 false——那样模块自己 categories() 报的分类会被判无效，
+	// 表现为「点击分类提示内容分类无效」。这类模块交给 catalogPage 自己兜底。
+	if !p.exportsFunction("validCategory") {
+		return validCategoryIDShape(category)
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), moduleQuickTimeout)
 	defer cancel()
 	var valid bool
 	return p.call(ctx, "validCategory", &valid, category) == nil && valid
+}
+
+// validCategoryIDShape 只做形态校验：排除缓存键分隔符、反斜杠与控制字符。
+// 与 ValidNativeCategory 的前置规则保持一致，避免在 provider 就绪前误杀合法分类。
+func validCategoryIDShape(category string) bool {
+	if len(category) > 128 || strings.ContainsAny(category, "|\\\x00\r\n") {
+		return false
+	}
+	return true
 }
 
 func (p *jsProvider) Descriptor() SourceDescriptor { return p.module.descriptor() }
@@ -461,12 +483,7 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 		// 脚本里。缺了这两个成员，脚本一执行就报
 		// "object has no member 'manifest'"。
 		"manifest": func() any { return p.module.manifestData() },
-		"baseUrl": func() string {
-			if base := strings.TrimSpace(p.module.manifest.BaseURL); base != "" {
-				return base
-			}
-			return strings.TrimSpace(p.module.manifest.Base)
-		},
+		"baseUrl": func() string { return p.module.manifest.effectiveBaseURL() },
 		"fetch": func(request jsFetchRequest) jsFetchResponse {
 			response, err := p.fetch(instance.ctx, request)
 			if err != nil {

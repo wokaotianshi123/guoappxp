@@ -302,12 +302,26 @@ func (module *jsModule) descriptor() SourceDescriptor {
 		SkipVIPPrompt:      module.manifest.SkipVIPPrompt,
 		Aliases:            module.manifest.Aliases,
 		HostSuffixes:       module.manifest.HostSuffixes,
-		BaseURL:            module.manifest.BaseURL,
+		BaseURL:            module.manifest.effectiveBaseURL(),
 		NoHostRotation:     module.manifest.NoHostRotation,
 		KeepDetailEpisodes: module.manifest.KeepDetailEpisodes,
 		ContinuousFeed:     module.manifest.ContinuousFeed,
 		BrowserFingerprint: module.manifest.BrowserFingerprint,
 	}
+}
+
+// effectiveBaseURL 归一清单里的站点主地址。
+//
+// 商店里的 maccmsweb 模板模块普遍只写 base，baseUrl 留空；本站自带的模块
+// 多用 baseUrl。两者都认，优先 baseUrl。返回空串时由调用方兜底。
+func (manifest ModuleManifest) effectiveBaseURL() string {
+	if base := strings.TrimSpace(manifest.BaseURL); base != "" {
+		return base
+	}
+	if base := strings.TrimSpace(manifest.Base); base != "" {
+		return base
+	}
+	return ""
 }
 
 func (module *jsModule) allowsHost(host string) bool {

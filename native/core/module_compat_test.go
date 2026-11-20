@@ -133,8 +133,57 @@ module.exports = {
 	if len(categories) != 1 || categories[0].ID != "demo" || categories[0].Name != "3@https://api.example.invalid/v1" {
 		t.Fatalf("categories = %+v", categories)
 	}
-	// baseUrl 留空时退回清单的 base。
-	if manifest := module.descriptor(); manifest.BaseURL != "" {
-		t.Fatalf("baseUrl 不该被 base 覆盖：%q", manifest.BaseURL)
+	// baseUrl 留空时退回清单的 base：descriptor().BaseURL 应是归一后的地址，
+	// 否则 providerBaseURL 会返回空串，轮换逻辑拼不出地址，表现为「站源暂未返回剧集」。
+	if descriptor := module.descriptor(); descriptor.BaseURL != "https://api.example.invalid/v1" {
+		t.Fatalf("baseUrl 应退回清单的 base，得到 %q", descriptor.BaseURL)
+	}
+}
+
+// TestModuleWithoutValidCategoryAcceptsDeclaredCategory 锁住商店里 maccmsweb
+// 模板模块的分类行为：这些模块只导出 categories/catalogPage/detail/search，
+// 没有 validCategory。若此时判 false，模块自己 categories() 报的分类会被应用
+// 判成「内容分类无效」。
+func TestModuleWithoutValidCategoryAcceptsDeclaredCategory(t *testing.T) {
+	directory := writeTestModule(t, `{
+		"id": "novalidcategory", "name": "无分类校验", "runtime": "js", "api": 1, "adult": false,
+		"base": "https://api.example.invalid",
+		"config": {"categories": [{"id": "27", "name": "短剧"}]}
+	}`, `
+module.exports = {
+  categories() { return [{ id: "27", name: "短剧" }]; },
+  catalogPage() { return { items: [], hasMore: false }; },
+  detail() { return { drama: { sourceId: "x", title: "x" }, chapters: [] }; },
+  search() { return { items: [], hasMore: false }; }
+};`)
+	module, err := readModule(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// provider 还没创建时也要放行（应用首次点分类可能早于任何 provider 调用）。
+	if !module.validCategory("27") {
+		t.Fatal("provider 未创建时，模块声明过的分类应放行")
+	}
+	_ = module.provider(&moduleTestHost{})
+	if !module.validCategory("27") {
+		t.Fatal("模块没有 validCategory 时，应交给 catalogPage 自己兜底，不能判无效")
+	}
+	if !module.validCategory("") {
+		t.Fatal("空分类（全部）永远有效")
+	}
+	// 形态非法仍然要拦。
+	if module.validCategory("a|b") {
+		t.Fatal("含缓存键分隔符的分类应被拒绝")
+	}
+}
+
+// TestProviderURLCandidatesKeepRaw 锁住候选地址兜底：镜像地址缺失时
+// RehostProviderURL 返回空串，候选列表不能因此变空。
+func TestProviderURLCandidatesKeepRaw(t *testing.T) {
+	downloader := &Downloader{cfg: Config{dataDir: t.TempDir()}}
+	raw := "https://unknown.invalid/list/1.html"
+	candidates := downloader.providerURLCandidates(context.Background(), raw)
+	if len(candidates) != 1 || candidates[0] != raw {
+		t.Fatalf("候选地址 = %v，期望只保留原始地址", candidates)
 	}
 }

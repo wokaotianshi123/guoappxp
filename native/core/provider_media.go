@@ -29,9 +29,13 @@ func (d *Downloader) providerBaseURL(source string) string {
 	if descriptor, ok := registeredDescriptor(source); ok {
 		if p, ok := d.provider(source); ok {
 			if sited, ok := providerAs[Sited](p); ok {
-				return strings.TrimRight(sited.BaseURL(), "/")
+				if base := strings.TrimRight(sited.BaseURL(), "/"); base != "" {
+					return base
+				}
 			}
 		}
+		// 清单里 baseUrl 与 base 两套写法并存：商店里的 maccmsweb 模板模块
+		// 普遍只写 base（baseUrl 留空）。descriptor() 已把两者归一，这里直接用。
 		return strings.TrimRight(descriptor.BaseURL, "/")
 	}
 	return "https://d2pypzndaqisk.cloudfront.net"
@@ -66,9 +70,13 @@ func (d *Downloader) providerURLCandidates(ctx context.Context, raw string) []st
 			candidates = append(candidates, candidate)
 		}
 	}
+	// raw 必须始终在候选里：下面两个 Rehost 都可能因为镜像地址缺失/非法返回空串，
+	// 若没有 raw 兜底，candidates 会变成空列表，请求静默失败，表现为
+	// 「站源暂未返回剧集」。放在最后，不影响已记住的可用域名优先。
 	add(RehostProviderURL(parsed, preferred))
 	configured := d.providerBaseURL(source)
 	add(RehostProviderURL(parsed, configured))
+	add(raw)
 	if ProviderSourceForURL(configured) == "" {
 		return candidates
 	}
