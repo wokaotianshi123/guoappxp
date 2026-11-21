@@ -183,6 +183,9 @@ bool isPlayableLiveUrl(String url) {
   final text = url.trim();
   if (!text.contains('://')) return false;
   final scheme = text.split('://').first.toLowerCase();
+  // rtmp / rtsp / rtp / udp 等协议能否播放取决于设备上 mpv 的构建，一部分设备
+  // 缺对应 demuxer 会报「can not open code」，但大多数设备正常，因此不做协议
+  // 层面的拦截，交给播放器判断；报错文案由播放侧翻译成可理解的提示。
   return const {
     'http',
     'https',

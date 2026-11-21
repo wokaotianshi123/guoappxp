@@ -197,32 +197,16 @@ class _ChoicePanel<T> extends StatelessWidget {
         // 附加操作放在右上角（原来在面板底部，手机上正好压在系统返回手势 /
         // 导航条上方，容易误触），手机只显示图标，其余形态带上文字。
         // 可以并排多个：站源面板同时给「管理模块项」和「管理XBPQ」。
+        // 电视端用 ExcludeFocusTraversal 把按钮排除在方向键遍历之外：按钮在
+        // 面板顶部，网格在下方，几何遍历下「上」从网格第一行会直接跳到按钮，
+        // 光标容易从站源串到管理项。这些按钮是便捷入口，电视端可从「我的 ›
+        // 自定义模块」进入，不参与网格内的方向键导航。
         for (final action in actions)
-          FocusRing(
-            radius: 999,
-            child: form == FormFactor.phone
-                ? IconButton(
-                    tooltip: action.label,
-                    onPressed: () {
-                      Navigator.pop(context);
-                      action.onPressed();
-                    },
-                    icon: Icon(action.icon),
-                  )
-                : TextButton.icon(
-                    // 并排两个按钮时要挤得下（面板宽 400 左右），把内边距收紧。
-                    style: TextButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(horizontal: 8),
-                      visualDensity: VisualDensity.compact,
-                    ),
-                    onPressed: () {
-                      Navigator.pop(context);
-                      action.onPressed();
-                    },
-                    icon: Icon(action.icon, size: 18),
-                    label: Text(action.label),
-                  ),
-          ),
+          television
+              ? ExcludeFocusTraversal(
+                  child: _actionRing(context, action),
+                )
+              : _actionRing(context, action),
         if (form == FormFactor.phone)
           IconButton(
             tooltip: '关闭',
@@ -261,6 +245,34 @@ class _ChoicePanel<T> extends StatelessWidget {
     final sections = groups;
     if (sections == null) return options.length;
     return sections.fold<int>(0, (sum, group) => sum + group.options.length);
+  }
+
+  Widget _actionRing(BuildContext context, ChoiceAction action) {
+    return FocusRing(
+      radius: 999,
+      child: form == FormFactor.phone
+          ? IconButton(
+              tooltip: action.label,
+              onPressed: () {
+                Navigator.pop(context);
+                action.onPressed();
+              },
+              icon: Icon(action.icon),
+            )
+          : TextButton.icon(
+              // 并排两个按钮时要挤得下（面板宽 400 左右），把内边距收紧。
+              style: TextButton.styleFrom(
+                padding: const EdgeInsets.symmetric(horizontal: 8),
+                visualDensity: VisualDensity.compact,
+              ),
+              onPressed: () {
+                Navigator.pop(context);
+                action.onPressed();
+              },
+              icon: Icon(action.icon, size: 18),
+              label: Text(action.label),
+            ),
+    );
   }
 
   Widget _body(BuildContext context, double spacing, bool television) {

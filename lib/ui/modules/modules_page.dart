@@ -2,6 +2,7 @@ import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:path/path.dart' as path;
 import 'package:path_provider/path_provider.dart';
 
@@ -215,11 +216,7 @@ class _ModulesPageState extends State<ModulesPage>
   }
 
   Future<void> _installFile() => _run(() async {
-    final files = await FilePicker.pickFiles(
-      type: FileType.custom,
-      allowedExtensions: ['zip'],
-      dialogTitle: '选择模块安装包（可多选）',
-    );
+    final files = await _pickModuleFiles();
     if (files.isEmpty) return;
     // 每个文件先落到本地可读路径：移动端拿到的可能是内存字节。
     final locations = <String>[];
@@ -240,6 +237,32 @@ class _ModulesPageState extends State<ModulesPage>
     }
     await _installBatch(files: locations);
   });
+
+  /// 选择本地模块安装包。个别设备的系统文件选择器会因存储权限拒绝访问，
+  /// 直接抛出的「权限不够」对用户没有指导意义，这里翻译成可操作的提示。
+  Future<List<PlatformFile>> _pickModuleFiles() async {
+    try {
+      return await FilePicker.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['zip'],
+        dialogTitle: '选择模块安装包（可多选）',
+      );
+    } catch (error) {
+      throw AppFailure(_filePickerMessage(error));
+    }
+  }
+
+  String _filePickerMessage(Object error) {
+    final text = '$error';
+    final lower = text.toLowerCase();
+    if (text.contains('权限') ||
+        lower.contains('permission') ||
+        lower.contains('denied') ||
+        lower.contains('access')) {
+      return '无法访问文件，请检查存储权限后重试';
+    }
+    return text;
+  }
 
   Future<void> _installAddress() async {
     final input = await showDialog<_AddressInput>(
@@ -757,6 +780,28 @@ class _ModuleCard extends StatelessWidget {
   final List<Widget> actions;
   final VoidCallback? onTap;
 
+  /// 电视端方向键线性遍历卡片内的可聚焦项。
+  ///
+  /// 卡片的开关在顶行右侧、操作按钮在底行右侧，按钮之间是水平排列。几何遍历
+  /// 下「下」从开关能到第一个按钮，但从按钮再按「下」会跳过同排剩余按钮直接
+  /// 跳到下一张卡片的开关。这里拦截上下方向键，改用阅读顺序的 next/previous
+  /// 逐个移动，左右方向键仍走默认几何遍历，可在按钮之间横向移动。
+  static KeyEventResult cardKeyEvent(FocusNode node, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final primary = FocusManager.instance.primaryFocus;
+    if (primary == null) return KeyEventResult.ignored;
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+        primary.nextFocus();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowUp:
+        primary.previousFocus();
+        return KeyEventResult.handled;
+      default:
+        return KeyEventResult.ignored;
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final theme = Theme.of(context);
@@ -765,66 +810,76 @@ class _ModuleCard extends StatelessWidget {
       height: 1.35,
     );
     final footer = leading.isNotEmpty || actions.isNotEmpty;
+    final hasMultiple = trailing != null && actions.isNotEmpty;
+    final content = InkWell(
+      onTap: onTap,
+      child: Column(
+        children: [
+          Padding(
+            padding: EdgeInsets.fromLTRB(18, 14, 12, footer ? 10 : 14),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      DefaultTextStyle.merge(
+                        style: theme.textTheme.titleMedium?.copyWith(
+                          fontSize: 18,
+                        ),
+                        child: _ModuleTitle(name, adult: adult),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '版本：${version.isEmpty ? '未标注' : version}',
+                        style: meta,
+                      ),
+                      Text('标识：$id', style: meta),
+                      // 分组与站源菜单同一口径，装完就能看出它会落在哪个类目。
+                      if (group.isNotEmpty) Text('分组：$group', style: meta),
+                      if (body.isNotEmpty) ...[
+                        const SizedBox(height: 6),
+                        ...body,
+                      ],
+                    ],
+                  ),
+                ),
+                ?trailing,
+              ],
+            ),
+          ),
+          if (footer) ...[
+            Divider(
+              height: 1,
+              indent: 18,
+              endIndent: 18,
+              color: theme.colorScheme.outlineVariant.withValues(
+                alpha: 0.6,
+              ),
+            ),
+            Padding(
+              padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+              child: Row(
+                spacing: 8,
+                children: [...leading, const Spacer(), ...actions],
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
     return GroupCard(
       children: [
-        InkWell(
-          onTap: onTap,
-          child: Column(
-            children: [
-              Padding(
-                padding: EdgeInsets.fromLTRB(18, 14, 12, footer ? 10 : 14),
-                child: Row(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          DefaultTextStyle.merge(
-                            style: theme.textTheme.titleMedium?.copyWith(
-                              fontSize: 18,
-                            ),
-                            child: _ModuleTitle(name, adult: adult),
-                          ),
-                          const SizedBox(height: 2),
-                          Text(
-                            '版本：${version.isEmpty ? '未标注' : version}',
-                            style: meta,
-                          ),
-                          Text('标识：$id', style: meta),
-                          // 分组与站源菜单同一口径，装完就能看出它会落在哪个类目。
-                          if (group.isNotEmpty) Text('分组：$group', style: meta),
-                          if (body.isNotEmpty) ...[
-                            const SizedBox(height: 6),
-                            ...body,
-                          ],
-                        ],
-                      ),
-                    ),
-                    ?trailing,
-                  ],
-                ),
-              ),
-              if (footer) ...[
-                Divider(
-                  height: 1,
-                  indent: 18,
-                  endIndent: 18,
-                  color: theme.colorScheme.outlineVariant.withValues(
-                    alpha: 0.6,
-                  ),
-                ),
-                Padding(
-                  padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
-                  child: Row(
-                    spacing: 8,
-                    children: [...leading, const Spacer(), ...actions],
-                  ),
-                ),
-              ],
-            ],
-          ),
-        ),
+        if (hasMultiple)
+          Focus(
+            canRequestFocus: false,
+            skipTraversal: true,
+            onKeyEvent: cardKeyEvent,
+            child: content,
+          )
+        else
+          content,
       ],
     );
   }
@@ -1315,48 +1370,85 @@ class _RepositoriesDialogState extends State<_RepositoriesDialog> {
                   children: [
                     for (var i = 0; i < _items.length; i++)
                       Card(
-                        child: ListTile(
-                          leading: Radio<int>(
-                            value: i,
-                            groupValue: _active,
-                            onChanged: (value) =>
-                                setState(() => _active = value ?? _active),
-                          ),
-                          title: Text(
-                            _items[i].name.isEmpty ? '未命名仓库' : _items[i].name,
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                          ),
-                          subtitle: Text(
-                            _items[i].url.isEmpty ? '未填写地址' : _items[i].url,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: TextStyle(
-                              fontSize: 12,
-                              color: _items[i].url.isEmpty
-                                  ? colors.error
-                                  : null,
-                            ),
-                          ),
-                          trailing: Row(
-                            mainAxisSize: MainAxisSize.min,
+                        child: Padding(
+                          padding: const EdgeInsets.fromLTRB(4, 4, 8, 4),
+                          // 圆点、编辑、删除各成一个焦点站点：电视端左右键在
+                          // 同一行内移动，上下键在仓库之间移动。原来整块 ListTile
+                          // 是单个焦点节点，按钮落在它的矩形内部，几何遍历永远
+                          // 找不到右侧按钮，只能上下跳。
+                          child: Row(
                             children: [
-                              IconButton(
-                                tooltip: '编辑',
-                                icon: const Icon(Icons.edit_outlined),
-                                onPressed: () => _edit(i),
-                              ),
-                              IconButton(
-                                tooltip: '删除',
-                                icon: Icon(
-                                  Icons.delete_outline,
-                                  color: colors.error,
+                              FocusRing(
+                                radius: 20,
+                                child: Radio<int>(
+                                  value: i,
+                                  groupValue: _active,
+                                  onChanged: (value) => setState(
+                                    () => _active = value ?? _active,
+                                  ),
                                 ),
-                                onPressed: () => _remove(i),
+                              ),
+                              Expanded(
+                                child: InkWell(
+                                  canRequestFocus: false,
+                                  borderRadius: BorderRadius.circular(8),
+                                  onTap: () => setState(() => _active = i),
+                                  child: Padding(
+                                    padding: const EdgeInsets.symmetric(
+                                      horizontal: 4,
+                                      vertical: 8,
+                                    ),
+                                    child: Column(
+                                      crossAxisAlignment:
+                                          CrossAxisAlignment.start,
+                                      children: [
+                                        Text(
+                                          _items[i].name.isEmpty
+                                              ? '未命名仓库'
+                                              : _items[i].name,
+                                          maxLines: 1,
+                                          overflow: TextOverflow.ellipsis,
+                                        ),
+                                        const SizedBox(height: 2),
+                                        Text(
+                                          _items[i].url.isEmpty
+                                              ? '未填写地址'
+                                              : _items[i].url,
+                                          maxLines: 2,
+                                          overflow: TextOverflow.ellipsis,
+                                          style: TextStyle(
+                                            fontSize: 12,
+                                            color: _items[i].url.isEmpty
+                                                ? colors.error
+                                                : colors.onSurfaceVariant,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                              ),
+                              FocusRing(
+                                radius: 20,
+                                child: IconButton(
+                                  tooltip: '编辑',
+                                  icon: const Icon(Icons.edit_outlined),
+                                  onPressed: () => _edit(i),
+                                ),
+                              ),
+                              FocusRing(
+                                radius: 20,
+                                child: IconButton(
+                                  tooltip: '删除',
+                                  icon: Icon(
+                                    Icons.delete_outline,
+                                    color: colors.error,
+                                  ),
+                                  onPressed: () => _remove(i),
+                                ),
                               ),
                             ],
                           ),
-                          onTap: () => setState(() => _active = i),
                         ),
                       ),
                   ],
@@ -1366,10 +1458,13 @@ class _RepositoriesDialogState extends State<_RepositoriesDialog> {
             const SizedBox(height: 8),
             Align(
               alignment: Alignment.centerLeft,
-              child: TextButton.icon(
-                onPressed: _add,
-                icon: const Icon(Icons.add),
-                label: const Text('添加仓库'),
+              child: FocusRing(
+                radius: 20,
+                child: TextButton.icon(
+                  onPressed: _add,
+                  icon: const Icon(Icons.add),
+                  label: const Text('添加仓库'),
+                ),
               ),
             ),
           ],

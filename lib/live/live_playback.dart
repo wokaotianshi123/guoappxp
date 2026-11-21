@@ -292,9 +292,31 @@ class LivePlaybackController extends ChangeNotifier {
   void _onError(String message) {
     if (_disposed) return;
     _loading = false;
-    _error = message.isEmpty ? '直播中断' : message;
+    _error = message.isEmpty ? '直播中断' : _friendlyError(message);
     notifyListeners();
     _scheduleReconnect();
+  }
+
+  /// 把 mpv 的底层报错翻译成用户能理解的提示。
+  ///
+  /// mpv 打不开流时会输出「can not open code」「Error opening file」之类的
+  /// 英文原始报错，直接抛给用户完全看不懂。这里对常见格式做一次映射，保留
+  /// 其它信息原样显示，方便排查。
+  String _friendlyError(String message) {
+    final lower = message.toLowerCase();
+    final unplayable =
+        lower.contains('codec') ||
+        lower.contains('can not open') ||
+        lower.contains('cannot open') ||
+        lower.contains('could not open') ||
+        lower.contains('demux') ||
+        lower.contains('decoder');
+    if (!unplayable) return message;
+    // 多线路时重连会换线，可以承诺「正在尝试其他线路」；单线路没有后备可换，
+    // 多半是设备不支持这种流格式（如缺少 rtmp demuxer），要说清这一点。
+    return routeCount > 1
+        ? '当前线路无法播放，正在尝试其他线路'
+        : '这台设备无法播放该直播流，可换个频道或换台设备试试';
   }
 
   void _scheduleReconnect() {
