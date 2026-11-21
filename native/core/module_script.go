@@ -92,7 +92,8 @@ type jsFetchRequest struct {
 	Method          string            `json:"method"`
 	URL             string            `json:"url"`
 	Headers         map[string]string `json:"headers"`
-	Body            string            `json:"body"`
+	Body            any               `json:"body"`
+	Binary          bool              `json:"binary"`
 	TimeoutMS       int64             `json:"timeoutMs"`
 	Limit           int64             `json:"limit"`
 	FollowRedirects bool              `json:"followRedirects"`
@@ -106,7 +107,7 @@ type jsFetchRequest struct {
 type jsFetchResponse struct {
 	Status    int                 `json:"status"`
 	Headers   map[string][]string `json:"headers"`
-	Body      string              `json:"body"`
+	Body      any                 `json:"body"`
 	Blocked   bool                `json:"blocked"`
 	Oversized bool                `json:"oversized"`
 }
@@ -368,7 +369,7 @@ func (p *jsProvider) exportsFunction(name string) bool {
 }
 
 func (p *jsProvider) call(ctx context.Context, function string, result any, arguments ...any) error {
-	ctx, cancel := context.WithTimeout(ctx, moduleCallTimeout)
+	ctx, cancel := context.WithTimeout(withProxySource(ctx, p.module.manifest.ID), moduleCallTimeout)
 	defer cancel()
 	encoded, err := json.Marshal(arguments)
 	if err != nil {
@@ -489,11 +490,24 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 		"manifest": func() any { return p.module.manifestData() },
 		"baseUrl": func() string { return p.module.manifest.effectiveBaseURL() },
 		"fetch": func(request jsFetchRequest) jsFetchResponse {
-			response, err := p.fetch(instance.ctx, request)
-			if err != nil {
-				instance.failResponse(err, response)
+			var body []byte
+			if request.Body != nil {
+				value := instance.vm.ToValue(request.Body)
+				if !goja.IsUndefined(value) && !goja.IsNull(value) {
+					body = instance.bytesOf(value)
+				}
 			}
-			return response
+			fetched, err := p.fetch(instance.ctx, request, body)
+			raw, _ := fetched.Body.(string)
+			result := jsFetchResponse{Status: fetched.Status, Headers: fetched.Headers,
+				Body: raw, Blocked: fetched.Blocked, Oversized: fetched.Oversized}
+			if err != nil {
+				instance.failResponse(err, result)
+			}
+			if request.Binary {
+				result.Body = instance.bytesValue([]byte(raw))
+			}
+			return result
 		},
 		"fetchText": func(request jsTextRequest) jsTextResponse {
 			response, err := p.fetchText(instance.ctx, request)
@@ -565,7 +579,11 @@ func (instance *jsInstance) failResponse(err error, response jsFetchResponse) {
 	_ = failure.Set("backoff", errors.As(err, &backoff))
 	_ = failure.Set("oversized", response.Oversized)
 	_ = failure.Set("status", response.Status)
-	_ = failure.Set("body", response.Body)
+	body := response.Body
+	if raw, ok := body.([]byte); ok {
+		body = string(raw)
+	}
+	_ = failure.Set("body", body)
 	_ = failure.Set("blocked", response.Blocked)
 	panic(failure)
 }
@@ -621,14 +639,14 @@ func (p *jsProvider) fetchText(ctx context.Context, request jsTextRequest) (jsTe
 			Method:          request.Method,
 			URL:             request.URL,
 			Headers:         request.Headers,
-			Body:            request.Body,
 			TimeoutMS:       request.TimeoutMS,
 			Limit:           request.Limit,
 			FollowRedirects: request.FollowRedirects,
 			AnyStatus:       request.AnyStatus,
-		})
+		}, moduleBody(request.Body))
+		body, _ := response.Body.(string)
 		return jsTextResponse{
-			Body: response.Body, URL: request.URL, Status: response.Status, Headers: response.Headers,
+			Body: body, URL: request.URL, Status: response.Status, Headers: response.Headers,
 		}, err
 	}
 	response, err := p.host.FetchText(ctx, TextRequest{URL: request.URL, Referer: request.Referer, UserAgent: request.UserAgent,
@@ -642,7 +660,7 @@ func (request jsTextRequest) usesFetchShape() bool {
 		request.AnyStatus || request.Limit > 0 || request.FollowRedirects || request.TimeoutMS > 0
 }
 
-func (p *jsProvider) fetch(ctx context.Context, request jsFetchRequest) (jsFetchResponse, error) {
+func (p *jsProvider) fetch(ctx context.Context, request jsFetchRequest, body []byte) (jsFetchResponse, error) {
 	if err := p.allowedAddress(request.URL); err != nil {
 		return jsFetchResponse{}, err
 	}
@@ -651,7 +669,7 @@ func (p *jsProvider) fetch(ctx context.Context, request jsFetchRequest) (jsFetch
 	}
 	response, err := p.host.Fetch(ctx, HTTPRequest{
 		Label: p.module.manifest.Name, Method: request.Method, URL: request.URL, Header: request.Headers,
-		Body: moduleBody(request.Body), Timeout: time.Duration(request.TimeoutMS) * time.Millisecond, Limit: request.Limit,
+		Body: body, Timeout: time.Duration(request.TimeoutMS) * time.Millisecond, Limit: request.Limit,
 		FollowRedirects: request.FollowRedirects, AnyStatus: request.AnyStatus, AcceptJSONStatus: request.AcceptStatus, Ticket: request.Ticket,
 		Direct: request.Direct,
 	})

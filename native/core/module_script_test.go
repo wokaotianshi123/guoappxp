@@ -442,3 +442,47 @@ func TestLoadModulesRegistersAndReplaces(t *testing.T) {
 		t.Fatal("reload did not replace the provider")
 	}
 }
+
+func TestModuleHostFetchKeepsBinaryBodies(t *testing.T) {
+	directory := writeTestModule(t, `{"id":"binarytest","name":"二进制测试","runtime":"js","api":1,"adult":false,"hosts":["api.example.invalid"]}`, `
+module.exports = {
+  categories() {
+    const response = host.fetch({ method: "POST", url: "https://api.example.invalid/raw", body: new Uint8Array([255, 0, 128]), binary: true });
+    const packed = host.gunzip(host.gzip(response.body));
+    return [{ id: host.hexEncode(response.body), name: host.hexEncode(packed) }];
+  },
+};`)
+	module, err := readModule(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &moduleTestHost{state: map[string][]byte{}}
+	categories, err := module.provider(host).Categories(context.Background(), false)
+	want := "706f6e6720ff0080"
+	if err != nil || len(categories) != 1 || categories[0].ID != want || categories[0].Name != want {
+		t.Fatalf("categories = %v, %v", categories, err)
+	}
+	if len(host.requests) != 1 || string(host.requests[0].Body) != "\xff\x00\x80" {
+		t.Fatalf("requests = %+v", host.requests)
+	}
+}
+
+func TestModuleHostSha512AndGzip(t *testing.T) {
+	directory := writeTestModule(t, `{"id":"hashgzip","name":"摘要与压缩","runtime":"js","api":1,"adult":false}`, `
+module.exports = {
+  categories() {
+    const digest = host.hexEncode(host.sha512(host.utf8Encode("abc")));
+    const plain = host.utf8Decode(host.gunzip(host.gzip(host.utf8Encode("hello"))));
+    return [{ id: digest, name: plain }];
+  },
+};`)
+	module, err := readModule(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	categories, err := module.provider(&moduleTestHost{state: map[string][]byte{}}).Categories(context.Background(), false)
+	want := "ddaf35a193617abacc417349ae20413112e6fa4e89a97ea20a9eeee64b55d39a2192992a274fc1a836ba3c23a3feebbd454d4423643ce80e2a9ac94fa54ca49f"
+	if err != nil || len(categories) != 1 || categories[0].ID != want || categories[0].Name != "hello" {
+		t.Fatalf("categories = %v, %v", categories, err)
+	}
+}

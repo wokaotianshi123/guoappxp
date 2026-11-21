@@ -267,6 +267,7 @@ class FakeRepository extends AppRepository {
     int page = 1,
     String query = '',
     String category = '',
+    String lane = '',
     bool force = false,
   }) async {
     catalogRequests.add('$source|$category|$query|$page${force ? '!' : ''}');

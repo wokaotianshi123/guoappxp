@@ -1,8 +1,8 @@
 const siteBaseUrl = "https://hongguoduanju.com";
 const appBaseUrl = "https://api5-normal-sinfonlineb.fqnovel.com";
 const playbackBaseUrl = "https://api5-normal-sinfonlinea.fqnovel.com";
-const playbackUserAgent = "com.phoenix.read/73932 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)";
-const appUserAgent = "com.phoenix.read/73532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)";
+const playbackUserAgent = "com.phoenix.read/74532 (Linux; U; Android 12; zh_CN_#Hans; PGT-AN10; Build/V417IR;tt-ok/3.12.13.20)";
+const appUserAgent = "com.phoenix.read/74532 (Linux; U; Android 16; zh_CN; 25053RT47C; Build/BP2A.250605.031.A3; Cronet/TTNetVersion:04657795 2026-01-23 QuicVersion:c67e9834 2025-09-08)";
 const webUserAgent = "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/26.6 Mobile/15E148 Safari/604.1";
 const deviceRegisterUrl = "https://log.snssdk.com/service/2/device_register/";
 const mediaReferer = "https://novel.snssdk.com/";
@@ -665,7 +665,7 @@ function playerArgus(query, body, timestamp, deviceId, nonce) {
   bytesField(message, 4, host.utf8Encode("8662"));
   bytesField(message, 5, host.utf8Encode(deviceId));
   bytesField(message, 6, host.utf8Encode("1611921764"));
-  bytesField(message, 7, host.utf8Encode("7.3.5.32"));
+  bytesField(message, 7, host.utf8Encode("7.4.5.32"));
   bytesField(message, 8, host.utf8Encode("v04.07.01-ml-android"));
   varintField(message, 9, 135135744);
   bytesField(message, 10, new Uint8Array(8));
@@ -1351,8 +1351,8 @@ function deviceOf(state, helper) {
 
 function appQuery(deviceId, installId) {
   return {
-    aid: "8662", app_name: "novelread", version_code: "73532", version_name: "7.3.5.32",
-    manifest_version_code: "73532", update_version_code: "73532", channel: "update_64",
+    aid: "8662", app_name: "novelread", version_code: "74532", version_name: "7.4.5.32",
+    manifest_version_code: "74532", update_version_code: "74532", channel: "update_64",
     device_platform: "android", os: "android", ssmix: "a", device_type: "25053RT47C",
     device_brand: "Redmi", language: "zh", os_api: "36", os_version: "16",
     resolution: "1280*2772", dpi: "520", ac: "wifi", device_id: deviceId, iid: installId,
@@ -1361,8 +1361,8 @@ function appQuery(deviceId, installId) {
 
 function registerDevice() {
   const header = {
-    display_name: "红果免费短剧", aid: 8662, app_version: "7.3.5.32", version_code: 73532,
-    manifest_version_code: 73532, update_version_code: 73532, channel: "update_64", package: "com.phoenix.read",
+    display_name: "红果免费短剧", aid: 8662, app_version: "7.4.5.32", version_code: 74532,
+    manifest_version_code: 74532, update_version_code: 74532, channel: "update_64", package: "com.phoenix.read",
     app_language: "zh", os: "Android", os_version: "16", os_api: 36, device_model: "25053RT47C",
     device_brand: "Redmi", device_manufacturer: "Xiaomi", cpu_abi: "arm64-v8a", density_dpi: 520,
     display_density: "xxhdpi", resolution: "2772x1280", language: "zh", timezone: 8, access: "wifi",
@@ -1454,9 +1454,9 @@ function timeoutError() {
 
 function playbackQuery(deviceId, installId) {
   return {
-    aid: "8662", app_name: "novelread", version_code: "74332", version_name: "7.4.3.32",
+    aid: "8662", app_name: "novelread", version_code: "74532", version_name: "7.4.5.32",
     channel: "vivo_8662_64", device_platform: "android", device_type: "PGT-AN10", os_version: "12",
-    update_version_code: "74332", iid: installId, cdid: uuidLike(), device_id: deviceId,
+    update_version_code: "74532", iid: installId, cdid: uuidLike(), device_id: deviceId,
   };
 }
 

@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 
@@ -21,6 +22,7 @@ import '../widgets/drama_grid.dart';
 import '../widgets/follow_button.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/page_header.dart';
+import '../widgets/pull_refresh.dart';
 import '../widgets/source_bar.dart';
 import '../widgets/status_view.dart';
 import '../widgets/swipe_switch.dart';
@@ -40,7 +42,13 @@ class ExplorePageState extends State<ExplorePage> {
   final _scroll = ScrollController();
   final _search = TextEditingController();
   final _tabsKey = GlobalKey();
-  final _refreshKey = GlobalKey<RefreshIndicatorState>();
+  final _refreshKey = GlobalKey<PullRefreshState>();
+  final _pages = <String, _CategoryPageState>{};
+  PageController? _pager;
+  String? _pagerSource;
+  int? _pagerTarget;
+  bool _paged = false;
+  bool _dragging = false;
   String _shown = '';
 
   @override
@@ -52,24 +60,33 @@ class ExplorePageState extends State<ExplorePage> {
   @override
   void dispose() {
     _explore?.dispose();
+    _pager?.dispose();
     _scroll.dispose();
     _search.dispose();
     super.dispose();
   }
 
+  ScrollController? get _activeScroll =>
+      _paged ? _pages[_explore?.tab.id]?.scroll : _scroll;
+
+  GlobalKey<PullRefreshState>? get _activeRefresh =>
+      _paged ? _pages[_explore?.tab.id]?.refresh : _refreshKey;
+
   Future<void> refresh() async {
-    if (_scroll.hasClients) _scroll.jumpTo(0);
+    final scroll = _activeScroll;
+    if (scroll != null && scroll.hasClients) scroll.jumpTo(0);
     await _explore?.refresh();
   }
 
   void reselect() {
-    if (!_scroll.hasClients) return;
-    if (_scroll.offset <= 0) {
-      unawaited(_refreshKey.currentState?.show());
+    final scroll = _activeScroll;
+    if (scroll == null || !scroll.hasClients) return;
+    if (scroll.offset <= 0) {
+      unawaited(_activeRefresh?.currentState?.show());
       return;
     }
     unawaited(
-      _scroll.animateTo(
+      scroll.animateTo(
         0,
         duration: Motion.of(context, Motion.long),
         curve: Motion.enter,
@@ -82,9 +99,10 @@ class ExplorePageState extends State<ExplorePage> {
       _explore!.select(id);
       return;
     }
-    if (!_scroll.hasClients || _scroll.offset <= 0) return;
+    final scroll = _activeScroll;
+    if (scroll == null || !scroll.hasClients || scroll.offset <= 0) return;
     unawaited(
-      _scroll.animateTo(
+      scroll.animateTo(
         0,
         duration: Motion.of(context, Motion.long),
         curve: Motion.enter,
@@ -134,7 +152,8 @@ class ExplorePageState extends State<ExplorePage> {
       final form = AppScope.formFactorOf(context);
       final television = form == FormFactor.television;
       final desktop = form == FormFactor.window;
-      _resetScroll(explore, deferred: _swipes(form));
+      _paged = _swipes(form);
+      if (!_paged) _resetScroll(explore, deferred: false);
       if (source == null) {
         return Scaffold(
           body: SafeArea(
@@ -187,6 +206,7 @@ class ExplorePageState extends State<ExplorePage> {
             for (final tab in explore.tabs) ChoiceOption(tab.id, tab.name),
           ],
           selected: explore.tab.id,
+          pager: _paged ? _pagerFor(explore) : null,
           onSelected: _selectTab,
           onShowAll: _pickCategory,
         ),
@@ -197,45 +217,60 @@ class ExplorePageState extends State<ExplorePage> {
           child: Column(
             children: [
               if (!television)
-                SourceBar(
-                  source: source.name,
-                  searchController: _search,
-                  onSwitchSource: (anchor) => pickSource(anchor, widget.store),
-                  onOpenSearch: () => openSearch(context, widget.store, source),
-                  onSearchSubmitted: (query) => _searchSubmitted(source, query),
-                  leading: [
-                    if (widget.store.blurCoversButton)
-                      if (CoverBlurScope.of(context) case final blur?)
-                        BarButton(
-                          icon: blur.mode != CoverBlur.off
-                              ? Icons.visibility_off_rounded
-                              : Icons.visibility_rounded,
-                          tooltip: blur.mode != CoverBlur.off ? '显示封面' : '模糊封面',
-                          onPressed: blur.onToggle,
-                        ),
-                  ],
-                  actions: [
-                    BarButton(
-                      icon: Icons.live_tv_rounded,
-                      tooltip: '直播',
-                      onPressed: () =>
-                          unawaited(openLive(context, store: widget.store)),
-                    ),
-                    if (desktop)
+                HideOnScroll(
+                  alignment: Alignment.bottomCenter,
+                  child: SourceBar(
+                    source: source.name,
+                    searchController: _search,
+                    onSwitchSource: (anchor) =>
+                        pickSource(anchor, widget.store),
+                    onOpenSearch: () =>
+                        openSearch(context, widget.store, source),
+                    onSearchSubmitted: (query) =>
+                        _searchSubmitted(source, query),
+                    leading: [
+                      if (widget.store.blurCoversButton)
+                        if (CoverBlurScope.of(context) case final blur?)
+                          BarButton(
+                            icon: blur.mode != CoverBlur.off
+                                ? Icons.visibility_off_rounded
+                                : Icons.visibility_rounded,
+                            tooltip: blur.mode != CoverBlur.off
+                                ? '显示封面'
+                                : '模糊封面',
+                            onPressed: blur.onToggle,
+                          ),
+                    ],
+                    actions: [
                       BarButton(
-                        icon: Icons.refresh_rounded,
-                        tooltip: '刷新',
-                        onPressed: explore.refresh,
+                        icon: Icons.live_tv_rounded,
+                        tooltip: '直播',
+                        onPressed: () =>
+                            unawaited(openLive(context, store: widget.store)),
                       ),
-                  ],
+                      if (desktop)
+                        BarButton(
+                          icon: Icons.refresh_rounded,
+                          tooltip: '刷新',
+                          onPressed: explore.refresh,
+                        ),
+                    ],
+                  ),
                 ),
               if (!television || explore.feed!.items.isEmpty) tabs,
               Expanded(
-                child: _swipeTabs(
-                  explore,
-                  form,
-                  _content(explore, inset, television, tabs),
-                ),
+                child: _paged
+                    ? _pagerView(explore, inset, tabs)
+                    : _content(
+                        explore,
+                        explore.tab,
+                        explore.feed!,
+                        inset,
+                        television,
+                        tabs,
+                        _scroll,
+                        _refreshKey,
+                      ),
               ),
             ],
           ),
@@ -247,58 +282,154 @@ class ExplorePageState extends State<ExplorePage> {
   bool _swipes(FormFactor form) =>
       form == FormFactor.phone || form == FormFactor.pad;
 
-  Widget _swipeTabs(ExploreFeed explore, FormFactor form, Widget child) {
-    final tabs = explore.tabs;
-    final index = tabs.indexWhere((tab) => tab.id == explore.tab.id);
-    if (!_swipes(form) || index < 0) return child;
-    return SwipeSwitch(
-      key: ValueKey(explore.source?.id),
-      index: index,
-      count: tabs.length,
-      ready: switch (explore.feed) {
-        final feed? => feed.items.isNotEmpty || !feed.loading,
-        null => true,
-      },
-      onSwitch: (index) => explore.select(tabs[index].id),
-      onEnter: _toTop,
-      child: child,
+  PageController _pagerFor(ExploreFeed explore) {
+    final source = explore.source?.id;
+    final pager = _pager;
+    if (pager != null && source == _pagerSource) return pager;
+    if (pager != null) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => pager.dispose());
+    }
+    _pagerSource = source;
+    _pagerTarget = null;
+    _dragging = false;
+    final index = explore.tabs.indexWhere((tab) => tab.id == explore.tab.id);
+    return _pager = PageController(initialPage: math.max(index, 0));
+  }
+
+  Widget _pagerView(ExploreFeed explore, double inset, Widget tabs) {
+    final pager = _pagerFor(explore);
+    final pages = explore.tabs;
+    final index = pages.indexWhere((tab) => tab.id == explore.tab.id);
+    if (index >= 0) {
+      WidgetsBinding.instance.addPostFrameCallback((_) => _follow(index));
+    }
+    return NotificationListener<ScrollNotification>(
+      onNotification: _pageScrolled,
+      child: PageView.builder(
+        key: ValueKey(explore.source?.id),
+        controller: pager,
+        itemCount: pages.length,
+        itemBuilder: (context, index) {
+          final tab = pages[index];
+          return _CategoryPage(
+            key: ValueKey(tab.id),
+            id: tab.id,
+            pages: _pages,
+            builder: (context, page) {
+              final feed = explore.feedOf(tab);
+              final warm = page.warm ??= feed.items.isNotEmpty;
+              return _content(
+                explore,
+                tab,
+                feed,
+                inset,
+                false,
+                tabs,
+                page.scroll,
+                page.refresh,
+                fade: !warm,
+              );
+            },
+          );
+        },
+      ),
+    );
+  }
+
+  bool _pageScrolled(ScrollNotification notification) {
+    if (notification.depth != 0 ||
+        notification.metrics.axis != Axis.horizontal) {
+      return false;
+    }
+    if (notification is ScrollStartNotification &&
+        notification.dragDetails != null) {
+      _dragging = true;
+      _pagerTarget = null;
+    } else if (notification is ScrollEndNotification && _dragging) {
+      _dragging = false;
+      final explore = _explore!;
+      final page = _pager?.page?.round();
+      final pages = explore.tabs;
+      if (page != null && page >= 0 && page < pages.length) {
+        explore.select(pages[page].id);
+      }
+    }
+    return false;
+  }
+
+  void _follow(int index) {
+    final pager = _pager;
+    if (!mounted || pager == null || !pager.hasClients || _dragging) return;
+    final page = pager.page;
+    if (page == null || _pagerTarget == index) return;
+    if ((page - index).abs() < .01) return;
+    final from = page.round();
+    if ((index - from).abs() > 1) {
+      pager.jumpToPage(index > from ? index - 1 : index + 1);
+    }
+    _pagerTarget = index;
+    unawaited(
+      pager
+          .animateToPage(
+            index,
+            duration: Motion.of(context, Motion.long),
+            curve: Motion.standard,
+          )
+          .whenComplete(() {
+            if (_pagerTarget == index) _pagerTarget = null;
+          }),
     );
   }
 
   void _toTop() {
-    if (_scroll.hasClients) _scroll.jumpTo(0);
+    final scroll = _activeScroll;
+    if (scroll != null && scroll.hasClients) scroll.jumpTo(0);
   }
 
   Widget _content(
     ExploreFeed explore,
+    CatalogCategory tab,
+    DramaFeed feed,
     double inset,
     bool television,
     Widget tabs,
-  ) {
-    final feed = explore.feed!;
-    final hero = _hero(explore);
-    final items = explore.items;
+    ScrollController scroll,
+    GlobalKey<PullRefreshState> refreshKey, {
+    bool fade = true,
+  }) {
+    final hero = _hero(explore, tab);
+    final items = explore.itemsIn(tab);
     if (feed.items.isEmpty) {
-      return FadeSwitcher(child: _status(feed));
+      return FadeSwitcher(child: _status(feed, inset));
     }
     final phone = AppScope.formFactorOf(context) == FormFactor.phone;
     final desktop = AppScope.formFactorOf(context) == FormFactor.window;
-    return _grid(
-      explore,
-      feed,
-      hero,
-      items,
-      inset,
-      television,
-      tabs,
-      phone,
-      desktop,
+    return FadeIn(
+      enabled: fade,
+      child: _grid(
+        explore,
+        tab,
+        feed,
+        hero,
+        items,
+        inset,
+        television,
+        tabs,
+        phone,
+        desktop,
+        scroll,
+        refreshKey,
+      ),
     );
   }
 
-  Widget _status(DramaFeed feed) {
+  Widget _status(DramaFeed feed, double inset) {
     if (feed.loading) {
-      return const StatusView.loading(key: ValueKey('loading'));
+      final desktop = AppScope.formFactorOf(context) == FormFactor.window;
+      return DramaGridSkeleton(
+        key: const ValueKey('loading'),
+        padding: EdgeInsets.fromLTRB(inset, desktop ? 20 : 16, inset, 0),
+      );
     }
     if (feed.error.isNotEmpty) {
       return StatusView(
@@ -322,6 +453,7 @@ class ExplorePageState extends State<ExplorePage> {
 
   Widget _grid(
     ExploreFeed explore,
+    CatalogCategory tab,
     DramaFeed feed,
     Widget? hero,
     List<Drama> items,
@@ -330,6 +462,8 @@ class ExplorePageState extends State<ExplorePage> {
     Widget tabs,
     bool phone,
     bool desktop,
+    ScrollController controller,
+    GlobalKey<PullRefreshState> refreshKey,
   ) {
     final heroSection = hero == null
         ? const SizedBox(key: ValueKey('none'), width: double.infinity)
@@ -341,7 +475,7 @@ class ExplorePageState extends State<ExplorePage> {
     return LayoutBuilder(
       builder: (context, constraints) {
         final scroll = CustomScrollView(
-          controller: _scroll,
+          controller: controller,
           physics: const AlwaysScrollableScrollPhysics(),
           slivers: [
             if (television)
@@ -353,7 +487,7 @@ class ExplorePageState extends State<ExplorePage> {
               child: television
                   ? heroSection
                   : AnimatedSize(
-                      key: ValueKey(explore.tab.id),
+                      key: ValueKey(tab.id),
                       duration: Motion.of(context, Motion.long),
                       curve: Motion.enter,
                       alignment: Alignment.topCenter,
@@ -369,11 +503,11 @@ class ExplorePageState extends State<ExplorePage> {
               sliver: DramaSliverGrid(
                 width: constraints.maxWidth - inset * 2,
                 items: items,
-                rankOf: explore.rankOf,
+                rankOf: (drama) => explore.rankIn(tab, drama),
                 autofocus:
                     television && hero == null && ShellForeground.of(context),
                 heroScope: 'drama',
-                showScore: !explore.recommending,
+                showScore: tab.id != recommendTab.id,
                 exploreBlur: true,
                 onOpen: _open,
                 onMore: (drama) => quickFollow(context, widget.store, drama),
@@ -396,8 +530,8 @@ class ExplorePageState extends State<ExplorePage> {
               feed: feed,
               child: television
                   ? scroll
-                  : RefreshIndicator(
-                      key: _refreshKey,
+                  : PullRefresh(
+                      key: refreshKey,
                       onRefresh: explore.refresh,
                       child: scroll,
                     ),
@@ -427,8 +561,8 @@ class ExplorePageState extends State<ExplorePage> {
     );
   }
 
-  Widget? _hero(ExploreFeed explore) {
-    if (explore.resume case final entry?) {
+  Widget? _hero(ExploreFeed explore, CatalogCategory tab) {
+    if (explore.resumeIn(tab) case final entry?) {
       final drama = entry.drama;
       final total = drama.episodes;
       final next = entry.finished && entry.episode < total
@@ -447,7 +581,7 @@ class ExplorePageState extends State<ExplorePage> {
         onDetail: () => _open(drama),
       );
     }
-    if (explore.featured case final drama?) {
+    if (explore.featuredIn(tab) case final drama?) {
       return ExploreHero(
         key: ValueKey(('featured', drama.id)),
         drama: drama,
@@ -463,4 +597,43 @@ class ExplorePageState extends State<ExplorePage> {
     }
     return null;
   }
+}
+
+class _CategoryPage extends StatefulWidget {
+  const _CategoryPage({
+    super.key,
+    required this.id,
+    required this.pages,
+    required this.builder,
+  });
+  final String id;
+  final Map<String, _CategoryPageState> pages;
+  final Widget Function(BuildContext context, _CategoryPageState page) builder;
+
+  @override
+  State<_CategoryPage> createState() => _CategoryPageState();
+}
+
+class _CategoryPageState extends State<_CategoryPage> {
+  final scroll = ScrollController();
+  final refresh = GlobalKey<PullRefreshState>();
+  bool? warm;
+
+  @override
+  void initState() {
+    super.initState();
+    widget.pages[widget.id] = this;
+  }
+
+  @override
+  void dispose() {
+    if (identical(widget.pages[widget.id], this)) {
+      widget.pages.remove(widget.id);
+    }
+    scroll.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) => widget.builder(context, this);
 }

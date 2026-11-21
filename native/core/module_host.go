@@ -1,6 +1,8 @@
 package core
 
 import (
+	"bytes"
+	"compress/gzip"
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
@@ -10,10 +12,12 @@ import (
 	"crypto/md5"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/sha512"
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/url"
 	"strconv"
 	"strings"
@@ -57,23 +61,7 @@ type jsHTMLNode struct {
 
 func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 	vm := instance.vm
-	bytesOf := func(value goja.Value) []byte {
-		if text, ok := value.Export().(string); ok {
-			return []byte(text)
-		}
-		var data []byte
-		if err := vm.ExportTo(value, &data); err != nil {
-			panic(vm.NewTypeError("需要字符串或字节数组"))
-		}
-		return append([]byte(nil), data...)
-	}
-	bytesValue := func(data []byte) goja.Value {
-		array, err := vm.New(vm.Get("Uint8Array"), vm.ToValue(vm.NewArrayBuffer(data)))
-		if err != nil {
-			panic(err)
-		}
-		return array
-	}
+	bytesOf, bytesValue := instance.bytesOf, instance.bytesValue
 	return map[string]any{
 		"retries":  func() int { return p.host.Retries() },
 		"maxPages": func() int { return p.host.MaxPages() },
@@ -190,6 +178,10 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 			sum := sha256.Sum256(bytesOf(data))
 			return bytesValue(sum[:])
 		},
+		"sha512": func(data goja.Value) goja.Value {
+			sum := sha512.Sum512(bytesOf(data))
+			return bytesValue(sum[:])
+		},
 		// hmacSha256(key, data) 返回原始字节，需要十六进制请再 hexEncode。
 		"hmacSha256": func(key, data goja.Value) goja.Value {
 			mac := hmac.New(sha256.New, bytesOf(key))
@@ -225,6 +217,32 @@ func (p *jsProvider) hostUtilities(instance *jsInstance) map[string]any {
 				return nil, err
 			}
 			return bytesValue(out), nil
+		},
+		"gzip": func(data goja.Value) (goja.Value, error) {
+			var packed bytes.Buffer
+			writer := gzip.NewWriter(&packed)
+			if _, err := writer.Write(bytesOf(data)); err != nil {
+				return nil, err
+			}
+			if err := writer.Close(); err != nil {
+				return nil, err
+			}
+			return bytesValue(packed.Bytes()), nil
+		},
+		"gunzip": func(data goja.Value) (goja.Value, error) {
+			reader, err := gzip.NewReader(bytes.NewReader(bytesOf(data)))
+			if err != nil {
+				return nil, errors.New("gzip 内容无效")
+			}
+			defer reader.Close()
+			plain, err := io.ReadAll(io.LimitReader(reader, ProviderMaxBodyBytes+1))
+			if err != nil {
+				return nil, errors.New("gzip 内容无效")
+			}
+			if len(plain) > ProviderMaxBodyBytes {
+				return nil, errors.New("解压后内容过大")
+			}
+			return bytesValue(plain), nil
 		},
 		"aesGcmSeal": func(key, nonce, plain, extra goja.Value) (goja.Value, error) {
 			aead, vector, err := moduleGCM(bytesOf(key), bytesOf(nonce))
@@ -394,6 +412,25 @@ func moduleGCM(key, nonce []byte) (cipher.AEAD, []byte, error) {
 		return nil, nil, errors.New("AES-GCM 随机数长度无效")
 	}
 	return aead, nonce, nil
+}
+
+func (instance *jsInstance) bytesOf(value goja.Value) []byte {
+	if text, ok := value.Export().(string); ok {
+		return []byte(text)
+	}
+	var data []byte
+	if err := instance.vm.ExportTo(value, &data); err != nil {
+		panic(instance.vm.NewTypeError("需要字符串或字节数组"))
+	}
+	return append([]byte(nil), data...)
+}
+
+func (instance *jsInstance) bytesValue(data []byte) goja.Value {
+	array, err := instance.vm.New(instance.vm.Get("Uint8Array"), instance.vm.ToValue(instance.vm.NewArrayBuffer(data)))
+	if err != nil {
+		panic(err)
+	}
+	return array
 }
 
 func (instance *jsInstance) jsonValue(value any) (goja.Value, error) {

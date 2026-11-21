@@ -1,3 +1,4 @@
+import 'package:flutter/foundation.dart';
 import 'package:flutter/material.dart';
 
 import '../../local_store.dart';
@@ -10,6 +11,8 @@ import '../widgets/motion/motion_widgets.dart';
 import 'settings_rows.dart';
 
 const themeModes = {'light': '浅色', 'dark': '深色', 'system': '跟随系统'};
+
+const pageTransitionModes = {'slide': '侧滑', 'scale': '缩放'};
 
 const displayModes = {
   'auto': '自动识别设备',
@@ -110,22 +113,34 @@ class AppearanceSettings extends StatelessWidget {
                         ),
                       ],
                     ),
-                    Row(
-                      children: [
-                        for (final color in ThemeColor.values)
-                          Expanded(
-                            child: _Swatch(
-                              color: color,
-                              selected: !following && store.themeColor == color,
-                              onPressed: following
-                                  ? null
-                                  : () => saveSetting(
-                                      context,
-                                      () => store.setThemeColor(color),
-                                    ),
-                            ),
-                          ),
-                      ],
+                    LayoutBuilder(
+                      builder: (context, constraints) {
+                        const colors = ThemeColor.values;
+                        final columns =
+                            constraints.maxWidth >= colors.length * 50
+                            ? colors.length
+                            : 4;
+                        return Wrap(
+                          runSpacing: 12,
+                          children: [
+                            for (final color in colors)
+                              SizedBox(
+                                width: constraints.maxWidth / columns,
+                                child: _Swatch(
+                                  color: color,
+                                  selected:
+                                      !following && store.themeColor == color,
+                                  onPressed: following
+                                      ? null
+                                      : () => saveSetting(
+                                          context,
+                                          () => store.setThemeColor(color),
+                                        ),
+                                ),
+                              ),
+                          ],
+                        );
+                      },
                     ),
                   ],
                 ),
@@ -136,6 +151,30 @@ class AppearanceSettings extends StatelessWidget {
         GroupCard(
           children: [
             if (!AppScope.of(context).television) ...[
+              if (defaultTargetPlatform == TargetPlatform.android) ...[
+                SettingsTile(
+                  title: '页面切换动画',
+                  subtitle:
+                      pageTransitionModes[store.slidePages
+                          ? 'slide'
+                          : 'scale']!,
+                  onTap: () async {
+                    final selection = await showOptionDialog(
+                      context,
+                      title: '页面切换动画',
+                      options: pageTransitionModes,
+                      selected: store.slidePages ? 'slide' : 'scale',
+                    );
+                    if (selection != null && context.mounted) {
+                      await saveSetting(
+                        context,
+                        () => store.setSlidePages(selection == 'slide'),
+                      );
+                    }
+                  },
+                ),
+                const Divider(indent: 16, endIndent: 16),
+              ],
               SwitchTile(
                 title: '在主页底栏显示历史',
                 subtitle: '关闭后仍可在「我的」里打开观看记录',
@@ -248,6 +287,8 @@ class _Swatch extends StatelessWidget {
       seedColor: Color(color.seed),
       brightness: theme.brightness,
     );
+    final white = color == ThemeColor.white;
+    final ring = white ? theme.colorScheme.onSurface : scheme.primary;
     return Column(
       spacing: 6,
       children: [
@@ -267,14 +308,18 @@ class _Swatch extends StatelessWidget {
               decoration: ShapeDecoration(
                 shape: CircleBorder(
                   side: BorderSide(
-                    color: selected ? scheme.primary : Colors.transparent,
+                    color: selected ? ring : Colors.transparent,
                     width: 2,
                   ),
                 ),
               ),
               child: Material(
-                color: scheme.primary,
-                shape: const CircleBorder(),
+                color: white ? Colors.white : scheme.primary,
+                shape: CircleBorder(
+                  side: white
+                      ? BorderSide(color: theme.colorScheme.outline)
+                      : BorderSide.none,
+                ),
                 clipBehavior: Clip.antiAlias,
                 child: InkWell(
                   onTap: onPressed,
@@ -283,7 +328,7 @@ class _Swatch extends StatelessWidget {
                         ? Icon(
                             Icons.check_rounded,
                             key: const ValueKey(true),
-                            color: scheme.onPrimary,
+                            color: white ? Colors.black : scheme.onPrimary,
                           )
                         : const SizedBox.shrink(key: ValueKey(false)),
                   ),

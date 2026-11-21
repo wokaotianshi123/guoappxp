@@ -1,7 +1,7 @@
 {
   "id": "hongguo",
   "name": "红果",
-  "version": "1.0.4",
+  "version": "1.0.7",
   "description": "短剧 · 漫剧 · AI 剧 · 听书",
   "runtime": "js",
   "api": 1,

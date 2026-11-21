@@ -269,6 +269,7 @@ abstract class AppRepository {
     int page = 1,
     String query = '',
     String category = '',
+    String lane = '',
     bool force = false,
   });
   Future<CatalogPage> cached(String source, {String category = ''});
@@ -1195,9 +1196,16 @@ class NativeRepository extends AppRepository {
     int page = 1,
     String query = '',
     String category = '',
+    String lane = '',
     bool force = false,
   }) async => CatalogPage.fromJson(
-    await _read(query.isEmpty ? 'catalog-$source' : 'catalog-$source-search', {
+    await _read(
+      switch ((query.isEmpty, lane.isEmpty)) {
+        (false, _) => 'catalog-$source-search',
+        (true, true) => 'catalog-$source',
+        (true, false) => 'catalog-$source-$lane',
+      },
+      {
       'action': 'catalog',
       'source': source,
       'page': page,

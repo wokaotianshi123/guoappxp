@@ -31,11 +31,19 @@ abstract final class AppTheme {
     Brightness brightness, {
     required bool television,
     bool pureBlack = false,
+    bool slidePages = true,
   }) {
-    final seeded = ColorScheme.fromSeed(
+    final white = seed == Colors.white;
+    var seeded = ColorScheme.fromSeed(
       seedColor: seed,
       brightness: brightness,
+      dynamicSchemeVariant: white || seed == Colors.black
+          ? DynamicSchemeVariant.monochrome
+          : DynamicSchemeVariant.tonalSpot,
     );
+    if (white && brightness == Brightness.light) {
+      seeded = seeded.copyWith(surface: Colors.white);
+    }
     final scheme = pureBlack && brightness == Brightness.dark
         ? seeded.copyWith(
             surface: Colors.black,
@@ -51,7 +59,10 @@ abstract final class AppTheme {
       useMaterial3: true,
       colorScheme: scheme,
       scaffoldBackgroundColor: scheme.surface,
-      pageTransitionsTheme: pageTransitions(television: television),
+      pageTransitionsTheme: pageTransitions(
+        television: television,
+        slide: slidePages,
+      ),
       appBarTheme: AppBarTheme(
         backgroundColor: scheme.surface,
         foregroundColor: scheme.onSurface,

@@ -440,7 +440,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
   );
 
   Future<void> _openEpisodes() => _sheet(
-    (_) => _EpisodeSheet(
+    (_) => EpisodeSheet(
       session: _session,
       store: widget.store,
       onSeasons: () => unawaited(_openSeasons()),
@@ -459,7 +459,7 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
     DramaSeason? picked;
     await _sheet(
       fitContent: true,
-      (_) => _SeasonSheet(
+      (_) => SeasonSheet(
         session: _session,
         onSeason: (season) => picked = season,
       ),
@@ -942,7 +942,9 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                 ),
               ),
               Text(
-                '第 ${session.episode.number} 集',
+                session.episode.label,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
                 style: TextStyle(
                   color: Colors.white.withValues(alpha: .78),
                   fontSize: 12,
@@ -1175,8 +1177,9 @@ class _Shade extends StatelessWidget {
   );
 }
 
-class _EpisodeSheet extends StatefulWidget {
-  const _EpisodeSheet({
+class EpisodeSheet extends StatefulWidget {
+  const EpisodeSheet({
+    super.key,
     required this.session,
     required this.store,
     required this.onSeasons,
@@ -1190,10 +1193,10 @@ class _EpisodeSheet extends StatefulWidget {
   final ValueChanged<List<int>> onDownload;
 
   @override
-  State<_EpisodeSheet> createState() => _EpisodeSheetState();
+  State<EpisodeSheet> createState() => _EpisodeSheetState();
 }
 
-class _EpisodeSheetState extends State<_EpisodeSheet> {
+class _EpisodeSheetState extends State<EpisodeSheet> {
   final _selected = <int>{};
   bool _selecting = false;
   /// 0 = 选集（底部条的默认入口），1 = 简介。
@@ -1382,8 +1385,12 @@ class _EpisodeSheetState extends State<_EpisodeSheet> {
   }
 }
 
-class _SeasonSheet extends StatelessWidget {
-  const _SeasonSheet({required this.session, required this.onSeason});
+class SeasonSheet extends StatelessWidget {
+  const SeasonSheet({
+    super.key,
+    required this.session,
+    required this.onSeason,
+  });
   final PlaybackSession session;
   final ValueChanged<DramaSeason> onSeason;
 

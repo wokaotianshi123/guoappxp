@@ -462,14 +462,31 @@ class Episode {
           ? intValue(raw['currentEpisode'])
           : fallback,
       vip = raw['vip'] == true,
-      vertical = raw['vertical'] as bool?;
+      vertical = raw['vertical'] as bool?,
+      audio = raw['mediaType'] == 'audio';
   final Map<String, dynamic> raw;
   final String id;
   final String title;
   final int number;
   final bool vip;
   final bool? vertical;
+  final bool audio;
+
+  static final _numbered = RegExp(
+    r'^(第|ep|e)?\s*\d+\s*[集章话話回期节節]?$',
+    caseSensitive: false,
+  );
+
+  bool get named {
+    final text = title.trim();
+    return text.isNotEmpty && !_numbered.hasMatch(text);
+  }
+
+  String get label => named ? title.trim() : '第 $number 集';
 }
+
+bool episodesNamed(List<Episode> episodes) =>
+    episodes.where((episode) => episode.named).length * 2 > episodes.length;
 
 class DramaDetail {
   DramaDetail(
