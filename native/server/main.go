@@ -1168,6 +1168,10 @@ func main() {
 	mux.HandleFunc("/api/custom-sources/", handleCustomSources)
 	mux.HandleFunc("/api/modules", handleModules)
 	mux.HandleFunc("/api/modules/", handleModules)
+	mux.HandleFunc("/api/netdisk/", handleNetdisk)
+	mux.HandleFunc("/api/tvbox/", handleTVBox)
+	mux.HandleFunc("/api/webview/bridge", handleWebViewBridge)
+	mux.HandleFunc("/api/webview/challenge", handleSourceChallenge)
 	mux.HandleFunc("/api/library", handleLibrary)
 	mux.HandleFunc("/api/info", func(writer http.ResponseWriter, request *http.Request) {
 		writeJSON(writer, map[string]any{

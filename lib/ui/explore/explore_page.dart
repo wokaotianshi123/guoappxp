@@ -19,10 +19,13 @@ import '../widgets/bar_button.dart';
 import '../widgets/category_tabs.dart';
 import '../widgets/choice_panel.dart';
 import '../widgets/drama_grid.dart';
+import '../widgets/focus_ring.dart';
 import '../widgets/follow_button.dart';
+import '../widgets/form_text_field.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/page_header.dart';
 import '../widgets/pull_refresh.dart';
+import '../widgets/self_heal.dart';
 import '../widgets/source_bar.dart';
 import '../widgets/status_view.dart';
 import '../widgets/swipe_switch.dart';
@@ -114,6 +117,35 @@ class ExplorePageState extends State<ExplorePage> {
     context,
     (_) => DetailPage(store: widget.store, drama: drama, autoplay: autoplay),
   );
+
+  /// 粘贴网盘分享链接：解析后直接进统一详情页选集播放。
+  ///
+  /// 加载中给出明确反馈（解析要转存/取流，可能几秒），失败时把原因显示出来，
+  /// 不要只闪一下 SnackBar。
+  Future<void> _pasteNetdisk() async {
+    final url = await showDialog<String>(
+      context: context,
+      builder: (_) => const _NetdiskLinkDialog(),
+    );
+    if (url == null || url.isEmpty || !mounted) return;
+    final messenger = ScaffoldMessenger.maybeOf(context);
+    messenger?.showSnackBar(
+      const SnackBar(
+        content: Text('正在解析网盘分享…'),
+        duration: Duration(seconds: 8),
+      ),
+    );
+    try {
+      final drama = await AppScope.of(context).repository.netdiskOpenShare(url);
+      if (!mounted) return;
+      messenger?.hideCurrentSnackBar();
+      _open(drama);
+    } catch (error) {
+      if (!mounted) return;
+      messenger?.hideCurrentSnackBar();
+      messenger?.showSnackBar(SnackBar(content: Text('$error')));
+    }
+  }
 
   Future<void> _pickCategory(BuildContext anchor) async {
     final explore = _explore!;
@@ -247,6 +279,11 @@ class ExplorePageState extends State<ExplorePage> {
                         tooltip: '直播',
                         onPressed: () =>
                             unawaited(openLive(context, store: widget.store)),
+                      ),
+                      BarButton(
+                        icon: Icons.cloud_outlined,
+                        tooltip: '粘贴网盘链接',
+                        onPressed: () => unawaited(_pasteNetdisk()),
                       ),
                       if (desktop)
                         BarButton(
@@ -400,7 +437,7 @@ class ExplorePageState extends State<ExplorePage> {
     final hero = _hero(explore, tab);
     final items = explore.itemsIn(tab);
     if (feed.items.isEmpty) {
-      return FadeSwitcher(child: _status(feed, inset));
+      return FadeSwitcher(child: _status(explore, feed, inset));
     }
     final phone = AppScope.formFactorOf(context) == FormFactor.phone;
     final desktop = AppScope.formFactorOf(context) == FormFactor.window;
@@ -423,7 +460,7 @@ class ExplorePageState extends State<ExplorePage> {
     );
   }
 
-  Widget _status(DramaFeed feed, double inset) {
+  Widget _status(ExploreFeed explore, DramaFeed feed, double inset) {
     if (feed.loading) {
       final desktop = AppScope.formFactorOf(context) == FormFactor.window;
       return DramaGridSkeleton(
@@ -432,13 +469,15 @@ class ExplorePageState extends State<ExplorePage> {
       );
     }
     if (feed.error.isNotEmpty) {
-      return StatusView(
+      return ErrorStatusView(
         key: const ValueKey('error'),
         title: '暂时无法加载',
         message: feed.error,
         icon: Icons.cloud_off_rounded,
-        action: '重试',
-        onAction: () => feed.reload(force: true),
+        source: explore.source?.id ?? '',
+        store: widget.store,
+        verify: webViewVerifier(context),
+        onRetry: () => feed.reload(force: true),
       );
     }
     return StatusView(
@@ -596,6 +635,74 @@ class ExplorePageState extends State<ExplorePage> {
       );
     }
     return null;
+  }
+}
+
+/// 粘贴网盘分享链接的输入框。
+class _NetdiskLinkDialog extends StatefulWidget {
+  const _NetdiskLinkDialog();
+
+  @override
+  State<_NetdiskLinkDialog> createState() => _NetdiskLinkDialogState();
+}
+
+class _NetdiskLinkDialogState extends State<_NetdiskLinkDialog> {
+  final _controller = TextEditingController();
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    super.dispose();
+  }
+
+  void _submit() {
+    final value = _controller.text.trim();
+    if (value.isEmpty) return;
+    Navigator.pop(context, value);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final television = AppScope.of(context).television;
+    return AlertDialog(
+      title: const Text('粘贴网盘分享链接'),
+      content: SizedBox(
+        width: 460,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            FormTextField(
+              controller: _controller,
+              url: true,
+              autofocus: !television,
+              decoration: const InputDecoration(
+                labelText: '夸克分享链接',
+                hintText: 'https://pan.quark.cn/s/xxxx',
+                helperText: '解析后进入详情页选集播放；播放需要先在「网盘与订阅」里登录夸克',
+                helperMaxLines: 2,
+                border: OutlineInputBorder(),
+              ),
+              onSubmitted: (_) => _submit(),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        FocusRing(
+          radius: 20,
+          child: TextButton(
+            autofocus: television,
+            onPressed: () => Navigator.pop(context),
+            child: const Text('取消'),
+          ),
+        ),
+        FocusRing(
+          radius: 20,
+          child: FilledButton(onPressed: _submit, child: const Text('打开')),
+        ),
+      ],
+    );
   }
 }
 

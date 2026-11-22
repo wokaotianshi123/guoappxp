@@ -521,3 +521,25 @@ body {
 }
 .ab-seg { border-radius: 4px; }
 .ab-seg.active { background: rgba(255, 90, 95, 0.35); color: #fff; }
+
+/* ---- 网盘与订阅 / 自愈引导 ---- */
+.netdisk-account,
+.netdisk-form,
+.netdisk-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+.netdisk-form { flex-wrap: wrap; margin: 10px 0; }
+.netdisk-form input { flex: 1 1 320px; }
+.netdisk-summary { opacity: 0.8; font-size: 13px; }
+.netdisk-qr { display: flex; flex-direction: column; align-items: center; gap: 8px; margin-top: 12px; }
+.netdisk-qr img { width: 220px; height: 220px; background: #fff; border-radius: 8px; padding: 6px; }
+.netdisk-hint { font-size: 13px; opacity: 0.75; }
+.netdisk-list { display: flex; flex-direction: column; gap: 6px; margin-top: 10px; }
+.netdisk-row { border-bottom: 1px solid var(--line); padding: 6px 0; }
+.netdisk-index { width: 32px; opacity: 0.6; }
+.netdisk-name { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.dot { width: 10px; height: 10px; border-radius: 50%; background: #6b7280; }
+.dot.on { background: #34d399; }
+.self-heal { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }

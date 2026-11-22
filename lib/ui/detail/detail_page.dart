@@ -21,6 +21,7 @@ import '../theme/motion.dart';
 import '../widgets/choice_panel.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/status_view.dart';
+import '../widgets/self_heal.dart';
 import '../widgets/swipe_switch.dart';
 import 'television_detail.dart';
 
@@ -1087,13 +1088,16 @@ class _DetailPageState extends State<DetailPage> {
       );
 
   Widget _episodeError(DramaDetails details, bool autofocus) {
-    return StatusView(
+    return ErrorStatusView(
       key: const ValueKey('error'),
       title: details.error != null ? '剧集信息暂时不可用' : '暂时没有可播放的集数',
       message: details.error ?? '可以更新剧集信息后重试。',
       icon: Icons.error_outline_rounded,
-      action: '重试',
-      onAction: details.load,
+      source: widget.drama.source,
+      store: widget.store,
+      verify: webViewVerifier(context),
+      retryLabel: '重试',
+      onRetry: details.load,
       autofocus: autofocus,
     );
   }

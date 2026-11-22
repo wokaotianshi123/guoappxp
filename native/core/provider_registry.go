@@ -26,6 +26,9 @@ type SourceDescriptor struct {
 	SkipVIPPrompt      bool
 	Aliases            []string
 	HostSuffixes       []string
+	// Hosts 是站源声明的可访问域名（模块清单 hosts 已归一后写在这里），
+	// 供 WebView 验证桥接按域名匹配。未声明时为 nil。
+	Hosts              []string
 	MatchesHost        func(host string) bool
 	BaseURL            string
 	AllowEmptyCatalog  bool
@@ -157,6 +160,24 @@ type SeasonProvider interface {
 }
 
 var ErrCategoriesIncomplete = errors.New("categories incomplete")
+
+// CategoryFilter 是 TVBox 订阅源带的二级筛选（排序 / 地区 / 年份…）。
+type CategoryFilter struct {
+	Key    string               `json:"key"`
+	Name   string               `json:"name"`
+	Values []CategoryFilterItem `json:"values"`
+}
+
+type CategoryFilterItem struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
+}
+
+// FilterCataloger 由支持二级筛选的 provider 实现（目前是 TVBox 订阅源）。
+type FilterCataloger interface {
+	CategoryFilters(ctx context.Context) (map[string][]CategoryFilter, error)
+	CatalogPageFiltered(ctx context.Context, page int, category string, extend map[string]string) ([]Drama, bool, error)
+}
 
 type ProviderFactory func(host Host) Provider
 

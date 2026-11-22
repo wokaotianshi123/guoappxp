@@ -75,6 +75,8 @@ class MainActivity : FlutterActivity() {
     private var permissionResult: MethodChannel.Result? = null
     private var textInput: TextInputBridge? = null
     private var mediaControls: MediaControls? = null
+    private var webViewBridge: WebViewBridge? = null
+    private var spiderBridge: SpiderBridge? = null
     private var headroomReadAt = 0L
     private var thermalHeadroom: Double? = null
     private var deviceChannel: MethodChannel? = null
@@ -313,6 +315,9 @@ class MainActivity : FlutterActivity() {
         super.configureFlutterEngine(flutterEngine)
         textInput = TextInputBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         mediaControls = MediaControls(this, flutterEngine.dartExecutor.binaryMessenger)
+        // 人机验证与 TVBox .jar Spider 桥接：只在 Android 上可用。
+        webViewBridge = WebViewBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        spiderBridge = SpiderBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
         // 投屏（DLNA）：Flutter 侧只负责选设备与按钮，搜索 / SOAP 下发都在
         // DlnaCast 的单线程里跑，网络耗时不能占主线程。
         val dlna = DlnaCast(applicationContext)
@@ -764,6 +769,10 @@ class MainActivity : FlutterActivity() {
         textInput = null
         mediaControls?.dispose()
         mediaControls = null
+        webViewBridge?.dispose()
+        webViewBridge = null
+        spiderBridge?.dispose()
+        spiderBridge = null
         deviceChannel?.setMethodCallHandler(null)
         deviceChannel = null
         castChannel?.setMethodCallHandler(null)

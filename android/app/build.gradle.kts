@@ -63,6 +63,13 @@ android {
         }
         release {
             signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")
+            // TVBox 的 spider jar 运行时靠 DexClassLoader 继承
+            // com.github.catvod.crawler.Spider，不 keep 会在真机上报
+            // "Class not found using the boot class loader"。
+            proguardFiles(
+                getDefaultProguardFile("proguard-android-optimize.txt"),
+                "proguard-rules.pro",
+            )
         }
         getByName("profile") {
             signingConfig = signingConfigs.getByName(if (hasReleaseKey) "release" else "debug")
@@ -80,6 +87,14 @@ kotlin {
     compilerOptions {
         jvmTarget = org.jetbrains.kotlin.gradle.dsl.JvmTarget.JVM_17
     }
+}
+
+dependencies {
+    // TVBox spider jar 通过 DexClassLoader 在运行时链接这些库（R8 看不到引用，
+    // 所以 proguard-rules.pro 里同时 keep），缺失会报 NoClassDefFoundError。
+    implementation("com.squareup.okhttp3:okhttp:4.12.0")
+    implementation("com.google.code.gson:gson:2.11.0")
+    implementation("org.jsoup:jsoup:1.17.2")
 }
 
 flutter { source = "../.." }

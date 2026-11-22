@@ -19,6 +19,7 @@ import 'picture_in_picture.dart';
 import 'portable_data.dart';
 import 'ui/app.dart';
 import 'ui/theme/app_theme.dart';
+import 'webview_bridge.dart';
 import 'window_frame.dart';
 import 'window_on_top.dart';
 import 'windows_data_migration.dart';
@@ -128,6 +129,9 @@ class _AppBootstrapState extends State<AppBootstrap>
       final preferences = await SharedPreferences.getInstance();
       await _refreshDevice();
       await repository.initialize();
+      // Android 上把 TVBox .jar Spider 插件桥接的端口登记给核心；
+      // 其它平台没有 DexClassLoader，这里会直接跳过。
+      await WebViewBridge.ensureSpiderBridge(repository);
       final support = await getApplicationSupportDirectory();
       final local = await LocalStore.open(
         preferences,

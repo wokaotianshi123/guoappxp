@@ -14,6 +14,7 @@ import '../detail/detail_page.dart';
 import '../downloads/downloads_page.dart';
 import '../history/history_page.dart';
 import '../modules/modules_page.dart';
+import '../netdisk/netdisk_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../settings/settings_page.dart';
@@ -81,6 +82,10 @@ class MinePage extends StatelessWidget {
   void _openSources(BuildContext context) =>
       openPage<void>(context, (_) => SourcesPage(store: store));
 
+  /// 网盘与订阅：夸克扫码登录、分享直解，以及饭太硬 / TVBox 订阅。
+  void _openNetdisk(BuildContext context) =>
+      openPage<void>(context, (_) => NetdiskPage(store: store));
+
   void _openSettings(BuildContext context) =>
       openPage<void>(context, (_) => SettingsPage(store: store));
 
@@ -108,6 +113,11 @@ class MinePage extends StatelessWidget {
         icon: Icons.dns_outlined,
         title: '自定义XBPQ',
         onTap: () => _openSources(context),
+      ),
+      _Entry(
+        icon: Icons.cloud_outlined,
+        title: '网盘与订阅',
+        onTap: () => _openNetdisk(context),
       ),
       _Entry(
         icon: Icons.settings_outlined,
@@ -347,6 +357,14 @@ class MinePage extends StatelessWidget {
                         title: '自定义XBPQ',
                         subtitle: '内置站源开关与自定义XBPQ',
                         onTap: () => _openSources(context),
+                      ),
+                    ),
+                    Expanded(
+                      child: _TelevisionEntry(
+                        icon: Icons.cloud_outlined,
+                        title: '网盘与订阅',
+                        subtitle: '夸克登录、分享直解与 TVBox 订阅',
+                        onTap: () => _openNetdisk(context),
                       ),
                     ),
                     Expanded(

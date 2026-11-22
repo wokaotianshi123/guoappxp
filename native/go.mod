@@ -26,6 +26,7 @@ require (
 	github.com/mozillazg/go-pinyin v0.21.0 // indirect
 	github.com/nathanstitt/omnidoc v1.0.0 // indirect
 	github.com/quic-go/qpack v0.6.0 // indirect
+	github.com/skip2/go-qrcode v0.0.0-20200617195104-da1b6568686e // indirect
 	github.com/tam7t/hpkp v0.0.0-20160821193359-2b70b4024ed5 // indirect
 	golang.org/x/crypto v0.51.0 // indirect
 )

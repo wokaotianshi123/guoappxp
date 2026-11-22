@@ -18,6 +18,7 @@ import 'catalog_updates.dart';
 import 'download_collections.dart';
 import 'resource_settings.dart';
 import 'diary_service.dart';
+import 'webview_bridge.dart';
 import 'sorani_account.dart';
 import 'source_modules.dart';
 
@@ -325,6 +326,61 @@ abstract class AppRepository {
     String url, {
     Map<String, String> headers = const {},
   }) async => throw AppFailure('当前环境不支持听书源');
+
+  // ---- 网盘分享（当前为夸克）：扫码登录、分享解析、直链取流 ----
+  Future<Map<String, dynamic>> netdiskStatus() async => const {};
+
+  /// 生成扫码登录二维码，返回 `id` 与 `qrBase64`（PNG）。
+  Future<Map<String, dynamic>> netdiskLogin() async =>
+      throw AppFailure('当前环境不支持网盘登录');
+  Future<Map<String, dynamic>> netdiskLoginPoll(String session) async =>
+      const {};
+  Future<void> netdiskLogout(String provider) async {}
+
+  /// 解析分享链接，返回 `episodes`（每项含 `fid`、`name`、`size`）。
+  Future<Map<String, dynamic>> netdiskShare(String url) async =>
+      throw AppFailure('当前环境不支持网盘分享');
+
+  /// 把分享里第 index 集转存并取回直链（含播放所需请求头）。
+  Future<Map<String, dynamic>> netdiskPlay(String url, int index) async =>
+      throw AppFailure('当前环境不支持网盘播放');
+
+  /// 把分享解析成标准剧集，供统一详情页与主播放器使用。
+  Future<Drama> netdiskOpenShare(String url) async =>
+      throw AppFailure('当前环境不支持网盘分享');
+
+  /// 清理网盘根目录下的临时转存目录。
+  Future<Map<String, dynamic>> netdiskCleanup() async => const {};
+
+  // ---- 饭太硬 / TVBox 接口订阅 ----
+  Future<Map<String, dynamic>> tvboxStatus() async => const {};
+
+  /// 订阅接口地址，返回 `supportedCount` / `skippedCount` / `sites`。
+  Future<Map<String, dynamic>> tvboxSubscribe(String url) async =>
+      throw AppFailure('当前环境不支持 TVBox 订阅');
+  Future<Map<String, dynamic>> tvboxClear() async => const {};
+
+  // ---- 人机验证桥接：站源需要 Cloudflare 校验时用它 ----
+  /// 返回该站源建议打开的验证地址；没有可用地址时返回空串。
+  Future<String> sourceChallengeUrl(String source) async => '';
+
+  /// 登记 WebView 回环抓取端口与验证后的 Cookie / UA，核心之后会用它取页面。
+  Future<void> registerWebViewBridge({
+    required int port,
+    required String url,
+    required String source,
+    String cookies = '',
+    String userAgent = '',
+  }) async {}
+
+  /// 登记 Android TVBox .jar Spider 插件桥接端口。
+  Future<void> registerSpiderBridge(int port) async {}
+
+  /// 当前平台是否支持应用内浏览器完成人机验证。
+  bool get supportsWebViewVerify => false;
+
+  /// 打开应用内验证页，通过后把 Cookie / UA 交给核心。
+  Future<bool> verifySource(String source) async => false;
 }
 
 class NativeRepository extends AppRepository {
@@ -631,6 +687,100 @@ class NativeRepository extends AppRepository {
     });
     return (result['items'] as List? ?? []).whereType<String>().toList();
   }
+
+  @override
+  Future<Map<String, dynamic>> netdiskStatus() async =>
+      await _call({'action': 'netdiskStatus'});
+
+  @override
+  Future<Map<String, dynamic>> netdiskLogin() async =>
+      await _call({'action': 'netdiskLogin'});
+
+  @override
+  Future<Map<String, dynamic>> netdiskLoginPoll(String session) async =>
+      await _call({'action': 'netdiskLoginPoll', 'session': session});
+
+  @override
+  Future<void> netdiskLogout(String provider) async {
+    await _call({'action': 'netdiskLogout', 'source': provider});
+  }
+
+  @override
+  Future<Map<String, dynamic>> netdiskShare(String url) async =>
+      await _call({'action': 'netdiskShare', 'url': url});
+
+  @override
+  Future<Map<String, dynamic>> netdiskPlay(String url, int index) async =>
+      await _call({'action': 'netdiskPlay', 'url': url, 'index': index});
+
+  @override
+  Future<Drama> netdiskOpenShare(String url) async {
+    final result = await _call({'action': 'netdiskOpenShare', 'url': url});
+    return Drama.fromJson(
+      Map<String, dynamic>.from(result['drama'] as Map? ?? const {}),
+    );
+  }
+
+  @override
+  Future<Map<String, dynamic>> netdiskCleanup() async =>
+      await _call({'action': 'netdiskCleanup'});
+
+  @override
+  Future<Map<String, dynamic>> tvboxStatus() async =>
+      await _call({'action': 'tvboxStatus'});
+
+  @override
+  Future<Map<String, dynamic>> tvboxSubscribe(String url) async {
+    final result = await _call({'action': 'tvboxSubscribe', 'url': url});
+    _installSources(result['sources']);
+    return result;
+  }
+
+  @override
+  Future<Map<String, dynamic>> tvboxClear() async {
+    final result = await _call({'action': 'tvboxClear'});
+    _installSources(result['sources']);
+    return result;
+  }
+
+  @override
+  Future<String> sourceChallengeUrl(String source) async {
+    final result = await _call({
+      'action': 'sourceChallengeUrl',
+      'source': source,
+    });
+    return result['url'] as String? ?? '';
+  }
+
+  @override
+  Future<void> registerWebViewBridge({
+    required int port,
+    required String url,
+    required String source,
+    String cookies = '',
+    String userAgent = '',
+  }) async {
+    await _call({
+      'action': 'webViewBridge',
+      'index': port,
+      'url': url,
+      'source': source,
+      'token': cookies,
+      'device': userAgent,
+    });
+  }
+
+  @override
+  Future<void> registerSpiderBridge(int port) async {
+    await _call({'action': 'spiderBridge', 'index': port});
+  }
+
+  @override
+  bool get supportsWebViewVerify => WebViewBridge.supported;
+
+  @override
+  Future<bool> verifySource(String source) =>
+      WebViewBridge.verifySource(this, source);
 
   @override
   Future<String> downloadDirectory() async {

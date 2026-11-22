@@ -1,5 +1,6 @@
 import Flutter
 import UIKit
+import WebKit
 import DuanjuCore
 import CFNetwork
 import AVFoundation
@@ -10,6 +11,7 @@ import MediaPlayer
   private var originalBrightness: CGFloat?
   private let volumeView = MPVolumeView(frame: CGRect(x: -100, y: -100, width: 1, height: 1))
   private var mediaControls: MediaControls?
+  private var webViewBridge: WebViewBridge?
 
   private var keyWindow: UIWindow? {
     UIApplication.shared.connectedScenes
@@ -32,6 +34,9 @@ import MediaPlayer
     GeneratedPluginRegistrant.register(with: engineBridge.pluginRegistry)
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "MediaControls") {
       mediaControls = MediaControls(messenger: registrar.messenger())
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "WebViewBridge") {
+      webViewBridge = WebViewBridge(messenger: registrar.messenger())
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "DeviceSettings") {
       let channel = FlutterMethodChannel(name: "duanju/device", binaryMessenger: registrar.messenger())

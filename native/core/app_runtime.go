@@ -386,6 +386,10 @@ func nativeDispatch(input nativeInput) (any, error) {
 		}
 		engine := nativeState.engine
 		nativeState.Unlock()
+		// 启动时恢复已订阅的 TVBox 站源，并初始化网盘凭据存储：
+		// 两者都只在首次调用时真正做事，失败不影响应用启动。
+		_, _ = engine.netdiskInit()
+		engine.tvboxEnsureLoaded()
 		return map[string]any{"version": "0.2.17", "standalone": true, "sources": engine.sourceList()}, nil
 	}
 	engine := nativeState.engine
@@ -489,6 +493,36 @@ func nativeDispatch(input nativeInput) (any, error) {
 	// 这里不返回 Flutter 端那套任务进度字段。
 	case "sourceStatus":
 		return map[string]any{"source": canonicalProviderSource(input.Source), "available": true}, nil
+	case "netdiskStatus":
+		return engine.netdiskStatus()
+	case "netdiskLogin":
+		return engine.netdiskLoginStart(ctx)
+	case "netdiskLoginPoll":
+		return engine.netdiskLoginPoll(ctx, input.Session)
+	case "netdiskLogout":
+		return engine.netdiskLogout(input.Source)
+	case "netdiskShare":
+		return engine.netdiskShare(ctx, input.URL)
+	case "netdiskPlay":
+		return engine.netdiskPlay(ctx, input.URL, input.Index)
+	case "netdiskInfo":
+		return engine.netdiskInfo(), nil
+	case "netdiskOpenShare":
+		return engine.netdiskOpenShare(ctx, input.URL)
+	case "netdiskCleanup":
+		return engine.netdiskCleanup(ctx)
+	case "tvboxStatus":
+		return engine.tvboxStatus(), nil
+	case "tvboxSubscribe":
+		return engine.tvboxSubscribe(ctx, input.URL)
+	case "tvboxClear":
+		return engine.tvboxClear()
+	case "webViewBridge":
+		return engine.setWebViewBridge(input.Index, input.URL, input.Source, input.Token, input.Device), nil
+	case "spiderBridge":
+		return engine.setSpiderBridge(input.Index), nil
+	case "sourceChallengeUrl":
+		return map[string]any{"url": engine.sourceChallengeURL(input.Source)}, nil
 	case "addCustomSource":
 		record, err := engine.addCustomMaccmsSource(input.Name, input.Base, input.Rule, input.Kind)
 		if err != nil {

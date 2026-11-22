@@ -18,6 +18,7 @@ import '../widgets/focus_ring.dart';
 import '../widgets/horizontal_scroll_bar.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../widgets/search_field.dart';
+import '../widgets/self_heal.dart';
 import '../widgets/status_view.dart';
 
 class SearchPage extends StatefulWidget {
@@ -377,13 +378,15 @@ class _SearchPageState extends State<SearchPage> {
         );
       }
       if (results.error.isNotEmpty) {
-        return StatusView(
+        return ErrorStatusView(
           key: const ValueKey('error'),
           title: '搜索失败',
           message: results.error,
           icon: Icons.cloud_off_rounded,
-          action: '重试',
-          onAction: () => results.reload(),
+          source: widget.source.id,
+          store: widget.store,
+          verify: webViewVerifier(context),
+          onRetry: () => results.reload(),
         );
       }
       return StatusView(

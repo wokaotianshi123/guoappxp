@@ -5816,6 +5816,8 @@ function render() {
     task = Promise.resolve().then(renderLiveView);
   } else if (current.path === 'audiobook') {
     task = Promise.resolve().then(renderAudiobookView);
+  } else if (current.path === 'netdisk') {
+    task = Promise.resolve().then(renderNetdiskView);
   } else {
     state.category = params.get('category') || '';
     state.page = Number(params.get('page') || 1);
@@ -5829,8 +5831,15 @@ function render() {
   if (audiobookButton) {
     audiobookButton.classList.toggle('active', current.path === 'audiobook');
   }
+  var netdiskButton = document.getElementById('netdisk-btn');
+  if (netdiskButton) {
+    netdiskButton.classList.toggle('active', current.path === 'netdisk');
+  }
   task.catch(function (error) {
-    view.innerHTML = '<div class="empty">' + escapeHTML(error.message || '加载失败') + '</div>';
+    var message = error.message || '加载失败';
+    view.innerHTML = '<div class="empty">' + escapeHTML(message) + '</div>' +
+      selfHealHTML(message, state.source || '');
+    bindSelfHeal();
   });
 }
 
@@ -5959,3 +5968,296 @@ Promise.all([loadSources(), loadLibrary()]).then(function () {
     render();
   }
 });
+
+// ---- 网盘与订阅（夸克登录 / 分享直解 / TVBox 订阅）----
+//
+// 本地服务版没有原生 WebView，登录态与订阅都走核心的 netdisk* / tvbox* 动作；
+// 扫码二维码由核心直接生成 base64 PNG，前端只负责展示与轮询。
+
+function netdiskPost(path, body) {
+  return fetch('/api/netdisk/' + path, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body || {}),
+  })
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      if (!data.ok) throw new Error(data.error || '网盘请求失败');
+      return data.data;
+    });
+}
+
+function tvboxPost(path) {
+  return fetch('/api/tvbox/' + path, { method: 'POST' })
+    .then(function (response) { return response.json(); })
+    .then(function (data) {
+      if (!data.ok) throw new Error(data.error || '订阅请求失败');
+      return data.data;
+    });
+}
+
+var netdiskState = { loggedIn: false, tvboxUrl: '', episodes: [], shareUrl: '' };
+
+function renderNetdiskView() {
+  return Promise.all([
+    fetch('/api/netdisk/status', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { return d.ok ? d.data : {}; })
+      .catch(function () { return {}; }),
+    fetch('/api/tvbox/status', { method: 'POST' })
+      .then(function (r) { return r.json(); })
+      .then(function (d) { return d.ok ? d.data : {}; })
+      .catch(function () { return {}; }),
+  ]).then(function (results) {
+    var status = results[0] || {};
+    var ready = status.ready || {};
+    var tvbox = results[1] || {};
+    netdiskState.loggedIn = ready.quark === true;
+    if (tvbox.url) netdiskState.tvboxUrl = tvbox.url;
+    paintNetdisk(tvbox);
+  });
+}
+
+function paintNetdisk(tvbox) {
+  tvbox = tvbox || {};
+  var loggedIn = netdiskState.loggedIn;
+  var supported = Number(tvbox.supportedCount) || 0;
+  var skipped = Number(tvbox.skippedCount) || 0;
+  var summary = tvbox.url
+    ? '已加载 ' + supported + ' 个站源' + (skipped > 0 ? '，跳过 ' + skipped + ' 个不支持的' : '')
+    : '未订阅饭太硬 / TVBox 接口';
+  var episodeRows = '';
+  netdiskState.episodes.forEach(function (ep, index) {
+    episodeRows += '<div class="netdisk-row" data-index="' + index + '">' +
+      '<span class="netdisk-index">' + (index + 1) + '</span>' +
+      '<span class="netdisk-name">' + escapeHTML(ep.name || '') + '</span>' +
+      '<button type="button" class="btn netdisk-play">播放</button>' +
+      '</div>';
+  });
+  view.innerHTML =
+    '<section class="panel">' +
+      '<h2>夸克网盘账号</h2>' +
+      '<div class="netdisk-account">' +
+        '<span class="' + (loggedIn ? 'dot on' : 'dot') + '"></span>' +
+        '<span>' + (loggedIn ? '夸克已登录' : '夸克未登录') + '</span>' +
+        (loggedIn
+          ? '<button type="button" class="btn" id="netdisk-logout">退出登录</button>' +
+            '<button type="button" class="btn" id="netdisk-cleanup">清理临时目录</button>'
+          : '<button type="button" class="btn primary" id="netdisk-login">扫码登录</button>') +
+      '</div>' +
+      '<div id="netdisk-qr" class="netdisk-qr"></div>' +
+    '</section>' +
+    '<section class="panel">' +
+      '<h2>饭太硬 / TVBox 接口订阅</h2>' +
+      '<div class="netdisk-summary">' + escapeHTML(summary) + '</div>' +
+      '<div class="netdisk-form">' +
+        '<input type="url" id="tvbox-url" placeholder="输入订阅 JSON 地址 (http/https)" value="' +
+          escapeHTML(netdiskState.tvboxUrl || '') + '" />' +
+        '<button type="button" class="btn primary" id="tvbox-subscribe">同步</button>' +
+        (tvbox.url ? '<button type="button" class="btn" id="tvbox-clear">清除订阅</button>' : '') +
+      '</div>' +
+    '</section>' +
+    '<section class="panel">' +
+      '<h2>网盘分享链接直解</h2>' +
+      '<div class="netdisk-form">' +
+        '<input type="url" id="netdisk-share" placeholder="粘贴夸克分享链接 https://pan.quark.cn/s/xxxx" />' +
+        '<button type="button" class="btn primary" id="netdisk-open">打开详情播放</button>' +
+        '<button type="button" class="btn" id="netdisk-parse">解析文件列表</button>' +
+      '</div>' +
+      '<div class="netdisk-list">' + (episodeRows || '<div class="empty">解析后显示可播放的集数</div>') + '</div>' +
+    '</section>';
+  bindNetdisk();
+}
+
+function bindNetdisk() {
+  var login = document.getElementById('netdisk-login');
+  if (login) {
+    login.addEventListener('click', function () {
+      netdiskPost('login').then(function (state) {
+        showQr(state);
+      }).catch(function (error) {
+        alert(error.message);
+      });
+    });
+  }
+  var logout = document.getElementById('netdisk-logout');
+  if (logout) {
+    logout.addEventListener('click', function () {
+      netdiskPost('logout', { provider: 'quark' }).then(function () {
+        return renderNetdiskView();
+      });
+    });
+  }
+  var cleanup = document.getElementById('netdisk-cleanup');
+  if (cleanup) {
+    cleanup.addEventListener('click', function () {
+      netdiskPost('cleanup').then(function (res) {
+        alert('已清理 ' + (Number(res.deleted) || 0) + ' 个临时转存文件');
+      }).catch(function (error) {
+        alert(error.message);
+      });
+    });
+  }
+  var subscribe = document.getElementById('tvbox-subscribe');
+  if (subscribe) {
+    subscribe.addEventListener('click', function () {
+      var input = document.getElementById('tvbox-url');
+      var url = (input && input.value || '').trim();
+      if (!url) {
+        alert('请先填写订阅地址');
+        return;
+      }
+      subscribe.disabled = true;
+      subscribe.textContent = '同步中…';
+      fetch('/api/tvbox/subscribe?url=' + encodeURIComponent(url), { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          if (!data.ok) throw new Error(data.error || '订阅失败');
+          netdiskState.tvboxUrl = url;
+          paintNetdisk(data.data);
+          loadSources();
+        })
+        .catch(function (error) {
+          alert(error.message);
+          subscribe.disabled = false;
+          subscribe.textContent = '同步';
+        });
+    });
+  }
+  var clear = document.getElementById('tvbox-clear');
+  if (clear) {
+    clear.addEventListener('click', function () {
+      fetch('/api/tvbox/clear', { method: 'POST' })
+        .then(function (r) { return r.json(); })
+        .then(function () {
+          netdiskState.tvboxUrl = '';
+          return renderNetdiskView();
+        })
+        .then(function () { loadSources(); });
+    });
+  }
+  var parse = document.getElementById('netdisk-parse');
+  if (parse) {
+    parse.addEventListener('click', function () {
+      var input = document.getElementById('netdisk-share');
+      var url = (input && input.value || '').trim();
+      if (!url) {
+        alert('请先粘贴分享链接');
+        return;
+      }
+      netdiskState.shareUrl = url;
+      netdiskPost('share', { url: url }).then(function (data) {
+        netdiskState.episodes = data.episodes || [];
+        paintNetdisk({ url: netdiskState.tvboxUrl });
+      }).catch(function (error) {
+        alert(error.message);
+      });
+    });
+  }
+  var open = document.getElementById('netdisk-open');
+  if (open) {
+    open.addEventListener('click', function () {
+      var input = document.getElementById('netdisk-share');
+      var url = (input && input.value || '').trim();
+      if (!url) {
+        alert('请先粘贴分享链接');
+        return;
+      }
+      netdiskPost('openShare', { url: url }).then(function (data) {
+        var drama = data.drama || {};
+        if (drama.id) {
+          location.hash = episodeHash(drama.id, drama.source || 'netdisk', 0);
+        }
+      }).catch(function (error) {
+        alert(error.message);
+      });
+    });
+  }
+  Array.prototype.forEach.call(view.querySelectorAll('.netdisk-row'), function (row) {
+    row.querySelector('.netdisk-play').addEventListener('click', function () {
+      var index = Number(row.dataset.index) || 0;
+      netdiskPost('play', { url: netdiskState.shareUrl, index: index }).then(function (data) {
+        if (data.url) {
+          window.open(data.url, '_blank');
+        }
+      }).catch(function (error) {
+        alert(error.message);
+      });
+    });
+  });
+}
+
+function showQr(state) {
+  var box = document.getElementById('netdisk-qr');
+  if (!box || !state.qrBase64) return;
+  box.innerHTML = '<img alt="登录二维码" src="data:image/png;base64,' + state.qrBase64 + '" />' +
+    '<div class="netdisk-hint">用夸克 App 扫码并确认登录</div>';
+  var timer = setInterval(function () {
+    netdiskPost('loginPoll', { session: state.id }).then(function (next) {
+      var status = next.status || '';
+      if (status === 'done') {
+        clearInterval(timer);
+        box.innerHTML = '';
+        renderNetdiskView();
+        return;
+      }
+      if (status === 'expired' || status === 'error') {
+        clearInterval(timer);
+        var hint = box.querySelector('.netdisk-hint');
+        if (hint) hint.textContent = next.message || '登录失败，请重试';
+      }
+    }).catch(function () {
+      // 轮询失败不打断，下一轮继续。
+    });
+  }, 3000);
+}
+
+// ---- 出错时的「一键自愈」引导 ----
+//
+// 与 App 端一致：按失败原因给出人机验证 / 青空登录 / 网络代理入口。
+// 本地服务版没有原生 WebView，人机验证改为在浏览器新标签页完成，完成后把
+// Cookie 与 UA 交回核心（受浏览器同源策略限制，提示用户复制粘贴）。
+function selfHealHTML(message, source) {
+  var lower = String(message || '').toLowerCase();
+  var buttons = [];
+  if (lower.indexOf('cf_challenge') >= 0 || lower.indexOf('cloudflare') >= 0 ||
+      lower.indexOf('just a moment') >= 0 || message.indexOf('人机验证') >= 0) {
+    buttons.push('<button type="button" class="btn" data-heal="challenge" data-source="' +
+      escapeHTML(source || '') + '">完成人机验证</button>');
+  }
+  if (lower.indexOf('登录') >= 0 || lower.indexOf('login') >= 0 || lower.indexOf('未授权') >= 0) {
+    buttons.push('<button type="button" class="btn" data-heal="login">登录青空账号</button>');
+  }
+  if (lower.indexOf('超时') >= 0 || lower.indexOf('timeout') >= 0 || lower.indexOf('网络') >= 0 ||
+      lower.indexOf('连接') >= 0 || lower.indexOf('connection') >= 0 || lower.indexOf('失败') >= 0) {
+    buttons.push('<button type="button" class="btn" data-heal="proxy">设置网络代理</button>');
+  }
+  if (!buttons.length) return '';
+  return '<div class="self-heal">' + buttons.join('') + '</div>';
+}
+
+function bindSelfHeal() {
+  Array.prototype.forEach.call(view.querySelectorAll('[data-heal]'), function (button) {
+    button.addEventListener('click', function () {
+      var kind = button.dataset.heal;
+      if (kind === 'challenge') {
+        var source = button.dataset.source || '';
+        fetch('/api/webview/challenge?source=' + encodeURIComponent(source), { method: 'POST' })
+          .then(function (r) { return r.json(); })
+          .then(function (data) {
+            var url = data.ok && data.data && data.data.url;
+            if (!url) {
+              alert('该站源没有可用的验证地址');
+              return;
+            }
+            window.open(url, '_blank');
+            alert('已在新标签页打开验证页。完成验证后回到本页点击「重试」。');
+          });
+      } else if (kind === 'login') {
+        alert('青空账号登录请在「自定义源」里配置，或联系管理员开放权限。');
+      } else if (kind === 'proxy') {
+        alert('网络代理请在系统或启动参数里配置；本地服务版暂不支持页内代理设置。');
+      }
+    });
+  });
+}

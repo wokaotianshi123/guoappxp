@@ -30,6 +30,7 @@ private var bossKeyRef: EventHotKeyRef?
 private var bossKeyHandler: EventHandlerRef?
 private var deviceChannel: FlutterMethodChannel?
 private var mediaControls: MediaControls?
+private var webViewBridge: WebViewBridge?
 
 private func toggleHidden() {
   if NSApp.isHidden {
@@ -78,6 +79,7 @@ class MainFlutterWindow: NSWindow {
 
     RegisterGeneratedPlugins(registry: flutterViewController)
     mediaControls = MediaControls(messenger: flutterViewController.engine.binaryMessenger)
+    webViewBridge = WebViewBridge(window: self, messenger: flutterViewController.engine.binaryMessenger)
     let channel = FlutterMethodChannel(
       name: "duanju/device", binaryMessenger: flutterViewController.engine.binaryMessenger)
     deviceChannel = channel
