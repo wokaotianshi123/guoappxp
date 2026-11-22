@@ -14,6 +14,15 @@ bool get desktopPlatform => switch (defaultTargetPlatform) {
   _ => false,
 };
 
+/// 移动端（Android / iOS）：顶栏与底栏不做滚动自动收起。
+///
+/// 桌面端窗口高、滚动条常驻，收起能多出一行内容；手机上底栏只有 72px，
+/// 收起后一往上滑就重新展开，反而把「我的」里的设置项盖住，体验更差。
+bool get mobilePlatform => switch (defaultTargetPlatform) {
+  TargetPlatform.android || TargetPlatform.iOS => true,
+  _ => false,
+};
+
 class AppScope extends InheritedWidget {
   const AppScope({
     super.key,

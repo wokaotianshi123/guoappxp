@@ -88,15 +88,23 @@ class ShellBars extends InheritedNotifier<ValueNotifier<bool>> {
 }
 
 class HideOnScroll extends StatelessWidget {
-  const HideOnScroll({super.key, required this.alignment, required this.child});
+  const HideOnScroll({
+    super.key,
+    required this.alignment,
+    required this.child,
+    this.enabled = true,
+  });
   final Alignment alignment;
   final Widget child;
+
+  /// 是否允许随滚动收起。为 false 时始终显示，只保留布局位置。
+  final bool enabled;
 
   @override
   Widget build(BuildContext context) => ClipRect(
     child: AnimatedAlign(
       alignment: alignment,
-      heightFactor: ShellBars.shown(context) ? 1 : 0,
+      heightFactor: enabled && !ShellBars.shown(context) ? 0 : 1,
       duration: Motion.of(context, Motion.medium),
       curve: Motion.standard,
       child: child,
@@ -239,6 +247,9 @@ class _AppShellState extends State<AppShell> {
   }
 
   bool _scrolled(ScrollNotification notification) {
+    // 移动端不收起顶栏 / 底栏：这里直接不跟踪滚动，省掉无意义的通知与重建，
+    // 也避免切到桌面端时残留一个「已收起」的旧状态。
+    if (mobilePlatform) return false;
     final metrics = notification.metrics;
     if (metrics.axis != Axis.vertical) return false;
     if (notification is ScrollStartNotification) {
@@ -428,6 +439,7 @@ class _AppShellState extends State<AppShell> {
                 ? null
                 : HideOnScroll(
                     alignment: Alignment.topCenter,
+                    enabled: !mobilePlatform,
                     child: NavigationBar(
                       height: 72,
                       selectedIndex: tabs.indexOf(_tab),

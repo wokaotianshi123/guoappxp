@@ -251,6 +251,7 @@ class ExplorePageState extends State<ExplorePage> {
               if (!television)
                 HideOnScroll(
                   alignment: Alignment.bottomCenter,
+                  enabled: !mobilePlatform,
                   child: SourceBar(
                     source: source.name,
                     searchController: _search,
