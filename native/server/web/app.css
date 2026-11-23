@@ -132,6 +132,30 @@ body {
 /* 画质增强舞台：相对定位，让锐化滤镜与提示浮层精准叠在 video 上、不盖到下方控制条。 */
 .player-stage { position: relative; }
 .player-stage video { width: 100%; background: #000; border-radius: 10px; display: block; }
+/* 首帧前的模糊封面遮罩：纯黑等待容易被当成卡死，铺一层模糊海报 + 状态文案。 */
+.video-backdrop {
+  position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
+  border-radius: 10px; overflow: hidden; z-index: 2;
+}
+.video-backdrop-cover {
+  position: absolute; inset: -20px; background-size: cover; background-position: center;
+  filter: blur(28px); opacity: .55; transform: scale(1.1);
+}
+.video-backdrop-veil {
+  position: absolute; inset: 0;
+  background: linear-gradient(180deg, rgba(0,0,0,.45), rgba(0,0,0,.75));
+}
+.video-backdrop-status {
+  position: relative; display: flex; flex-direction: column; align-items: center;
+  gap: 14px; color: #fff;
+}
+.video-backdrop-text { font-size: 14px; opacity: .9; }
+.video-backdrop .spinner {
+  width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid rgba(255,255,255,.25); border-top-color: #fff;
+  animation: video-backdrop-spin .9s linear infinite;
+}
+@keyframes video-backdrop-spin { to { transform: rotate(360deg); } }
 .player-stage video.portrait {
   width: min(100%, calc((100vh - 190px) * var(--ratio, 0.5625)));
   margin-left: auto; margin-right: auto;
@@ -231,6 +255,22 @@ body {
 .episodes { margin-top: 0; }
 .ep-link.active {
   background: var(--accent); border-color: var(--accent); color: #fff;
+}
+/* 「线路」区块：位于「选集」上方，统一 16px 左右边距，与 App 端一致。 */
+.route-section { margin-top: 22px; padding: 0 16px; }.route-chips {
+  display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px;
+}
+.route-chip {
+  padding: 6px 12px; border-radius: 999px; cursor: pointer;
+  font-size: 13px; font-weight: 500;
+  background: transparent; color: var(--muted);
+  border: 1px solid var(--border, rgba(255, 255, 255, 0.16));
+  transition: border-color .15s, color .15s, background .15s;
+}
+.route-chip:hover { border-color: var(--accent); color: var(--text); }
+.route-chip.active {
+  background: var(--accent); border-color: var(--accent); color: #fff;
+  font-weight: 600;
 }
 .chips-label {
   align-self: center; font-size: 13px; color: var(--muted);

@@ -84,6 +84,11 @@ func (u *UC) do(ctx context.Context, path string, body any) (*ucReply, error) {
 	if err != nil {
 		return nil, err
 	}
+	if len(raw) == 0 {
+		// 未登录 / Cookie 过期时 UC 会直接回空响应，JSON 解析会抛
+		// "unexpected end of JSON input"，对用户毫无意义。
+		return nil, fmt.Errorf("UC 网盘返回空响应（HTTP %d），请确认已登录且 Cookie 未过期", resp.StatusCode)
+	}
 	out := &ucReply{}
 	if err := json.Unmarshal(raw, out); err != nil {
 		return nil, fmt.Errorf("解析 UC 网盘返回失败（HTTP %d）", resp.StatusCode)

@@ -154,6 +154,8 @@ var state = {
   index: 0,
   quality: 0,
   route: 0,
+  // 详情页选中的线路名（多线路源才有），换剧时清空。
+  routeName: '',
   sourceNames: {},
   ffmpeg: true,
   autoNext: readAutoNext(),
@@ -262,7 +264,14 @@ function failoverRoute(reasonText, skipSameLineRetry) {
   var mountAt = mountToken;
   var route = nextRouteToTry();
   if (route < 0) {
-    showNotice('播放失败：' + (reasonText || '未知错误') + '（已尝试全部 ' + routeTotal + ' 条线路）');
+    hideVideoBackdrop();
+    // 全部线路都失败时给出排查方向：最常见的两个原因是「该走代理的走了直连」
+    // 或反过来，用户往往不知道去哪儿改。
+    showNotice(
+      '播放失败：' + (reasonText || '未知错误') + '（已尝试全部 ' + routeTotal + ' 条线路）。' +
+      '国内站源请在站源面板设为「直连」，海外站源（如 Hanime1 / MissAV / 青空）请检查代理或设为「代理」。',
+      'error'
+    );
     return;
   }
   failoverBusy = true;
@@ -1053,6 +1062,10 @@ function ensureDrama(id, source) {
     drama.source = source;
   }
   return api({ action: 'detail', drama: drama }).then(function (data) {
+    // 换剧后线路选择作废，否则会沿用上一部剧的线路名。
+    if (state.drama && state.drama.id !== id) {
+      state.routeName = '';
+    }
     state.drama = data.drama;
     state.chapters = data.chapters || [];
     return state.drama;
@@ -1069,17 +1082,90 @@ function defaultWatchIndex(dramaRef) {
 // 「倒序」开关改变格子显示顺序（第 N 集→第 1 集 反向排列），上一集/下一集/自动连播
 // 也按屏幕上的排列顺序走（见 episodeNextIndex/episodePrevIndex）；
 // 格子的 data-index / href 仍指向真实集序，换集后高亮与地址栏不会错位。
+
+// 多线路数据来自核心：TVBox 源把每条线路的每一集都编进同一个列表，标题写成
+// 「线路名 · 集名」。这里按同样的分隔符拆回线路，与 App 端 detail_routes.dart 一致。
+var ROUTE_SEPARATOR = ' · ';
+
+function splitRouteTitle(title) {
+  var text = String(title || '');
+  var sep = text.indexOf(ROUTE_SEPARATOR);
+  if (sep <= 0) return null;
+  var route = text.slice(0, sep).trim();
+  var label = text.slice(sep + ROUTE_SEPARATOR.length).trim();
+  if (!route) return null;
+  return { route: route, label: label };
+}
+
+// detailRoutes 返回 [{ name, entries: [{ position, label }] }]；
+// 不是「线路名 · 集名」编码时返回空数组（单线路源不显示线路区块）。
+function detailRoutes(chapters) {
+  if (!chapters || !chapters.length) return [];
+  var grouped = {};
+  var order = [];
+  for (var i = 0; i < chapters.length; i += 1) {
+    var split = splitRouteTitle((chapters[i] || {}).title);
+    if (!split) return [];
+    if (!grouped[split.route]) {
+      grouped[split.route] = [];
+      order.push(split.route);
+    }
+    grouped[split.route].push({ position: i, label: split.label });
+  }
+  if (order.length < 2) return [];
+  return order.map(function (name) {
+    return { name: name, entries: grouped[name] };
+  });
+}
+
+// currentRouteName 返回当前选中线路；没有记录时落到当前播放集所在线路。
+function currentRouteName(routes) {
+  var selected = state.routeName;
+  if (selected && routes.some(function (route) { return route.name === selected; })) {
+    return selected;
+  }
+  var index = state.index || 0;
+  var matched = routes.filter(function (route) {
+    return route.entries.some(function (entry) { return entry.position === index; });
+  })[0];
+  return (matched || routes[0]).name;
+}
+
+// routeSectionHTML 渲染「线路」区块：放在「选集」上方，左右 16px 边距。
+function routeSectionHTML() {
+  var routes = detailRoutes(state.chapters || []);
+  if (routes.length < 2) return '';
+  var active = currentRouteName(routes);
+  var chips = routes.map(function (route) {
+    return '<button type="button" class="route-chip' +
+      (route.name === active ? ' active' : '') +
+      '" data-route="' + escapeHTML(route.name) + '">' +
+      escapeHTML(route.name) + ' (' + route.entries.length + ')</button>';
+  }).join('');
+  return '<div class="section route-section">' +
+    '<div class="section-title"><span>线路</span></div>' +
+    '<div class="route-chips">' + chips + '</div>' +
+    '</div>';
+}
+
 function episodesGridInnerHTML() {
   var drama = state.drama;
   var chapters = state.chapters || [];
   var suffix = drama.source ? '&source=' + encodeURIComponent(drama.source) : '';
-  var order = chapters.map(function (unused, position) {
+  // 多线路时只显示当前线路的集；单线路沿用原来的整表。
+  var routes = detailRoutes(chapters);
+  var positions = chapters.map(function (unused, position) {
     return position;
   });
-  if (state.episodesReversed) {
-    order = order.reverse();
+  if (routes.length >= 2) {
+    var active = currentRouteName(routes);
+    var route = routes.filter(function (item) { return item.name === active; })[0];
+    positions = route.entries.map(function (entry) { return entry.position; });
   }
-  var cells = order
+  if (state.episodesReversed) {
+    positions = positions.slice().reverse();
+  }
+  var cells = positions
     .map(function (position) {
       var active = position === state.index ? ' active' : '';
       var title = (chapters[position] || {}).title || '第 ' + (position + 1) + ' 集';
@@ -1095,8 +1181,9 @@ function episodesGridInnerHTML() {
     '<label class="toggle ep-reverse" title="选集列表倒序展示，上一集/下一集也按这个顺序走">' +
     '<input type="checkbox" id="episodes-reversed"' +
     (state.episodesReversed ? ' checked' : '') + '>倒序</label>';
+  var count = routes.length >= 2 ? positions.length : chapters.length;
   return (
-    '<div class="section-title"><span>选集（' + chapters.length + '）</span>' +
+    '<div class="section-title"><span>选集（' + count + '）</span>' +
     reversedToggle + '</div>' +
     '<div class="episodes">' + cells + '</div>'
   );
@@ -1107,7 +1194,8 @@ function episodesGridHTML() {
   if (!chapters.length) {
     return '';
   }
-  return '<div class="section" id="episodes-section">' + episodesGridInnerHTML() + '</div>';
+  return routeSectionHTML() +
+    '<div class="section" id="episodes-section">' + episodesGridInnerHTML() + '</div>';
 }
 
 // 底部详情区：海报 + 简介 + 元信息 + 切换播放源（同一剧在其它站源的副本）。
@@ -1446,6 +1534,18 @@ function renderWatch(id, index, source) {
 
 // 选集格子点击：拦截默认跳转，改走就地换集，复用同一个 <video>。
 function bindEpisodes() {
+  // 「线路」区块：切线路只重排选集格子，不打断正在播放的画面。
+  var routeChips = view.querySelectorAll('.route-chip');
+  Array.prototype.forEach.call(routeChips, function (chip) {
+    chip.addEventListener('click', function () {
+      var route = chip.getAttribute('data-route') || '';
+      if (!route || route === currentRouteName(detailRoutes(state.chapters || []))) {
+        return;
+      }
+      state.routeName = route;
+      rerenderEpisodes();
+    });
+  });
   var links = view.querySelectorAll('.ep-link');
   Array.prototype.forEach.call(links, function (anchor) {
     anchor.addEventListener('click', function (event) {
@@ -1954,6 +2054,8 @@ function bindPlayerEvents(video) {
     rememberPlaybackRate(video.playbackRate);
   });
   video.addEventListener('playing', function () {
+    // 首帧已经出画面，撤掉模糊封面遮罩。
+    hideVideoBackdrop();
     // 线路已被证明能正常出画面：撤销"原线路重试"的消耗，
     // 之后偶发一次网络抖动还能再享受一次宽容，而不是直接换线。
     if (video.videoWidth > 0 && sameLineRetried) {
@@ -2062,11 +2164,48 @@ function startBlackScreenWatchdog(video, token) {
   blackWatchdog = timer;
 }
 
+// showVideoBackdrop 在首帧渲染前铺一层模糊封面 + 状态文案，避免纯黑等待。
+// 首帧（loadeddata / playing）后自动移除。
+function showVideoBackdrop(message) {
+  var stage = document.querySelector('.player-stage');
+  if (!stage) return;
+  var backdrop = stage.querySelector('.video-backdrop');
+  if (!backdrop) {
+    backdrop = document.createElement('div');
+    backdrop.className = 'video-backdrop';
+    var drama = state.drama || {};
+    var cover = drama.cover || drama.coverUrl || '';
+    backdrop.innerHTML =
+      (cover ? '<div class="video-backdrop-cover" style="background-image:url(\'' +
+        escapeHTML(cover) + '\')"></div>' : '') +
+      '<div class="video-backdrop-veil"></div>' +
+      '<div class="video-backdrop-status">' +
+        '<div class="spinner"></div>' +
+        '<div class="video-backdrop-text"></div>' +
+      '</div>';
+    stage.appendChild(backdrop);
+  }
+  var text = backdrop.querySelector('.video-backdrop-text');
+  if (text) text.textContent = message || '正在缓冲视频…';
+  backdrop.style.display = 'flex';
+}
+
+function hideVideoBackdrop() {
+  var backdrop = document.querySelector('.player-stage .video-backdrop');
+  if (backdrop) backdrop.style.display = 'none';
+}
+
 function mountVideo(url, resumeAt) {
   var video = document.getElementById('player');
   if (!video) {
     return;
   }
+  // 首帧前先铺模糊封面；单线路切画质、换集、换线路都走这里。
+  showVideoBackdrop(
+    state.routeName && detailRoutes(state.chapters || []).length >= 2
+      ? '正在加载线路「' + state.routeName + '」…'
+      : '正在缓冲视频…'
+  );
   if (hlsInstance) {
     hlsInstance.destroy();
     hlsInstance = null;
@@ -5974,12 +6113,19 @@ Promise.all([loadSources(), loadLibrary()]).then(function () {
 // 本地服务版没有原生 WebView，登录态与订阅都走核心的 netdisk* / tvbox* 动作；
 // 扫码二维码由核心直接生成 base64 PNG，前端只负责展示与轮询。
 
-function netdiskPost(path, body) {
-  return fetch('/api/netdisk/' + path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  })
+// netdiskPost 调用 /api/netdisk/<path>。
+//
+// 服务端从 URL query 读参数（不是 JSON body），所以这里把参数拼进查询串，
+// 否则 provider / cookie 传不过去，登录与清理都会落到默认的夸克上。
+function netdiskPost(path, params) {
+  var search = [];
+  Object.keys(params || {}).forEach(function (key) {
+    var value = params[key];
+    if (value === undefined || value === null || value === '') return;
+    search.push(encodeURIComponent(key) + '=' + encodeURIComponent(value));
+  });
+  var url = '/api/netdisk/' + path + (search.length ? '?' + search.join('&') : '');
+  return fetch(url, { method: 'POST' })
     .then(function (response) { return response.json(); })
     .then(function (data) {
       if (!data.ok) throw new Error(data.error || '网盘请求失败');
@@ -5996,7 +6142,18 @@ function tvboxPost(path) {
     });
 }
 
-var netdiskState = { loggedIn: false, tvboxUrl: '', episodes: [], shareUrl: '' };
+var netdiskState = {
+  ready: {},
+  tvboxUrl: '',
+  episodes: [],
+  shareUrl: '',
+};
+
+// 界面上的网盘列表：与 App 端一致，夸克与 UC 各自一行。
+var NETDISK_PROVIDERS = [
+  { id: 'quark', name: '夸克网盘', host: 'pan.quark.cn' },
+  { id: 'uc', name: 'UC 网盘', host: 'drive.uc.cn' },
+];
 
 function renderNetdiskView() {
   return Promise.all([
@@ -6010,17 +6167,30 @@ function renderNetdiskView() {
       .catch(function () { return {}; }),
   ]).then(function (results) {
     var status = results[0] || {};
-    var ready = status.ready || {};
     var tvbox = results[1] || {};
-    netdiskState.loggedIn = ready.quark === true;
+    netdiskState.ready = status.ready || {};
     if (tvbox.url) netdiskState.tvboxUrl = tvbox.url;
     paintNetdisk(tvbox);
   });
 }
 
+// netdiskAccountHTML 渲染单个网盘的一行：登录态 + 扫码 / Cookie / 退出 / 清理。
+function netdiskAccountHTML(provider) {
+  var ready = netdiskState.ready[provider.id] === true;
+  var actions = ready
+    ? '<button type="button" class="btn" data-netdisk-logout="' + provider.id + '">退出登录</button>' +
+      '<button type="button" class="btn" data-netdisk-cleanup="' + provider.id + '">清理临时目录</button>'
+    : '<button type="button" class="btn primary" data-netdisk-login="' + provider.id + '">扫码登录</button>' +
+      '<button type="button" class="btn" data-netdisk-cookie="' + provider.id + '">Cookie 登录</button>';
+  return '<div class="netdisk-account">' +
+    '<span class="' + (ready ? 'dot on' : 'dot') + '"></span>' +
+    '<span>' + escapeHTML(provider.name) + (ready ? '已登录' : '未登录') + '</span>' +
+    actions +
+    '</div>';
+}
+
 function paintNetdisk(tvbox) {
   tvbox = tvbox || {};
-  var loggedIn = netdiskState.loggedIn;
   var supported = Number(tvbox.supportedCount) || 0;
   var skipped = Number(tvbox.skippedCount) || 0;
   var summary = tvbox.url
@@ -6034,17 +6204,11 @@ function paintNetdisk(tvbox) {
       '<button type="button" class="btn netdisk-play">播放</button>' +
       '</div>';
   });
+  var accounts = NETDISK_PROVIDERS.map(netdiskAccountHTML).join('');
   view.innerHTML =
     '<section class="panel">' +
-      '<h2>夸克网盘账号</h2>' +
-      '<div class="netdisk-account">' +
-        '<span class="' + (loggedIn ? 'dot on' : 'dot') + '"></span>' +
-        '<span>' + (loggedIn ? '夸克已登录' : '夸克未登录') + '</span>' +
-        (loggedIn
-          ? '<button type="button" class="btn" id="netdisk-logout">退出登录</button>' +
-            '<button type="button" class="btn" id="netdisk-cleanup">清理临时目录</button>'
-          : '<button type="button" class="btn primary" id="netdisk-login">扫码登录</button>') +
-      '</div>' +
+      '<h2>网盘账号</h2>' +
+      accounts +
       '<div id="netdisk-qr" class="netdisk-qr"></div>' +
     '</section>' +
     '<section class="panel">' +
@@ -6060,44 +6224,73 @@ function paintNetdisk(tvbox) {
     '<section class="panel">' +
       '<h2>网盘分享链接直解</h2>' +
       '<div class="netdisk-form">' +
-        '<input type="url" id="netdisk-share" placeholder="粘贴夸克分享链接 https://pan.quark.cn/s/xxxx" />' +
+        '<input type="url" id="netdisk-share" placeholder="粘贴夸克 / UC 分享链接（https://pan.quark.cn/s/xxxx 或 https://drive.uc.cn/s/xxxx）" />' +
         '<button type="button" class="btn primary" id="netdisk-open">打开详情播放</button>' +
         '<button type="button" class="btn" id="netdisk-parse">解析文件列表</button>' +
       '</div>' +
-      '<div class="netdisk-list">' + (episodeRows || '<div class="empty">解析后显示可播放的集数</div>') + '</div>' +
+      '<div class="netdisk-list">' + (episodeRows || '<div class="empty">解析后显示可播放的文件</div>') + '</div>' +
     '</section>';
   bindNetdisk();
 }
 
 function bindNetdisk() {
-  var login = document.getElementById('netdisk-login');
-  if (login) {
-    login.addEventListener('click', function () {
-      netdiskPost('login').then(function (state) {
-        showQr(state);
-      }).catch(function (error) {
-        alert(error.message);
+  // 每个网盘各自的登录 / 退出 / 清理按钮用 data 属性标记，避免为两种网盘
+  // 复制一份 id 绑定逻辑。
+  Array.prototype.forEach.call(
+    document.querySelectorAll('[data-netdisk-login]'),
+    function (button) {
+      button.addEventListener('click', function () {
+        var provider = button.getAttribute('data-netdisk-login');
+        netdiskPost('login', { provider: provider }).then(function (state) {
+          showQr(state);
+        }).catch(function (error) {
+          alert(error.message);
+        });
       });
-    });
-  }
-  var logout = document.getElementById('netdisk-logout');
-  if (logout) {
-    logout.addEventListener('click', function () {
-      netdiskPost('logout', { provider: 'quark' }).then(function () {
-        return renderNetdiskView();
+    }
+  );
+  Array.prototype.forEach.call(
+    document.querySelectorAll('[data-netdisk-cookie]'),
+    function (button) {
+      button.addEventListener('click', function () {
+        var provider = button.getAttribute('data-netdisk-cookie');
+        var name = provider === 'uc' ? 'UC 网盘' : '夸克网盘';
+        var cookie = window.prompt(
+          '在浏览器登录 ' + name + ' 后，从开发者工具复制整段 Cookie 粘贴到这里：',
+          ''
+        );
+        if (!cookie) return;
+        netdiskPost('loginCookie', { provider: provider, cookie: cookie.trim() })
+          .then(function () { return renderNetdiskView(); })
+          .then(function () { alert(name + ' 登录成功'); })
+          .catch(function (error) { alert(error.message); });
       });
-    });
-  }
-  var cleanup = document.getElementById('netdisk-cleanup');
-  if (cleanup) {
-    cleanup.addEventListener('click', function () {
-      netdiskPost('cleanup').then(function (res) {
-        alert('已清理 ' + (Number(res.deleted) || 0) + ' 个临时转存文件');
-      }).catch(function (error) {
-        alert(error.message);
+    }
+  );
+  Array.prototype.forEach.call(
+    document.querySelectorAll('[data-netdisk-logout]'),
+    function (button) {
+      button.addEventListener('click', function () {
+        var provider = button.getAttribute('data-netdisk-logout');
+        netdiskPost('logout', { provider: provider }).then(function () {
+          return renderNetdiskView();
+        });
       });
-    });
-  }
+    }
+  );
+  Array.prototype.forEach.call(
+    document.querySelectorAll('[data-netdisk-cleanup]'),
+    function (button) {
+      button.addEventListener('click', function () {
+        var provider = button.getAttribute('data-netdisk-cleanup');
+        netdiskPost('cleanup', { provider: provider }).then(function (res) {
+          alert('已清理 ' + (Number(res.deleted) || 0) + ' 个临时转存文件');
+        }).catch(function (error) {
+          alert(error.message);
+        });
+      });
+    }
+  );
   var subscribe = document.getElementById('tvbox-subscribe');
   if (subscribe) {
     subscribe.addEventListener('click', function () {
