@@ -25,6 +25,15 @@ const (
 	quarkBizStr      = "S:custom|OPT:SAREA@0|OPT:IMMERSIVE@1|OPT:BACK_BTN_STYLE@0"
 )
 
+// UC 网页版登录参数。UC 与夸克共用同一套 UOP CAS，只是 client_id 与
+// redirect_uri 不同。
+const (
+	ucCASClientID = "381"
+	ucCASRedirect = "https://drive.uc.cn"
+	ucScanPage    = "https://su.uc.cn/1_eMHBJ"
+	ucBizStr      = "S:custom|OPT:SAREA@0|OPT:IMMERSIVE@1|OPT:BACK_BTN_STYLE@0"
+)
+
 // LoginState 是扫码登录会话的对外状态。
 type LoginState struct {
 	ID        string `json:"id"`
@@ -36,11 +45,51 @@ type LoginState struct {
 }
 
 type loginSession struct {
-	state  LoginState
-	token  string
-	store  *Store
-	readMu sync.Mutex
+	state    LoginState
+	token    string
+	provider string
+	store    *Store
+	readMu   sync.Mutex
 }
+
+// loginProfile 是某个网盘扫码登录所需的一组参数。
+type loginProfile struct {
+	provider   string
+	clientID   string
+	redirect   string
+	scanPage   string
+	bizStr     string
+	referer    string
+	exchange   func(context.Context, string) (*Credentials, error)
+}
+
+func loginProfiles() map[string]loginProfile {
+	return map[string]loginProfile{
+		"quark": {
+			provider: "quark", clientID: quarkCASClientID, redirect: quarkCASRedirect,
+			scanPage: quarkScanPage, bizStr: quarkBizStr, referer: "https://pan.quark.cn/",
+			exchange: exchangeTicket,
+		},
+		"uc": {
+			provider: "uc", clientID: ucCASClientID, redirect: ucCASRedirect,
+			scanPage: ucScanPage, bizStr: ucBizStr, referer: "https://drive.uc.cn/",
+			exchange: exchangeUCTicket,
+		},
+	}
+}
+
+// NormalizeProvider 把空值与别名归一到已知网盘标识，默认夸克。
+func NormalizeProvider(provider string) string {
+	switch strings.ToLower(strings.TrimSpace(provider)) {
+	case "uc", "ucdrive":
+		return "uc"
+	default:
+		return "quark"
+	}
+}
+
+// normalizeProvider 是包内别名，保留原有调用点。
+func normalizeProvider(provider string) string { return NormalizeProvider(provider) }
 
 // LoginManager 管理进行中的扫码会话。
 type LoginManager struct {
@@ -63,12 +112,19 @@ func randomID() string {
 }
 
 func casGet(ctx context.Context, rawURL string, out any) error {
+	return casGetFor(ctx, rawURL, "https://pan.quark.cn/", out)
+}
+
+func casGetFor(ctx context.Context, rawURL, referer string, out any) error {
 	req, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return err
 	}
 	req.Header.Set("User-Agent", quarkUA)
-	req.Header.Set("Referer", "https://pan.quark.cn/")
+	if referer == "" {
+		referer = "https://pan.quark.cn/"
+	}
+	req.Header.Set("Referer", referer)
 	resp, err := httpClient().Do(withContext(ctx, req))
 	if err != nil {
 		return err
@@ -88,7 +144,17 @@ func casGet(ctx context.Context, rawURL string, out any) error {
 }
 
 // Start 创建一次扫码登录，返回带二维码 PNG（base64）的状态。
+// provider 为空时按夸克处理。
 func (m *LoginManager) Start(ctx context.Context) (*LoginState, error) {
+	return m.StartFor(ctx, "quark")
+}
+
+// StartFor 为指定网盘创建扫码登录。
+func (m *LoginManager) StartFor(ctx context.Context, provider string) (*LoginState, error) {
+	profile, ok := loginProfiles()[normalizeProvider(provider)]
+	if !ok {
+		return nil, errors.New("不支持的网盘类型")
+	}
 	var got struct {
 		Status int `json:"status"`
 		Data   struct {
@@ -97,9 +163,9 @@ func (m *LoginManager) Start(ctx context.Context) (*LoginState, error) {
 			} `json:"members"`
 		} `json:"data"`
 	}
-	u := "https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=" + quarkCASClientID +
-		"&redirect_uri=" + escape(quarkCASRedirect)
-	if err := casGet(ctx, u, &got); err != nil {
+	u := "https://uop.quark.cn/cas/ajax/getTokenForQrcodeLogin?client_id=" + profile.clientID +
+		"&redirect_uri=" + escape(profile.redirect)
+	if err := casGetFor(ctx, u, profile.referer, &got); err != nil {
 		return nil, err
 	}
 	token := got.Data.Members.Token
@@ -107,9 +173,9 @@ func (m *LoginManager) Start(ctx context.Context) (*LoginState, error) {
 		return nil, errors.New("获取登录二维码失败，请稍后重试")
 	}
 	// 二维码内容必须是官方深链，裸 token 扫出来是无效网页。
-	payload := quarkScanPage + "?token=" + escape(token) +
-		"&client_id=" + quarkCASClientID + "&ssb=weblogin&uc_param_str=" +
-		"&uc_biz_str=" + escape(quarkBizStr)
+	payload := profile.scanPage + "?token=" + escape(token) +
+		"&client_id=" + profile.clientID + "&ssb=weblogin&uc_param_str=" +
+		"&uc_biz_str=" + escape(profile.bizStr)
 	png, err := qrcode.Encode(payload, qrcode.Medium, 460)
 	if err != nil {
 		return nil, err
@@ -117,13 +183,14 @@ func (m *LoginManager) Start(ctx context.Context) (*LoginState, error) {
 	session := &loginSession{
 		state: LoginState{
 			ID:        randomID(),
-			Provider:  "quark",
+			Provider:  profile.provider,
 			Status:    "pending",
 			QRBase64:  base64.StdEncoding.EncodeToString(png),
 			StartedAt: time.Now().Unix(),
 		},
-		token: token,
-		store: m.store,
+		token:    token,
+		provider: profile.provider,
+		store:    m.store,
 	}
 	m.mu.Lock()
 	m.sessions[session.state.ID] = session
@@ -139,6 +206,10 @@ func (m *LoginManager) Poll(ctx context.Context, id string) (*LoginState, error)
 	m.mu.Unlock()
 	if session == nil {
 		return nil, errors.New("登录会话已失效，请重新获取二维码")
+	}
+	profile, ok := loginProfiles()[session.provider]
+	if !ok {
+		return nil, errors.New("登录会话的网盘类型无效")
 	}
 	if session.state.Status == "done" || session.state.Status == "expired" {
 		out := session.state
@@ -161,8 +232,8 @@ func (m *LoginManager) Poll(ctx context.Context, id string) (*LoginState, error)
 		} `json:"data"`
 	}
 	u := "https://uop.quark.cn/cas/ajax/getServiceTicketByQrcodeToken?token=" +
-		escape(session.token) + "&client_id=" + quarkCASClientID
-	if err := casGet(ctx, u, &got); err != nil {
+		escape(session.token) + "&client_id=" + profile.clientID
+	if err := casGetFor(ctx, u, profile.referer, &got); err != nil {
 		return nil, err
 	}
 	ticket := got.Data.Members.ServiceTicket
@@ -172,7 +243,7 @@ func (m *LoginManager) Poll(ctx context.Context, id string) (*LoginState, error)
 		return &out, nil
 	}
 	session.state.Status = "scanned"
-	creds, err := exchangeTicket(ctx, ticket)
+	creds, err := profile.exchange(ctx, ticket)
 	if err != nil {
 		session.state.Status = "error"
 		session.state.Message = err.Error()
@@ -250,10 +321,95 @@ func exchangeTicket(ctx context.Context, ticket string) (*Credentials, error) {
 	return creds, nil
 }
 
+// exchangeUCTicket 用 service ticket 换取 UC 网页版 cookie。
+// UC 与夸克同源，但主站与接口域名不同，播放鉴权依赖 __puus。
+func exchangeUCTicket(ctx context.Context, ticket string) (*Credentials, error) {
+	jar := map[string]string{}
+
+	// 第一步：drive.uc.cn 带 st 换主登录态。
+	req, err := http.NewRequest(http.MethodGet, "https://drive.uc.cn/account/info?st="+escape(ticket), nil)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("User-Agent", ucUA)
+	req.Header.Set("Referer", "https://drive.uc.cn/")
+	resp, err := httpClient().Do(withContext(ctx, req))
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range resp.Cookies() {
+		jar[c.Name] = c.Value
+	}
+	resp.Body.Close()
+	if len(jar) == 0 {
+		return nil, errors.New("登录态换取失败，请重试")
+	}
+
+	// 第二步：config 接口补 __puus，缺了它播放 CDN 会 403。
+	creds := &Credentials{Provider: "uc", SavedAt: time.Now().Unix()}
+	for name, value := range jar {
+		creds.Cookies = append(creds.Cookies, Cookie{Name: name, Value: value})
+	}
+	req2, err := http.NewRequest(http.MethodGet, "https://pc-api.uc.cn/1/clouddrive/config"+ucPR, nil)
+	if err != nil {
+		return creds, nil
+	}
+	req2.Header.Set("User-Agent", ucUA)
+	req2.Header.Set("Referer", "https://drive.uc.cn/")
+	req2.Header.Set("Cookie", creds.Header())
+	resp2, err := httpClient().Do(withContext(ctx, req2))
+	if err == nil {
+		for _, c := range resp2.Cookies() {
+			if c.Name == "__puus" && c.Value != "" {
+				replaced := false
+				for i := range creds.Cookies {
+					if creds.Cookies[i].Name == "__puus" {
+						creds.Cookies[i].Value = c.Value
+						replaced = true
+					}
+				}
+				if !replaced {
+					creds.Cookies = append(creds.Cookies, Cookie{Name: "__puus", Value: c.Value})
+				}
+			}
+		}
+		resp2.Body.Close()
+	}
+	creds.SavedAt = time.Now().Unix()
+	return creds, nil
+}
+
 // ProviderReady 判断某网盘凭据是否完整（缺 __puus 视为不可播放）。
 func ProviderReady(creds *Credentials) bool {
 	if creds == nil {
 		return false
 	}
 	return strings.TrimSpace(creds.Cookie("__puus")) != ""
+}
+
+// ParseCookieHeader 把浏览器里复制出来的 Cookie 头解析成凭据。
+// 支持 "a=1; b=2" 与换行分隔两种写法，用户从开发者工具里整段粘贴都能用。
+func ParseCookieHeader(provider, raw string) (*Credentials, error) {
+	provider = normalizeProvider(provider)
+	cleaned := strings.NewReplacer("\r", ";", "\n", ";", "\t", " ").Replace(raw)
+	creds := &Credentials{Provider: provider, SavedAt: time.Now().Unix()}
+	for _, part := range strings.Split(cleaned, ";") {
+		part = strings.TrimSpace(part)
+		if part == "" {
+			continue
+		}
+		name, value, found := strings.Cut(part, "=")
+		name = strings.TrimSpace(name)
+		if !found || name == "" {
+			continue
+		}
+		creds.Cookies = append(creds.Cookies, Cookie{Name: name, Value: strings.TrimSpace(value)})
+	}
+	if len(creds.Cookies) == 0 {
+		return nil, errors.New("没有解析到有效的 Cookie")
+	}
+	if !ProviderReady(creds) {
+		return nil, errors.New("Cookie 里缺少 __puus，请确认已登录并复制完整 Cookie")
+	}
+	return creds, nil
 }

@@ -21,6 +21,11 @@ func handleNetdisk(writer http.ResponseWriter, request *http.Request) {
 	query := request.URL.Query()
 	payload := map[string]any{"action": "netdisk" + netdiskActionName(action)}
 	switch action {
+	case "login":
+		payload["source"] = firstNonEmptyString(query.Get("provider"), "quark")
+	case "loginCookie":
+		payload["source"] = firstNonEmptyString(query.Get("provider"), "quark")
+		payload["url"] = firstNonEmptyString(query.Get("cookie"), query.Get("url"))
 	case "loginPoll":
 		payload["session"] = query.Get("session")
 	case "logout":
@@ -30,6 +35,8 @@ func handleNetdisk(writer http.ResponseWriter, request *http.Request) {
 	case "play":
 		payload["url"] = query.Get("url")
 		payload["index"] = query.Get("index")
+	case "cleanup":
+		payload["source"] = firstNonEmptyString(query.Get("provider"), "quark")
 	}
 	reply, err := callCore(payload)
 	if err != nil {
@@ -50,6 +57,8 @@ func netdiskActionName(action string) string {
 		return "Status"
 	case "login":
 		return "Login"
+	case "loginCookie":
+		return "LoginCookie"
 	case "loginPoll":
 		return "LoginPoll"
 	case "logout":

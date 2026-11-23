@@ -14,7 +14,8 @@ import '../widgets/form_text_field.dart';
 import '../widgets/group_card.dart';
 import '../widgets/page_header.dart';
 
-/// 网盘与订阅：夸克网盘扫码登录 / 分享直解，以及饭太硬 / TVBox 接口订阅。
+/// 网盘与订阅：夸克 / UC 网盘扫码或 Cookie 登录、分享直解，以及饭太硬 /
+/// TVBox 接口订阅。
 ///
 /// 说明：分享列表免登录即可解析；播放需要登录态（cookie 只存本机）。
 class NetdiskPage extends StatefulWidget {
@@ -25,11 +26,25 @@ class NetdiskPage extends StatefulWidget {
   State<NetdiskPage> createState() => _NetdiskPageState();
 }
 
+/// 一个网盘在界面上的展示信息。
+class _NetdiskProvider {
+  const _NetdiskProvider(this.id, this.name, this.loginHint);
+  final String id;
+  final String name;
+  final String loginHint;
+}
+
+const _netdiskProviders = <_NetdiskProvider>[
+  _NetdiskProvider('quark', '夸克网盘', 'pan.quark.cn'),
+  _NetdiskProvider('uc', 'UC 网盘', 'drive.uc.cn'),
+];
+
 class _NetdiskPageState extends State<NetdiskPage> {
   final _link = TextEditingController();
   final _tvboxUrl = TextEditingController();
   bool _loading = false;
-  bool _loggedIn = false;
+  /// 各网盘是否已登录（key 为 quark / uc）。
+  Map<String, bool> _loggedIn = const {};
   String _status = '';
   String _tvboxSummary = '未订阅饭太硬 / TVBox 接口';
   int _tvboxSupported = 0;
@@ -37,6 +52,8 @@ class _NetdiskPageState extends State<NetdiskPage> {
   String _shareUrl = '';
 
   AppRepository get _repository => AppScope.of(context).repository;
+
+  bool _readyOf(String provider) => _loggedIn[provider] == true;
 
   @override
   void initState() {
@@ -70,9 +87,17 @@ class _NetdiskPageState extends State<NetdiskPage> {
       if (subUrl.isNotEmpty && _tvboxUrl.text.isEmpty) {
         _tvboxUrl.text = subUrl;
       }
+      final states = {
+        for (final provider in _netdiskProviders)
+          provider.id: ready[provider.id] == true,
+      };
+      final names = [
+        for (final provider in _netdiskProviders)
+          if (states[provider.id] == true) provider.name,
+      ];
       setState(() {
-        _loggedIn = ready['quark'] == true;
-        _status = _loggedIn ? '夸克已登录' : '夸克未登录';
+        _loggedIn = states;
+        _status = names.isEmpty ? '未登录' : '${names.join('、')} 已登录';
         _tvboxSupported = supported;
         _tvboxSummary = subUrl.isEmpty
             ? '未订阅饭太硬 / TVBox 接口'
@@ -84,10 +109,10 @@ class _NetdiskPageState extends State<NetdiskPage> {
     }
   }
 
-  Future<void> _login() async {
+  Future<void> _login(String provider) async {
     setState(() => _loading = true);
     try {
-      final state = await _repository.netdiskLogin();
+      final state = await _repository.netdiskLogin(provider: provider);
       final id = state['id'] as String? ?? '';
       final png = state['qrBase64'] as String? ?? '';
       if (id.isEmpty || png.isEmpty) {
@@ -112,15 +137,72 @@ class _NetdiskPageState extends State<NetdiskPage> {
     }
   }
 
-  Future<void> _logout() async {
-    await _repository.netdiskLogout('quark');
+  /// Cookie 登录：用户从浏览器开发者工具里整段粘贴 Cookie，免扫码。
+  Future<void> _loginWithCookie(_NetdiskProvider provider) async {
+    final controller = TextEditingController();
+    final cookie = await showDialog<String>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: Text('${provider.name} Cookie 登录'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text(
+              '在浏览器登录 ${provider.loginHint} 后，打开开发者工具 → '
+              'Application → Cookies，整段复制后粘贴到这里。',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: controller,
+              maxLines: 4,
+              decoration: const InputDecoration(
+                labelText: 'Cookie',
+                hintText: '__puus=...; __pus=...;',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.of(context).pop(),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () =>
+                Navigator.of(context).pop(controller.text.trim()),
+            child: const Text('登录'),
+          ),
+        ],
+      ),
+    );
+    controller.dispose();
+    if (cookie == null || cookie.isEmpty) return;
+    setState(() => _loading = true);
+    try {
+      await _repository.netdiskLoginCookie(cookie, provider: provider.id);
+      await _refreshStatus();
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _show('${provider.name} 登录成功');
+    } catch (error) {
+      if (!mounted) return;
+      setState(() => _loading = false);
+      _show('$error');
+    }
+  }
+
+  Future<void> _logout(String provider) async {
+    await _repository.netdiskLogout(provider);
     await _refreshStatus();
   }
 
-  Future<void> _cleanupTemp() async {
+  Future<void> _cleanupTemp(String provider) async {
     setState(() => _loading = true);
     try {
-      final res = await _repository.netdiskCleanup();
+      final res = await _repository.netdiskCleanup(provider: provider);
       final deleted = res['deleted'] as int? ?? 0;
       if (!mounted) return;
       setState(() => _loading = false);
@@ -245,70 +327,95 @@ class _NetdiskPageState extends State<NetdiskPage> {
               child: ListView(
                 padding: const EdgeInsets.fromLTRB(16, 12, 16, 28),
                 children: [
-                  const SectionHeader(title: '夸克网盘账号'),
-                  GroupCard(
-                    children: [
-                      ListTile(
-                        contentPadding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
-                        leading: Container(
-                          width: 40,
-                          height: 40,
-                          decoration: BoxDecoration(
-                            color: colors.surfaceContainerHighest,
-                            borderRadius: BorderRadius.circular(12),
+                  const SectionHeader(title: '网盘账号'),
+                  for (final provider in _netdiskProviders) ...[
+                    GroupCard(
+                      children: [
+                        ListTile(
+                          contentPadding: const EdgeInsets.fromLTRB(16, 6, 12, 6),
+                          leading: Container(
+                            width: 40,
+                            height: 40,
+                            decoration: BoxDecoration(
+                              color: colors.surfaceContainerHighest,
+                              borderRadius: BorderRadius.circular(12),
+                            ),
+                            child: Icon(
+                              _readyOf(provider.id)
+                                  ? Icons.cloud_done_rounded
+                                  : Icons.cloud_outlined,
+                              size: 20,
+                              color: _readyOf(provider.id)
+                                  ? colors.primary
+                                  : colors.onSurfaceVariant,
+                            ),
                           ),
-                          child: Icon(
-                            _loggedIn
-                                ? Icons.cloud_done_rounded
-                                : Icons.cloud_outlined,
-                            size: 20,
-                            color: _loggedIn
-                                ? colors.primary
-                                : colors.onSurfaceVariant,
+                          title: Text(
+                            provider.name,
+                            style: const TextStyle(fontWeight: FontWeight.w600),
                           ),
+                          subtitle: Text(
+                            _status.isEmpty
+                                ? '正在检查登录态…'
+                                : (_readyOf(provider.id) ? '已登录' : '未登录'),
+                          ),
+                          trailing: _readyOf(provider.id)
+                              ? FocusRing(
+                                  radius: 20,
+                                  child: TextButton(
+                                    onPressed: () => _logout(provider.id),
+                                    child: const Text('退出登录'),
+                                  ),
+                                )
+                              : Wrap(
+                                  spacing: 4,
+                                  children: [
+                                    FocusRing(
+                                      radius: 20,
+                                      child: FilledButton(
+                                        onPressed: _loading
+                                            ? null
+                                            : () => _login(provider.id),
+                                        child: const Text('扫码登录'),
+                                      ),
+                                    ),
+                                    FocusRing(
+                                      radius: 20,
+                                      child: TextButton(
+                                        onPressed: _loading
+                                            ? null
+                                            : () => _loginWithCookie(provider),
+                                        child: const Text('Cookie'),
+                                      ),
+                                    ),
+                                  ],
+                                ),
                         ),
-                        title: const Text(
-                          '夸克网盘',
-                          style: TextStyle(fontWeight: FontWeight.w600),
-                        ),
-                        subtitle: Text(_status.isEmpty ? '正在检查登录态…' : _status),
-                        trailing: _loggedIn
-                            ? FocusRing(
+                        if (_readyOf(provider.id))
+                          Padding(
+                            padding: const EdgeInsets.fromLTRB(16, 0, 12, 10),
+                            child: Align(
+                              alignment: Alignment.centerRight,
+                              child: FocusRing(
                                 radius: 20,
-                                child: TextButton(
-                                  onPressed: _logout,
-                                  child: const Text('退出登录'),
+                                child: TextButton.icon(
+                                  onPressed: _loading
+                                      ? null
+                                      : () => _cleanupTemp(provider.id),
+                                  icon: const Icon(
+                                    Icons.cleaning_services_outlined,
+                                    size: 16,
+                                  ),
+                                  label: const Text('清理临时目录'),
                                 ),
-                              )
-                            : FocusRing(
-                                radius: 20,
-                                child: FilledButton(
-                                  onPressed: _loading ? null : _login,
-                                  child: const Text('扫码登录'),
-                                ),
-                              ),
-                      ),
-                      if (_loggedIn)
-                        Padding(
-                          padding: const EdgeInsets.fromLTRB(16, 0, 12, 10),
-                          child: Align(
-                            alignment: Alignment.centerRight,
-                            child: FocusRing(
-                              radius: 20,
-                              child: TextButton.icon(
-                                onPressed: _loading ? null : _cleanupTemp,
-                                icon: const Icon(
-                                  Icons.cleaning_services_outlined,
-                                  size: 16,
-                                ),
-                                label: const Text('清理临时目录'),
                               ),
                             ),
                           ),
-                        ),
-                    ],
-                  ),
-                  const SizedBox(height: 16),
+                      ],
+                    ),
+                    const SizedBox(height: 12),
+                  ],
+                  const SizedBox(height: 4),
                   const SectionHeader(title: '饭太硬 / TVBox 接口订阅'),
                   GroupCard(
                     children: [
@@ -380,8 +487,9 @@ class _NetdiskPageState extends State<NetdiskPage> {
                               url: true,
                               autofocus: false,
                               decoration: const InputDecoration(
-                                labelText: '粘贴夸克分享链接',
-                                hintText: 'https://pan.quark.cn/s/xxxx',
+                                labelText: '粘贴夸克 / UC 网盘分享链接',
+                                hintText:
+                                    'https://pan.quark.cn/s/xxxx 或 https://drive.uc.cn/s/xxxx',
                                 border: OutlineInputBorder(),
                                 isDense: true,
                               ),

@@ -8,6 +8,7 @@ import 'package:flutter/services.dart';
 import '../../drama_details.dart';
 import '../../local_store.dart';
 import '../../models.dart';
+import 'detail_routes.dart';
 import '../app_scope.dart';
 import '../downloads/download_picker_page.dart';
 import '../player/playback_handle.dart';
@@ -186,6 +187,10 @@ class _DetailPageState extends State<DetailPage> {
   String? _groupPagerDrama;
   int? _groupTarget;
   bool _groupDragging = false;
+  /// 详情页选中的线路名与线路内分组。多线路源（TVBox / 网盘展开）才有意义。
+  String _routeName = '';
+  int _routeGroup = 0;
+  String _routeDramaId = '';
   final _televisionDetail = GlobalKey<TelevisionDetailState>();
   bool _entered = false;
   PlaybackHandle? _watched;
@@ -603,6 +608,16 @@ class _DetailPageState extends State<DetailPage> {
                 child: _episodeStatus(details),
               )
             else ...[
+              // 多线路源先给「线路」区块（16px 边距），再给「选集」。
+              SliverToBoxAdapter(
+                child: Builder(
+                  builder: (context) {
+                    final scope = _routeScope(details);
+                    if (scope.routes.length < 2) return const SizedBox.shrink();
+                    return _routeSection(details, m, scope);
+                  },
+                ),
+              ),
               SliverToBoxAdapter(
                 child: Padding(
                   padding: const EdgeInsets.fromLTRB(20, 8, 8, 0),
@@ -1143,6 +1158,59 @@ class _DetailPageState extends State<DetailPage> {
     ],
   );
 
+  /// 当前线路下的剧集分组视图。单线路源返回空 routes，调用方走原路径。
+  EpisodeScope _routeScope(DramaDetails details) => resolveDetailEpisodeScope(
+    details,
+    routeDramaId: _routeDramaId,
+    selectedRoute: _routeName,
+    routeGroup: _routeGroup,
+  );
+
+  /// 「线路」区块：只在多线路时出现，统一 16px 边距，放在「选集」上方。
+  Widget _routeSection(DramaDetails details, _Metrics m, EpisodeScope scope) =>
+      Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Padding(
+            padding: EdgeInsets.fromLTRB(16, 10, 16, 0),
+            child: Text(
+              '线路',
+              style: TextStyle(fontSize: 14, fontWeight: FontWeight.w700),
+            ),
+          ),
+          const SizedBox(height: 6),
+          SizedBox(
+            height: m.chip + 10,
+            child: ListView.separated(
+              scrollDirection: Axis.horizontal,
+              padding: const EdgeInsets.fromLTRB(16, 0, 16, 4),
+              itemCount: scope.routes.length,
+              separatorBuilder: (_, _) => const SizedBox(width: 8),
+              itemBuilder: (context, index) {
+                final route = scope.routes[index];
+                final selected = route.name == scope.routeName;
+                return _RouteChip(
+                  label: '${route.name} (${route.entries.length})',
+                  selected: selected,
+                  metrics: m,
+                  onPressed: () => _selectRoute(details, route.name),
+                );
+              },
+            ),
+          ),
+        ],
+      );
+
+  /// 切换线路：记住选择，并把分组重置到该线路的第 0 组。
+  void _selectRoute(DramaDetails details, String route) {
+    if (route == _routeName && _routeDramaId == details.drama.id) return;
+    setState(() {
+      _routeName = route;
+      _routeDramaId = details.drama.id;
+      _routeGroup = 0;
+    });
+  }
+
   Widget _seasonRow(DramaDetails details, _Metrics m) => _SeasonStrip(
     seasons: details.seasons,
     current: details.drama.id,
@@ -1339,6 +1407,7 @@ class _DetailPageState extends State<DetailPage> {
             details.group,
             _columnsFor(details, m, constraints.maxWidth),
             extent,
+            scope: _routeScope(details),
           ),
         );
       },
@@ -1350,14 +1419,24 @@ class _DetailPageState extends State<DetailPage> {
     _Metrics m,
     int group,
     int columns,
-    double extent,
-  ) {
+    double extent, {
+    EpisodeScope? scope,
+  }) {
     final current = details.currentIndex;
     final start = group * episodeGroupSize;
-    final episodes = details.episodesIn(group);
+    // 多线路时用 scope 切出来的条目（含真实索引与压缩后的标签），
+    // 单线路仍走原来的 details.episodesIn。
+    final routeEntries = scope != null && scope.routes.length > 1
+        ? (group == scope.group ? scope.entries : const <RouteEntry>[])
+        : null;
+    final episodes = routeEntries == null
+        ? details.episodesIn(group)
+        : [for (final entry in routeEntries) entry.episode];
     final named = episodesNamed(details.episodes);
     Widget cell(int offset) {
-      final index = start + offset;
+      final index = routeEntries == null
+          ? start + offset
+          : routeEntries[offset].index;
       final episode = episodes[offset];
       return _EpisodeCell(
         key: index == current
@@ -1745,8 +1824,61 @@ class _GroupChip extends StatelessWidget {
   }
 }
 
-class _EpisodeCell extends StatelessWidget {
-  const _EpisodeCell({
+/// 线路胶囊：与分组胶囊同一套尺寸，多线路源才出现。
+class _RouteChip extends StatelessWidget {
+  const _RouteChip({
+    required this.label,
+    required this.selected,
+    required this.metrics,
+    required this.onPressed,
+  });
+  final String label;
+  final bool selected;
+  final _Metrics metrics;
+  final VoidCallback onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    final colors = Theme.of(context).colorScheme;
+    final m = metrics;
+    final shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(m.chipRadius),
+    );
+    final padding = EdgeInsets.symmetric(horizontal: m.chipPadding);
+    final size = Size(0, m.chip);
+    return FocusRing(
+      radius: m.chipRadius,
+      child: selected
+          ? FilledButton.tonal(
+              onPressed: onPressed,
+              style: FilledButton.styleFrom(
+                shape: shape,
+                padding: padding,
+                minimumSize: size,
+                textStyle: TextStyle(
+                  fontSize: m.chipText,
+                  fontWeight: FontWeight.w600,
+                ),
+              ),
+              child: Text(label),
+            )
+          : OutlinedButton(
+              onPressed: onPressed,
+              style: OutlinedButton.styleFrom(
+                shape: shape,
+                padding: padding,
+                minimumSize: size,
+                foregroundColor: colors.onSurfaceVariant,
+                side: BorderSide(color: colors.outlineVariant),
+                textStyle: TextStyle(fontSize: m.chipText),
+              ),
+              child: Text(label),
+            ),
+    );
+  }
+}
+
+class _EpisodeCell extends StatelessWidget {  const _EpisodeCell({
     super.key,
     required this.episode,
     required this.named,

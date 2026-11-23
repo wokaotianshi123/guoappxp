@@ -25,6 +25,7 @@ import 'mini_player.dart';
 import 'playback_handle.dart';
 import 'playback_sheets.dart';
 import 'player_lock.dart';
+import 'player_overlays.dart';
 import 'player_status.dart';
 import 'fade_presence.dart';
 import 'player_surface.dart';
@@ -524,6 +525,9 @@ class _LandscapePlayerPageState extends State<LandscapePlayerPage>
           duration: Motion.medium,
           child: session.loading ? PlaybackLoading(session: session) : null,
         ),
+        // 线路切换提示：切线路时旧画面可能还在，只轻提示，不遮挡。
+        if (session.routeNotice case final notice?)
+          PlayerRouteNoticeBadge(text: notice, bottom: 96),
         FadePresence(
           duration: Motion.medium,
           child: switch (session.error) {

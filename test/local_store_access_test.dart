@@ -188,4 +188,16 @@ void main() {
     expect(SourceSite.isKnown('dsd'), isTrue);
     expect(SourceSite.isAvailable('dsd'), allSourcesEnabled);
   });
+
+  test('默认站源是红果，不随列表顺序变化', () async {
+    final store = await openStore();
+    // 把红果排到列表末尾，默认源仍应是红果而不是「列表第一个」。
+    await store.setSourceOrder([
+      for (final site in store.sources)
+        if (site.id != hongguoSourceId) site.id,
+      hongguoSourceId,
+    ]);
+    expect(store.sources.last.id, hongguoSourceId);
+    expect(store.source, hongguoSourceId);
+  });
 }

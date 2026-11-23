@@ -13,6 +13,7 @@ import '../widgets/motion/motion_widgets.dart';
 import 'danmaku_overlay.dart';
 import 'fade_presence.dart';
 import 'playback_handle.dart';
+import 'player_overlays.dart';
 import 'player_status.dart';
 import 'player_surface.dart';
 import 'player_video.dart';
@@ -464,6 +465,8 @@ class _TelevisionPlayerPageState extends State<TelevisionPlayerPage>
                           ? PlaybackLoading(session: _session)
                           : null,
                     ),
+                    if (_session.routeNotice case final notice?)
+                      PlayerRouteNoticeBadge(text: notice, bottom: 96),
                     FadePresence(
                       duration: Motion.medium,
                       child: _session.ready && _session.stalled

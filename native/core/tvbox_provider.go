@@ -580,12 +580,23 @@ func (p *tvboxProvider) Detail(ctx context.Context, sourceID string) (Drama, []C
 	urlGroups := strings.Split(item.PlayURL, "$$$")
 	chapters := make([]Chapter, 0)
 	epIndex := 0
+	// 同名线路要合并/去重：TVBox 订阅里常见两条都叫「线路1」，直接并列会让
+	// 用户在选集里看到两个一模一样的标题、集数还混在一起。这里给重名的追加序号，
+	// 空线路名补「线路 N」，与 GoMovie 的处理一致。
+	seenRoutes := make(map[string]int, len(urlGroups))
 
 	for rIdx, group := range urlGroups {
 		routeName := ""
 		if rIdx < len(routes) {
 			routeName = strings.TrimSpace(routes[rIdx])
 		}
+		if routeName == "" {
+			routeName = fmt.Sprintf("线路 %d", rIdx+1)
+		}
+		if count := seenRoutes[routeName]; count > 0 {
+			routeName = fmt.Sprintf("%s (%d)", routeName, count+1)
+		}
+		seenRoutes[routeName]++
 		rawEntries := strings.Split(group, "#")
 		entries := make([]string, 0, len(rawEntries))
 		for _, e := range rawEntries {
@@ -595,10 +606,13 @@ func (p *tvboxProvider) Detail(ctx context.Context, sourceID string) (Drama, []C
 		}
 		if len(entries) == 1 {
 			_, rawLink := parseEpisodeEntry(entries[0], "正片")
-			if shareURL := netdisk.ExtractShareURL(rawLink); shareURL != "" && netdisk.DetectProvider(shareURL) == "quark" {
-				if expanded, ok := p.expandQuarkShare(ctx, drama.ID, routeName, shareURL, &epIndex); ok {
-					chapters = append(chapters, expanded...)
-					continue
+			if shareURL := netdisk.ExtractShareURL(rawLink); shareURL != "" {
+				// 夸克与 UC 分享都自动展开成网盘里的真实文件列表。
+				if provider := netdisk.DetectProvider(shareURL); provider == "quark" || provider == "uc" {
+					if expanded, ok := p.expandNetdiskShare(ctx, drama.ID, routeName, provider, shareURL, &epIndex); ok {
+						chapters = append(chapters, expanded...)
+						continue
+					}
 				}
 			}
 		}
@@ -608,7 +622,7 @@ func (p *tvboxProvider) Detail(ctx context.Context, sourceID string) (Drama, []C
 			if rawLink == "" {
 				continue
 			}
-			if routeName != "" && len(urlGroups) > 1 {
+			if len(urlGroups) > 1 {
 				epName = routeName + " · " + epName
 			}
 			videoRef := rawLink
@@ -633,22 +647,32 @@ func (p *tvboxProvider) Detail(ctx context.Context, sourceID string) (Drama, []C
 	return drama, chapters, nil
 }
 
-func (p *tvboxProvider) expandQuarkShare(ctx context.Context, dramaID, routeName, shareURL string, epIndex *int) ([]Chapter, bool) {
+func (p *tvboxProvider) expandNetdiskShare(ctx context.Context, dramaID, routeName, provider, shareURL string, epIndex *int) ([]Chapter, bool) {
 	netdiskMu.Lock()
 	rt := netdiskRT
 	netdiskMu.Unlock()
 	var creds *netdisk.Credentials
 	if rt != nil && rt.store != nil {
-		creds, _ = rt.store.Get("quark")
+		creds, _ = rt.store.Get(netdisk.NormalizeProvider(provider))
 	}
-	info, err := netdisk.NewQuark(creds).Share(ctx, shareURL)
+	var info *netdisk.ShareInfo
+	var err error
+	if netdisk.NormalizeProvider(provider) == "uc" {
+		info, err = netdisk.NewUC(creds).Share(ctx, shareURL)
+	} else {
+		info, err = netdisk.NewQuark(creds).Share(ctx, shareURL)
+	}
 	if err != nil || len(info.Episodes) == 0 {
 		return nil, false
 	}
 	out := make([]Chapter, 0, len(info.Episodes))
 	for i, ep := range info.Episodes {
 		*epIndex++
-		title := ep.Name
+		// 直接展示网盘原文件名，用户能对上自己网盘里的文件。
+		title := strings.TrimSpace(ep.Name)
+		if title == "" {
+			title = fmt.Sprintf("文件 %d", i+1)
+		}
 		if sizeText := formatNetdiskSize(ep.Size); sizeText != "" {
 			title += " · " + sizeText
 		}

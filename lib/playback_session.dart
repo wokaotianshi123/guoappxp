@@ -257,6 +257,13 @@ class PlaybackSession extends ChangeNotifier {
   bool _audioDetected = false;
   bool _stalled = false;
   String _loadingMessage = '正在准备播放';
+
+  /// 线路切换 / 刷新的临时提示，几秒后自动消失。
+  ///
+  /// 与 [loadingMessage] 分开：loading 只在首帧前显示，而切线路时画面可能已经
+  /// 在播（旧线路还在出图），用户需要一个不遮挡画面的轻提示。
+  String? _routeNotice;
+  Timer? _routeNoticeTimer;
   String? _error;
   String? _saveWarning;
   String? _savedProgressKey;
@@ -285,6 +292,9 @@ class PlaybackSession extends ChangeNotifier {
   Episode get episode => detail.episodes[_index];
   bool get loading => _loading;
   String get loadingMessage => _loadingMessage;
+
+  /// 线路切换 / 刷新的临时提示（几秒后自动消失）。
+  String? get routeNotice => _routeNotice;
   String? get error => _error;
   bool get localFailure => _localFailure;
   bool get loginRequired => _loginRequired;
@@ -727,6 +737,14 @@ class PlaybackSession extends ChangeNotifier {
       '[Play] 自动恢复 原因=$reason 处理=${action.name} 线路=${current.routeIndex + 1}/${current.routeCount}',
     );
     if (action != PlaybackRecoveryAction.stop) {
+      if (action == PlaybackRecoveryAction.alternative) {
+        _setRouteNotice(
+          '当前线路异常，已自动切换至线路 ${current.routeIndex + 2}/'
+          '${current.routeCount}',
+        );
+      } else if (action == PlaybackRecoveryAction.refresh) {
+        _setRouteNotice('当前线路卡顿，正在刷新播放地址…');
+      }
       await play(_index, position: position, recovery: action);
       return;
     }
@@ -756,7 +774,9 @@ class PlaybackSession extends ChangeNotifier {
     };
     _error = current.local
         ? '$symptom，本地视频没能播放。可重试或重新下载，也可以改为在线播放。'
-        : '$symptom，自动恢复未成功。可重试、换一集或选择其他清晰度。';
+        : '$symptom，所有可用线路均已尝试失败。\n'
+              '国内站源请在站源面板长按设为「直连」，'
+              '海外站源（如 Hanime1 / MissAV / 青空）请检查代理或设为「代理」。';
     _notify();
   }
 
@@ -1476,6 +1496,18 @@ class PlaybackSession extends ChangeNotifier {
   ///
   /// 走的是与自动恢复同一条通道（先存进度、保留旧会话、装上新会话），
   /// 所以切线路不会丢进度，也不会在切换期间把画面停在旧流上。
+  /// 显示一条几秒后自动消失的线路提示。
+  void _setRouteNotice(String text) {
+    _routeNoticeTimer?.cancel();
+    _routeNotice = text;
+    _notify();
+    _routeNoticeTimer = Timer(const Duration(seconds: 4), () {
+      _routeNotice = null;
+      _notify();
+    });
+  }
+
+  /// 手动切换线路：进度保留，切完给一条文字提示。
   Future<void> selectRoute(int route) async {
     final current = _plan;
     if (_closed || _switchingRoute || current == null || current.local) return;
@@ -1483,7 +1515,7 @@ class PlaybackSession extends ChangeNotifier {
     if (route == current.routeIndex) return;
     _switchingRoute = true;
     _routeRequest = route;
-    _notify();
+    _setRouteNotice('正在切换到线路 ${route + 1}/$routeCount');
     try {
       await play(
         _index,

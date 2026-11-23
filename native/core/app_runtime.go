@@ -496,7 +496,9 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "netdiskStatus":
 		return engine.netdiskStatus()
 	case "netdiskLogin":
-		return engine.netdiskLoginStart(ctx)
+		return engine.netdiskLoginStart(ctx, input.Source)
+	case "netdiskLoginCookie":
+		return engine.netdiskLoginCookie(input.Source, input.URL)
 	case "netdiskLoginPoll":
 		return engine.netdiskLoginPoll(ctx, input.Session)
 	case "netdiskLogout":
@@ -510,7 +512,7 @@ func nativeDispatch(input nativeInput) (any, error) {
 	case "netdiskOpenShare":
 		return engine.netdiskOpenShare(ctx, input.URL)
 	case "netdiskCleanup":
-		return engine.netdiskCleanup(ctx)
+		return engine.netdiskCleanup(ctx, input.Source)
 	case "tvboxStatus":
 		return engine.tvboxStatus(), nil
 	case "tvboxSubscribe":

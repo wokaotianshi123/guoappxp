@@ -327,14 +327,21 @@ abstract class AppRepository {
     Map<String, String> headers = const {},
   }) async => throw AppFailure('当前环境不支持听书源');
 
-  // ---- 网盘分享（当前为夸克）：扫码登录、分享解析、直链取流 ----
+  // ---- 网盘分享（夸克 / UC）：扫码登录、Cookie 登录、分享解析、直链取流 ----
   Future<Map<String, dynamic>> netdiskStatus() async => const {};
 
   /// 生成扫码登录二维码，返回 `id` 与 `qrBase64`（PNG）。
-  Future<Map<String, dynamic>> netdiskLogin() async =>
+  /// [provider] 取 `quark` 或 `uc`，默认夸克。
+  Future<Map<String, dynamic>> netdiskLogin({String provider = 'quark'}) async =>
       throw AppFailure('当前环境不支持网盘登录');
   Future<Map<String, dynamic>> netdiskLoginPoll(String session) async =>
       const {};
+
+  /// 用浏览器里复制出来的 Cookie 直接登录（免扫码）。
+  Future<Map<String, dynamic>> netdiskLoginCookie(
+    String cookie, {
+    String provider = 'quark',
+  }) async => throw AppFailure('当前环境不支持网盘登录');
   Future<void> netdiskLogout(String provider) async {}
 
   /// 解析分享链接，返回 `episodes`（每项含 `fid`、`name`、`size`）。
@@ -350,7 +357,8 @@ abstract class AppRepository {
       throw AppFailure('当前环境不支持网盘分享');
 
   /// 清理网盘根目录下的临时转存目录。
-  Future<Map<String, dynamic>> netdiskCleanup() async => const {};
+  Future<Map<String, dynamic>> netdiskCleanup({String provider = 'quark'}) async =>
+      const {};
 
   // ---- 饭太硬 / TVBox 接口订阅 ----
   Future<Map<String, dynamic>> tvboxStatus() async => const {};
@@ -693,8 +701,18 @@ class NativeRepository extends AppRepository {
       await _call({'action': 'netdiskStatus'});
 
   @override
-  Future<Map<String, dynamic>> netdiskLogin() async =>
-      await _call({'action': 'netdiskLogin'});
+  Future<Map<String, dynamic>> netdiskLogin({String provider = 'quark'}) async =>
+      await _call({'action': 'netdiskLogin', 'source': provider});
+
+  @override
+  Future<Map<String, dynamic>> netdiskLoginCookie(
+    String cookie, {
+    String provider = 'quark',
+  }) async => await _call({
+    'action': 'netdiskLoginCookie',
+    'source': provider,
+    'url': cookie,
+  });
 
   @override
   Future<Map<String, dynamic>> netdiskLoginPoll(String session) async =>
@@ -722,8 +740,8 @@ class NativeRepository extends AppRepository {
   }
 
   @override
-  Future<Map<String, dynamic>> netdiskCleanup() async =>
-      await _call({'action': 'netdiskCleanup'});
+  Future<Map<String, dynamic>> netdiskCleanup({String provider = 'quark'}) async =>
+      await _call({'action': 'netdiskCleanup', 'source': provider});
 
   @override
   Future<Map<String, dynamic>> tvboxStatus() async =>

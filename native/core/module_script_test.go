@@ -467,6 +467,41 @@ module.exports = {
 	}
 }
 
+func TestModuleHostFetchAcceptsBodyBase64(t *testing.T) {
+	// 黄豆等模块把加密后的二进制体以 base64 传进 fetch 的 bodyBase64 字段。
+	// 宿主只认 body 时请求体会是空的，接口必然报错，表现为「模块版本过低」。
+	directory := writeTestModule(t, `{"id":"bodybase64","name":"base64 请求体","runtime":"js","api":1,"adult":false,"hosts":["api.example.invalid"]}`, `
+module.exports = {
+  categories() {
+    const response = host.fetch({
+      method: "POST",
+      url: "https://api.example.invalid/raw",
+      headers: { "Content-Type": "application/octet-stream" },
+      bodyBase64: host.base64Encode(new Uint8Array([255, 0, 128, 1])),
+      binary: true,
+    });
+    return [{ id: host.hexEncode(response.body), name: "ok" }];
+  },
+};`)
+	module, err := readModule(directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	host := &moduleTestHost{state: map[string][]byte{}}
+	categories, err := module.provider(host).Categories(context.Background(), false)
+	if err != nil || len(categories) != 1 {
+		t.Fatalf("categories = %v, %v", categories, err)
+	}
+	// 请求体必须原样送出 base64 解码后的字节。
+	if len(host.requests) != 1 || string(host.requests[0].Body) != "\xff\x00\x80\x01" {
+		t.Fatalf("请求体 = %q，期望 0xff008001", string(host.requests[0].Body))
+	}
+	// 响应体声明 binary 时应给字节数组，而不是被转成字符串。
+	if categories[0].ID != "706f6e6720ff008001" {
+		t.Fatalf("响应体 = %q", categories[0].ID)
+	}
+}
+
 func TestModuleHostSha512AndGzip(t *testing.T) {
 	directory := writeTestModule(t, `{"id":"hashgzip","name":"摘要与压缩","runtime":"js","api":1,"adult":false}`, `
 module.exports = {

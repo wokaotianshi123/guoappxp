@@ -572,9 +572,13 @@ class LocalStore extends ChangeNotifier {
   String get source {
     if (locked) return '';
     final value = _userSettings['source'];
-    return sources.any((site) => site.id == value)
-        ? value as String
-        : sources.firstOrNull?.id ?? '';
+    if (sources.any((site) => site.id == value)) return value as String;
+    // 用户没选过站源时默认落在红果：它是内置主源，分类、搜索、推荐、追剧都最完整，
+    // 不像商店模块那样可能没装或站点抖动。红果被关掉或不可用时才退回列表首个。
+    if (sources.any((site) => site.id == hongguoSourceId)) {
+      return hongguoSourceId;
+    }
+    return sources.firstOrNull?.id ?? '';
   }
 
   DownloadPreferences get downloadPreferences {

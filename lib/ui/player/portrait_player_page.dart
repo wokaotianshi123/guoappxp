@@ -25,6 +25,7 @@ import 'playback_sheets.dart';
 import 'player_intro.dart';
 import 'playback_handle.dart';
 import 'player_lock.dart';
+import 'player_overlays.dart';
 import 'player_surface.dart';
 import 'player_video.dart';
 import 'swipe_controls.dart';
@@ -583,23 +584,25 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
           FadePresence(
             duration: Motion.medium,
             child: waiting
-                ? Center(
-                    child: Column(
-                      mainAxisSize: MainAxisSize.min,
-                      spacing: 16,
-                      children: [
-                        Text(
-                          '第 ${session.detail.episodes[index].number} 集',
-                          style: const TextStyle(
-                            color: Colors.white,
-                            fontSize: 22,
-                            fontWeight: FontWeight.w800,
+                ? current
+                      ? PlaybackLoading(session: session)
+                      : Center(
+                          child: Column(
+                            mainAxisSize: MainAxisSize.min,
+                            spacing: 16,
+                            children: [
+                              Text(
+                                '第 ${session.detail.episodes[index].number} 集',
+                                style: const TextStyle(
+                                  color: Colors.white,
+                                  fontSize: 22,
+                                  fontWeight: FontWeight.w800,
+                                ),
+                              ),
+                              const CircularProgressIndicator(),
+                            ],
                           ),
-                        ),
-                        if (current) const CircularProgressIndicator(),
-                      ],
-                    ),
-                  )
+                        )
                 : null,
           ),
           if (current) ...[
@@ -762,6 +765,9 @@ class _PortraitPlayerPageState extends State<PortraitPlayerPage>
                 : null,
           ),
         ),
+        // 线路切换提示：放在进度条上方，不挡选集条与底部控件。
+        if (session.routeNotice case final notice?)
+          PlayerRouteNoticeBadge(text: notice, bottom: bottom + 104),
         Positioned(
           key: const ValueKey('progress'),
           left: 16,

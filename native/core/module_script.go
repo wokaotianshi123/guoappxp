@@ -2,6 +2,7 @@ package core
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -93,6 +94,9 @@ type jsFetchRequest struct {
 	URL             string            `json:"url"`
 	Headers         map[string]string `json:"headers"`
 	Body            any               `json:"body"`
+	// BodyBase64 是「请求体以 base64 传二进制」的写法。黄豆等模块把加密后的
+	// 字节直接 base64 塞进来，宿主只认 Body 的话请求体就是空的，接口必然报错。
+	BodyBase64      string            `json:"bodyBase64"`
 	Binary          bool              `json:"binary"`
 	TimeoutMS       int64             `json:"timeoutMs"`
 	Limit           int64             `json:"limit"`
@@ -110,6 +114,8 @@ type jsFetchResponse struct {
 	Body      any                 `json:"body"`
 	Blocked   bool                `json:"blocked"`
 	Oversized bool                `json:"oversized"`
+	// rawBody 保留原始字节，供 binary 响应直接交给模块；不参与 JSON 编解码。
+	rawBody []byte
 }
 
 type jsDramaPage struct {
@@ -491,21 +497,33 @@ func (p *jsProvider) hostObject(instance *jsInstance) *goja.Object {
 		"baseUrl": func() string { return p.module.manifest.effectiveBaseURL() },
 		"fetch": func(request jsFetchRequest) jsFetchResponse {
 			var body []byte
-			if request.Body != nil {
+			switch {
+			case request.BodyBase64 != "":
+				// 模块把加密后的二进制体以 base64 传进来（黄豆等）。
+				decoded, err := base64.StdEncoding.DecodeString(request.BodyBase64)
+				if err != nil {
+					instance.fail(errors.New("请求体不是合法的 base64"), false)
+					return jsFetchResponse{}
+				}
+				body = decoded
+			case request.Body != nil:
 				value := instance.vm.ToValue(request.Body)
 				if !goja.IsUndefined(value) && !goja.IsNull(value) {
 					body = instance.bytesOf(value)
 				}
 			}
 			fetched, err := p.fetch(instance.ctx, request, body)
-			raw, _ := fetched.Body.(string)
 			result := jsFetchResponse{Status: fetched.Status, Headers: fetched.Headers,
-				Body: raw, Blocked: fetched.Blocked, Oversized: fetched.Oversized}
+				Blocked: fetched.Blocked, Oversized: fetched.Oversized}
+			// 响应体默认按文本给（模块大多当字符串用）；请求声明 binary 时给真正的
+			// 字节数组，否则 gzip / AES 这类二进制响应会被转成 string 破坏掉。
+			if request.Binary {
+				result.Body = instance.bytesValue(fetched.rawBody)
+			} else {
+				result.Body = string(fetched.rawBody)
+			}
 			if err != nil {
 				instance.failResponse(err, result)
-			}
-			if request.Binary {
-				result.Body = instance.bytesValue([]byte(raw))
 			}
 			return result
 		},
@@ -644,9 +662,8 @@ func (p *jsProvider) fetchText(ctx context.Context, request jsTextRequest) (jsTe
 			FollowRedirects: request.FollowRedirects,
 			AnyStatus:       request.AnyStatus,
 		}, moduleBody(request.Body))
-		body, _ := response.Body.(string)
 		return jsTextResponse{
-			Body: body, URL: request.URL, Status: response.Status, Headers: response.Headers,
+			Body: string(response.rawBody), URL: request.URL, Status: response.Status, Headers: response.Headers,
 		}, err
 	}
 	response, err := p.host.FetchText(ctx, TextRequest{URL: request.URL, Referer: request.Referer, UserAgent: request.UserAgent,
@@ -674,8 +691,9 @@ func (p *jsProvider) fetch(ctx context.Context, request jsFetchRequest, body []b
 		Direct: request.Direct,
 	})
 	if err != nil {
-		return jsFetchResponse{Status: response.Status, Body: string(response.Body), Blocked: response.Blocked, Oversized: response.Oversized}, err
+		return jsFetchResponse{Status: response.Status, rawBody: response.Body,
+			Blocked: response.Blocked, Oversized: response.Oversized}, err
 	}
-	return jsFetchResponse{Status: response.Status, Headers: response.Header, Body: string(response.Body),
+	return jsFetchResponse{Status: response.Status, Headers: response.Header, rawBody: response.Body,
 		Blocked: response.Blocked, Oversized: response.Oversized}, nil
 }

@@ -10,8 +10,10 @@ import '../../playback_preferences.dart';
 import '../../playback_session.dart';
 import '../app_scope.dart';
 import '../settings/sorani_account_view.dart';
+import '../settings/settings_page.dart';
 import '../theme/motion.dart';
 import '../widgets/contained_slider.dart';
+import '../widgets/cover_backdrop.dart';
 import '../widgets/motion/motion_widgets.dart';
 import '../../cast/cast_controller.dart';
 import '../../cast/cast_sheet.dart';
@@ -1251,22 +1253,46 @@ class PlaybackLoading extends StatelessWidget {
   final PlaybackSession session;
 
   @override
-  Widget build(BuildContext context) => ColoredBox(
-    color: Colors.black.withValues(alpha: .78),
-    child: Center(
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          const CircularProgressIndicator(),
-          const SizedBox(height: 16),
-          Text(
-            session.loadingMessage,
-            style: const TextStyle(color: Colors.white, fontSize: 14),
+  Widget build(BuildContext context) {
+    // 首帧渲染前一直显示模糊封面 + 实时状态：纯黑屏会让用户以为卡死了，
+    // 尤其在切线路 / 换清晰度时这段等待更明显。
+    final message = session.loadingMessage.isEmpty
+        ? '正在缓冲视频…'
+        : session.loadingMessage;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        ColoredBox(color: Colors.black.withValues(alpha: .88)),
+        CoverBackdrop(
+          drama: session.detail.drama,
+          sigma: 28,
+          opacity: .55,
+          overlay: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              Colors.black.withValues(alpha: .45),
+              Colors.black.withValues(alpha: .75),
+            ],
           ),
-        ],
-      ),
-    ),
-  );
+        ),
+        Center(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const CircularProgressIndicator(),
+              const SizedBox(height: 16),
+              Text(
+                message,
+                textAlign: TextAlign.center,
+                style: const TextStyle(color: Colors.white, fontSize: 14),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
 }
 
 class PlaybackFailure extends StatelessWidget {
@@ -1349,6 +1375,15 @@ class PlaybackFailure extends StatelessWidget {
                     TextButton(
                       onPressed: session.switchOnline,
                       child: const Text('改为在线播放'),
+                    ),
+                  // 所有线路都失败时最常见的两个原因是「该走代理的走了直连」或
+                  // 反过来，直接给个入口，省得用户翻设置。
+                  if (!session.localFailure)
+                    OutlinedButton.icon(
+                      onPressed: () =>
+                          openProxySettings(context, session.store),
+                      icon: const Icon(Icons.language_rounded, size: 18),
+                      label: const Text('网络代理'),
                     ),
                 ],
               ),
