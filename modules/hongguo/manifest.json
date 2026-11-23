@@ -11,7 +11,8 @@
     "www.hongguoduanju.com",
     "api5-normal-sinfonlineb.fqnovel.com",
     "api5-normal-sinfonlinea.fqnovel.com",
-    "log.snssdk.com"
+    "log.snssdk.com",
+    "vas-lf-x.snssdk.com"
   ],
   "capabilities": [
     "search",

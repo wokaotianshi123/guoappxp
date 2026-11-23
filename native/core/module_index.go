@@ -298,7 +298,13 @@ func (engine *nativeEngine) fetchIndexList(ctx context.Context, address string) 
 	if err != nil {
 		return nil, err
 	}
-	return parseModuleIndex(raw)
+	// 在线仓库可能是加密下发（GCM1 封包），先解出明文再解析；
+	// 明文索引会原样返回，两种来源走同一条解析路径。
+	plain, err := decryptModuleIndex(raw)
+	if err != nil {
+		return nil, err
+	}
+	return parseModuleIndex(plain)
 }
 
 // fetchRepositoryIndex 用 GitHub contents 接口读仓库里的索引，作为镜像全灭时
@@ -308,7 +314,11 @@ func (engine *nativeEngine) fetchRepositoryIndex(ctx context.Context, repo, ref,
 	if err != nil {
 		return nil, fmt.Errorf("%s：%w", repo, err)
 	}
-	list, err := parseModuleIndex(raw)
+	plain, err := decryptModuleIndex(raw)
+	if err != nil {
+		return nil, fmt.Errorf("%s：%w", repo, err)
+	}
+	list, err := parseModuleIndex(plain)
 	if err != nil {
 		return nil, fmt.Errorf("%s：%w", repo, err)
 	}

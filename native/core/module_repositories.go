@@ -36,7 +36,9 @@ type moduleRepositoriesConfig struct {
 // 后两家是社区合集，用户可在「在线仓库」里随时切换。
 var moduleBuiltinRepositories = []nativeModuleRepository{
 	{Name: "官方仓库", URL: "https://raw.githubusercontent.com/guoapp-modules/index/main/index.json"},
-	{Name: "guocheng1378", URL: "https://raw.githubusercontent.com/guocheng1378/guoapp-modules/refs/heads/main/index.json"},
+	// 真果鉴官方仓库：索引以 AES-256-GCM 加密下发（GCM1 封包），
+	// 由 decryptModuleIndex 解出明文后走同一套解析。
+	{Name: "真果鉴", URL: "https://guoapp.dpdns.org/modules/index.json"},
 	{Name: "jqk4388", URL: "https://raw.githubusercontent.com/jqk4388/guoapp-modules-private/refs/heads/main/index.json"},
 }
 
@@ -50,8 +52,8 @@ func defaultModuleRepositoriesConfig() moduleRepositoriesConfig {
 
 // upgradeRepositories 把老版本的默认配置补齐成当前的内置列表。
 //
-// 老默认配置（只有内置官方镜像、或只有 guocheng1378 + jqk4388 两家）会被换成
-// 新的三家里；只要用户自己加过、删过、改过仓库就原样保留，不覆盖用户配置。
+// 老默认配置（只有内置官方镜像、或 guocheng1378 + jqk4388 那套）会被换成
+// 当前的内置列表；只要用户自己加过、删过、改过仓库就原样保留，不覆盖用户配置。
 func upgradeRepositories(config moduleRepositoriesConfig) moduleRepositoriesConfig {
 	if len(config.Repositories) == 0 {
 		return config
@@ -61,7 +63,9 @@ func upgradeRepositories(config moduleRepositoriesConfig) moduleRepositoriesConf
 			return config
 		}
 	}
-	if len(config.Repositories) == len(moduleBuiltinRepositories) {
+	// 全部都是出厂默认：与当前内置列表逐项比对（不能只比长度，新旧列表
+	// 长度都是 3 但内容不同）。
+	if sameRepositoryList(config.Repositories, moduleBuiltinRepositories) {
 		return config
 	}
 	upgraded := defaultModuleRepositoriesConfig()
@@ -78,7 +82,29 @@ func upgradeRepositories(config moduleRepositoriesConfig) moduleRepositoriesConf
 	return upgraded
 }
 
-// isBuiltinRepositoryURL 判断某个地址是否属于出厂自带的仓库（含官方镜像）。
+// sameRepositoryList 判断两组仓库是否完全一致（顺序、地址都相同）。
+func sameRepositoryList(left, right []nativeModuleRepository) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	for index := range left {
+		if strings.ToLower(strings.TrimSpace(left[index].URL)) !=
+			strings.ToLower(strings.TrimSpace(right[index].URL)) {
+			return false
+		}
+	}
+	return true
+}
+
+// legacyBuiltinRepositoryURLs 是「曾经内置、后来被替换掉」的仓库地址。
+//
+// 这些地址仍算出厂默认，这样老用户的纯默认配置能被 upgradeRepositories
+// 顺利换成当前列表；用户自己加的仓库不在其中，不会被误判。
+var legacyBuiltinRepositoryURLs = []string{
+	"https://raw.githubusercontent.com/guocheng1378/guoapp-modules/refs/heads/main/index.json",
+}
+
+// isBuiltinRepositoryURL 判断某个地址是否属于出厂自带的仓库（含官方镜像与被替换的旧地址）。
 func isBuiltinRepositoryURL(address string) bool {
 	key := strings.ToLower(strings.TrimSpace(address))
 	if key == "" {
@@ -86,6 +112,11 @@ func isBuiltinRepositoryURL(address string) bool {
 	}
 	for _, repo := range moduleBuiltinRepositories {
 		if strings.ToLower(strings.TrimSpace(repo.URL)) == key {
+			return true
+		}
+	}
+	for _, legacy := range legacyBuiltinRepositoryURLs {
+		if strings.ToLower(strings.TrimSpace(legacy)) == key {
 			return true
 		}
 	}

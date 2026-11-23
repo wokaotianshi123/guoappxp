@@ -190,7 +190,7 @@ func TestRepositoriesViewJSON(t *testing.T) {
 }
 
 // TestModuleRepositoriesUpgradeOfficialDefault 校验老默认配置（只有官方镜像）
-// 会自动换成出厂内置的 guocheng1378 / jqk4388 两家商店；用户自己配过的不动。
+// 会自动换成出厂内置的真果鉴 / jqk4388 两家商店；用户自己配过的不动。
 func TestModuleRepositoriesUpgradeOfficialDefault(t *testing.T) {
 	directory := t.TempDir()
 	old := moduleRepositoriesConfig{Repositories: []nativeModuleRepository{
@@ -211,7 +211,7 @@ func TestModuleRepositoriesUpgradeOfficialDefault(t *testing.T) {
 		names = append(names, repo.Name)
 	}
 	if len(names) != len(moduleBuiltinRepositories) || names[0] != "官方仓库" ||
-		names[1] != "guocheng1378" || names[2] != "jqk4388" {
+		names[1] != "真果鉴" || names[2] != "jqk4388" {
 		t.Fatalf("repositories = %v", names)
 	}
 	if got := engine.activeModuleRepositoryURL(); got != moduleBuiltinRepositories[0].URL {
