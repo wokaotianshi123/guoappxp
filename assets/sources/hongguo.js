@@ -2559,6 +2559,8 @@ spider.danmaku = function (id, startMs, durationMs) {
 
   let cachedRankingBoards = null;
   let cachedRankingBoardsTime = 0;
+  // 推荐榜不再进分类栏，记录其 group/board，交给推荐页展示。
+  let cachedRecommendBoard = null;
   spider.rankingBoards = async function () {
     if (cachedRankingBoards && Date.now() - cachedRankingBoardsTime < 15 * 60 * 1000) {
       return cachedRankingBoards;
@@ -2570,9 +2572,15 @@ spider.danmaku = function (id, startMs, durationMs) {
       if (!['all', 'human', 'comic_series_rank', 'ai_playlet'].includes(group.selector_item_id)) continue;
       for (const board of group.sub_cell_selector?.outer_row?.items || []) {
         if (!/^[a-z0-9_]{1,80}$/.test(board.selector_item_id || '')) continue;
+        const boardName = (group.selector_item_id === 'all' ? '' : text(group.show_name) + '·') + text(board.show_name);
+        // 推荐榜不放进分类栏，留给推荐页显示。
+        if (boardName.indexOf('推荐') !== -1) {
+          cachedRecommendBoard = { group: group.selector_item_id, board: board.selector_item_id };
+          continue;
+        }
         items.push({
           id: 'hongguo-app:' + group.selector_item_id + ':' + board.selector_item_id,
-          name: (group.selector_item_id === 'all' ? '' : text(group.show_name) + '·') + text(board.show_name),
+          name: boardName,
           description: text(board.sub_title), source: 'hongguo'
         });
       }
@@ -2601,20 +2609,51 @@ spider.danmaku = function (id, startMs, durationMs) {
     });
   };
 
-  spider.recommendations = function (genre, page) {
-    const key = text(genre);
-    if (['ai_series', 'ai-drama', 'AI 剧', 'AI剧'].includes(key)) {
-      return rankedPage('ai_playlet', 'ai_playlet_hot_sc', page, 'recommendations:ai');
+  let cachedRecommendPage = null;
+  let cachedRecommendTime = 0;
+  const recommendCacheTtl = 10 * 60 * 1000;
+
+  spider.recommendations = async function (genre, page) {
+    const pg = Math.max(1, number(page));
+    // 推荐页首页缓存 10 分钟：进入/切回推荐页不自动重新请求，避免内容自动刷新。
+    if (pg === 1 && cachedRecommendPage && Date.now() - cachedRecommendTime < recommendCacheTtl) {
+      return cachedRecommendPage;
     }
-    const comic = ['comic_series', 'comic-drama', 'comic', '漫剧'].includes(key);
-    const tabType = comic ? 32 : 38;
-    return paged('recommendations:' + tabType, page, async () => {
-      const response = await api('/reading/bookapi/bookmall/tab/v', { tab_type: tabType, tab_index: comic ? 2 : 1, offset: 0 });
-      const tab = response.data?.tab_item?.find(item => number(item.tab_type) === tabType);
-      if (!tab) throw failure('官方接口未返回此推荐分类，请重试', 'INVALID_RESPONSE');
-      const cell = container(tab.cell_data);
-      return { cell, params: { tab_type: tabType } };
-    });
+    let result;
+    // 推荐榜已从分类栏移到推荐页：优先展示推荐榜。
+    if (!cachedRecommendBoard) {
+      try {
+        await spider.rankingBoards();
+      } catch (_) {}
+    }
+    if (cachedRecommendBoard) {
+      result = await rankedPage(
+        cachedRecommendBoard.group,
+        cachedRecommendBoard.board,
+        pg,
+        'recommendations:rank',
+      );
+    } else {
+      const key = text(genre);
+      if (['ai_series', 'ai-drama', 'AI 剧', 'AI剧'].includes(key)) {
+        result = await rankedPage('ai_playlet', 'ai_playlet_hot_sc', pg, 'recommendations:ai');
+      } else {
+        const comic = ['comic_series', 'comic-drama', 'comic', '漫剧'].includes(key);
+        const tabType = comic ? 32 : 38;
+        result = await paged('recommendations:' + tabType, pg, async () => {
+          const response = await api('/reading/bookapi/bookmall/tab/v', { tab_type: tabType, tab_index: comic ? 2 : 1, offset: 0 });
+          const tab = response.data?.tab_item?.find(item => number(item.tab_type) === tabType);
+          if (!tab) throw failure('官方接口未返回此推荐分类，请重试', 'INVALID_RESPONSE');
+          const cell = container(tab.cell_data);
+          return { cell, params: { tab_type: tabType } };
+        });
+      }
+    }
+    if (pg === 1) {
+      cachedRecommendPage = result;
+      cachedRecommendTime = Date.now();
+    }
+    return result;
   };
 })();
 
