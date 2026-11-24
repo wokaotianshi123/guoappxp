@@ -1648,8 +1648,13 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async {
+    final sandbox = jsSandbox;
     if (isJsPlaybackSession(current.session)) {
       if (route == current.routeIndex) return current;
+      if (sandbox != null) {
+        // JS 源支持多线路时，按线路号重新解析当前集。
+        return sandbox.resolveRoute(route);
+      }
       throw AppFailure('这个 JS 源只返回了一条线路', code: 'NO_ROUTE');
     }
     return PlaybackPlan.fromJson(

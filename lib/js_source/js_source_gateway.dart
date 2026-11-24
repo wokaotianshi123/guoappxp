@@ -27,6 +27,19 @@ class JsSourceGateway {
   JsSourceService? _service;
   bool _attached = false;
 
+  /// 最近一次 [resolve] 的上下文。播放页切线路时只会拿到 PlaybackPlan，
+  /// 没有 Drama / Episode，靠这份缓存重建第 N 集在新线路上的编号。
+  ({Drama drama, Episode episode})? _lastResolve;
+
+  /// 按指定线路重新解析当前集（供播放页切线路用）。
+  Future<PlaybackPlan> resolveRoute(int routeIndex) async {
+    final last = _lastResolve;
+    if (last == null) {
+      throw AppFailure('线路信息已失效，请重新打开剧集', code: 'NO_ROUTE');
+    }
+    return resolve(last.drama, last.episode, routeIndex: routeIndex);
+  }
+
   JsSourceService get service => _service ??= JsSourceService();
 
   /// 启动时调用一次：装载脚本、挂站源、预热官方源的游客会话。
@@ -242,10 +255,11 @@ class JsSourceGateway {
     final result = await runtime.detail(sourceId);
     final vod = result.vod;
 
-    final chapters = _chaptersOf(vod['vod_play_url']?.toString() ?? '');
-    if (chapters.isEmpty) {
+    final routes = _routesOf(vod);
+    if (routes.isEmpty) {
       throw AppFailure('这个 JS 源没有返回可播放的分集', code: 'MISSING_EPISODE');
     }
+    final chapters = routes.first.chapters;
 
     var rich = drama;
     final title = vod['vod_name']?.toString().trim() ?? '';
@@ -274,10 +288,30 @@ class JsSourceGateway {
       peers: drama.peers,
     );
 
-    return DramaDetail(rich, [
-      for (var index = 0; index < chapters.length; index++)
-        Episode(chapters[index], index + 1),
-    ]);
+    // 多线路：把所有线路的分集都展开，标题写成「线路名 · 集名」，
+    // 详情页的 extractDetailRoutes 会据此还原线路切换（与 TVBox 源同一套编码）。
+    final multiRoute = routes.length > 1;
+    final episodes = <Episode>[];
+    for (var routeIndex = 0; routeIndex < routes.length; routeIndex++) {
+      final route = routes[routeIndex];
+      for (var i = 0; i < route.chapters.length; i++) {
+        final chapter = route.chapters[i];
+        final label = (chapter['title']?.toString() ?? '').trim();
+        episodes.add(
+          Episode({
+            ...chapter,
+            if (multiRoute)
+              'title':
+                  '${route.name} · ${label.isEmpty ? '第 ${i + 1} 集' : label}',
+            'routeName': route.name,
+            'routeIndex': routeIndex,
+            'routeCount': routes.length,
+          }, episodes.length + 1),
+        );
+      }
+    }
+
+    return DramaDetail(rich, episodes);
   });
 
   // ---------------------------------------------------------------- 播放
@@ -286,17 +320,38 @@ class JsSourceGateway {
     Drama drama,
     Episode episode, {
     int quality = 0,
+    int routeIndex = -1,
   }) => _guard(() async {
     final source = drama.source;
     final sourceId = _cleanSourceId(drama);
+    // 记住这次解析的上下文，播放页切线路时（只有 plan 没有 drama）要用它重建。
+    _lastResolve = (drama: drama, episode: episode);
     final runtime = await _runtime(source, 'playback');
     final flags = <Map<String, dynamic>>[
       {'quality': quality, 'seriesId': sourceId},
     ];
 
+    // 线路名来自详情页写入的 routeName；没有时退回 'flag'（脚本可忽略）。
+    var routeName = (episode.raw['routeName']?.toString() ?? '').trim();
     var target = (episode.raw['raw'] ?? episode.raw['id'] ?? episode.id)
         .toString()
         .trim();
+
+    // 切换到别的线路：重新拉详情，按线路序号取该线路第 N 集的分集编号。
+    if (routeIndex >= 0) {
+      final fresh = await runtime.detail(sourceId);
+      final routes = _routesOf(fresh.vod);
+      if (routeIndex < routes.length) {
+        final route = routes[routeIndex];
+        final position = episode.number - 1;
+        routeName = route.name;
+        if (position >= 0 && position < route.chapters.length) {
+          target = (route.chapters[position]['raw'] ?? '').toString();
+        }
+      }
+    }
+    final flag = routeName.isEmpty ? 'flag' : routeName;
+
     if (target.isEmpty) target = '${episode.number}';
     if (!target.startsWith('http://') &&
         !target.startsWith('https://') &&
@@ -306,11 +361,11 @@ class JsSourceGateway {
       target = '${sourceId}_$target';
     }
 
-    var play = await runtime.play('flag', target, flags: flags);
+    var play = await runtime.play(flag, target, flags: flags);
     if (play.url.isEmpty && sourceId.isNotEmpty) {
       final fallbackTarget = '${sourceId}_${episode.number}';
       if (fallbackTarget != target) {
-        play = await runtime.play('flag', fallbackTarget, flags: flags);
+        play = await runtime.play(flag, fallbackTarget, flags: flags);
       }
     }
     if (play.url.isEmpty) {
@@ -354,6 +409,13 @@ class JsSourceGateway {
       // session 只用来标记「这条流归沙箱管」，release / 弹幕按它路由。
       session: 'js:${jsSourceScriptId(source)}',
       danmakuId: play.danmakuId,
+      // 多线路：让播放页显示「线路 N/M」并允许切换。
+      routeIndex: routeIndex >= 0
+          ? routeIndex
+          : intValue(episode.raw['routeIndex']),
+      routeCount: intValue(episode.raw['routeCount']) > 0
+          ? intValue(episode.raw['routeCount'])
+          : 1,
     );
   });
 
@@ -519,14 +581,41 @@ class JsSourceGateway {
   }
 
   /// `vod_play_url` 是 CatVod 的老格式：多线路用 `$$$` 分隔，集用 `#`，
-  /// 每集 `标题$播放编号`。只取第一条线路。
+  /// 每集 `标题$播放编号`。`vod_play_from` 用 `$$$` 给出对应的线路名。
+  ///
+  /// 返回全部线路（顺序与 `vod_play_from` 一致），供详情页做线路切换。
+  List<JsRoute> _routesOf(Map<String, dynamic> vod) {
+    final raw = vod['vod_play_url']?.toString().trim() ?? '';
+    if (raw.isEmpty) return const [];
+    final names = (vod['vod_play_from']?.toString() ?? '')
+        .split(r'$$$')
+        .map((item) => item.trim())
+        .toList();
+    final lines = raw.split(r'$$$');
+    final routes = <JsRoute>[];
+    for (var i = 0; i < lines.length; i++) {
+      final chapters = _chaptersOfLine(lines[i]);
+      if (chapters.isEmpty) continue;
+      final name = i < names.length && names[i].isNotEmpty
+          ? names[i]
+          : '线路 ${routes.length + 1}';
+      routes.add(JsRoute(name: name, chapters: chapters));
+    }
+    return routes;
+  }
+
+  /// 只取第一条线路的分集（`vod_play_url` 没有 `$$$` 时的常规情况）。
   List<Map<String, dynamic>> _chaptersOf(String playUrl) {
-    var line = playUrl.trim();
-    if (line.isEmpty) return const [];
-    if (line.contains(r'$$$')) line = line.split(r'$$$').first;
+    final routes = _chaptersOfLine(playUrl);
+    return routes;
+  }
+
+  List<Map<String, dynamic>> _chaptersOfLine(String line) {
+    final value = line.trim();
+    if (value.isEmpty) return const [];
     final chapters = <Map<String, dynamic>>[];
     var index = 1;
-    for (final item in line.split('#')) {
+    for (final item in value.split('#')) {
       final trimmed = item.trim();
       if (trimmed.isEmpty) continue;
       var title = '第 $index 集';
@@ -547,6 +636,13 @@ class JsSourceGateway {
     }
     return chapters;
   }
+}
+
+/// 脚本源的一条播放线路：名称 + 该线路的分集。
+class JsRoute {
+  const JsRoute({required this.name, required this.chapters});
+  final String name;
+  final List<Map<String, dynamic>> chapters;
 }
 
 /// 封面地址归一：脚本偶尔给 `//host/x.jpg` 或空值。

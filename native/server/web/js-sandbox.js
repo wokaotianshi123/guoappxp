@@ -394,13 +394,39 @@ var JsSandbox = (function () {
   }
 
   /// CatVod 的 vod_play_url：多线路用 $$$ 分隔，集用 #，每集「标题$编号」。
+  /// `vod_play_from` 用 $$$ 给出对应线路名。返回全部线路，供详情页做线路切换。
+  function routesOf(vod) {
+    var raw = String((vod && vod.vod_play_url) || '').trim();
+    if (!raw) return [];
+    var names = String((vod && vod.vod_play_from) || '')
+      .split('$$$')
+      .map(function (item) {
+        return item.trim();
+      });
+    var routes = [];
+    raw.split('$$$').forEach(function (line, position) {
+      var chapters = chaptersOfLine(line);
+      if (!chapters.length) return;
+      var name =
+        position < names.length && names[position]
+          ? names[position]
+          : '线路 ' + (routes.length + 1);
+      routes.push({ name: name, chapters: chapters });
+    });
+    return routes;
+  }
+
+  /// 只取第一条线路（单线路源的常规情况）。
   function chaptersOf(playUrl) {
-    var line = String(playUrl || '').trim();
-    if (!line) return [];
-    if (line.indexOf('$$$') !== -1) line = line.split('$$$')[0];
+    return chaptersOfLine(playUrl);
+  }
+
+  function chaptersOfLine(line) {
+    var value = String(line || '').trim();
+    if (!value) return [];
     var chapters = [];
     var index = 0;
-    line.split('#').forEach(function (item) {
+    value.split('#').forEach(function (item) {
       var trimmed = item.trim();
       if (!trimmed) return;
       index += 1;
@@ -603,12 +629,31 @@ var JsSandbox = (function () {
     if (!sourceId) return Promise.reject(new Error('这部剧缺少源内编号'));
     return invoke(source, 'detail', [sourceId]).then(function (result) {
       var vod = (result && result.vod) || (result && result.list && result.list[0]) || result || {};
-      var chapters = chaptersOf(vod.vod_play_url);
+      var routes = routesOf(vod);
+      var chapters = routes.length ? routes[0].chapters : [];
       if (!chapters.length) {
         var failure = new Error('这个脚本源没有返回可播放的分集');
         failure.code = 'MISSING_EPISODE';
         throw failure;
       }
+      // 多线路：把所有线路的分集展开，标题写成「线路名 · 集名」，
+      // 前端 extractDetailRoutes 据此还原线路切换（与 TVBox 源同一套编码）。
+      var multiRoute = routes.length > 1;
+      var episodes = [];
+      routes.forEach(function (route, routeIndex) {
+        route.chapters.forEach(function (chapter, position) {
+          episodes.push({
+            id: chapter.id,
+            title: multiRoute
+              ? route.name + ' · ' + (chapter.title || '第 ' + (position + 1) + ' 集')
+              : chapter.title,
+            index: episodes.length + 1,
+            routeName: route.name,
+            routeIndex: routeIndex,
+            routeCount: routes.length,
+          });
+        });
+      });
       var merged = Object.assign({}, drama, {
         id: drama.id || source + ':' + sourceId,
         source: source,
@@ -616,11 +661,11 @@ var JsSandbox = (function () {
         title: String(vod.vod_name || drama.title || '短剧').trim(),
         cover: cleanCover(vod.vod_pic) || drama.cover || '',
         description: String(vod.vod_content || drama.description || '').trim(),
-        episodes: chapters.length,
+        episodes: episodes.length,
         vip: false,
         tags: tagsOf(vod).length ? tagsOf(vod) : drama.tags || [],
       });
-      return { drama: merged, chapters: chapters };
+      return { drama: merged, chapters: episodes };
     });
   }
 
@@ -635,8 +680,13 @@ var JsSandbox = (function () {
     }
     var index = Number(payload.index || 0) + 1;
     var flags = [{ quality: Number(payload.quality || 0), seriesId: sourceId }];
+    // 详情页把线路名写在 chapter.routeName 里，传给脚本的 play(flag, ...)。
+    var routeName = String(
+      (payload.chapter && payload.chapter.routeName) || '',
+    ).trim();
+    var flag = routeName || 'flag';
     var target = playTarget(sourceId, payload.chapter, index);
-    return invoke(source, 'play', ['flag', target, flags])
+    return invoke(source, 'play', [flag, target, flags])
       .catch(function (error) {
         // 编号可能是旧详情里的：重建一次目标再试。
         if (error && error.code === 'MISSING_EPISODE' && sourceId) {
@@ -644,7 +694,7 @@ var JsSandbox = (function () {
             var vod = (result && result.vod) || {};
             var chapters = chaptersOf(vod.vod_play_url);
             if (index > 0 && index <= chapters.length) {
-              return invoke(source, 'play', ['flag', chapters[index - 1].id, flags]);
+              return invoke(source, 'play', [flag, chapters[index - 1].id, flags]);
             }
             throw error;
           });
