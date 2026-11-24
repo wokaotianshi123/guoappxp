@@ -2449,6 +2449,10 @@ spider.danmaku = function (id, startMs, durationMs) {
     const page = Math.max(1, number(rawPage));
     let state = states.get(key);
     if (page === 1) {
+      // 首页短时间内复用：避免反复刷新清空分页游标，导致下一页加载异常。
+      if (state && Date.now() - state.updated < 60 * 1000 && state.pages.has(1)) {
+        return state.pages.get(1);
+      }
       state = { pages: new Map(), cursors: new Map(), updated: Date.now() };
       states.delete(key);
       states.set(key, state);
@@ -2609,16 +2613,8 @@ spider.danmaku = function (id, startMs, durationMs) {
     });
   };
 
-  let cachedRecommendPage = null;
-  let cachedRecommendTime = 0;
-  const recommendCacheTtl = 10 * 60 * 1000;
-
   spider.recommendations = async function (genre, page) {
     const pg = Math.max(1, number(page));
-    // 推荐页首页缓存 10 分钟：进入/切回推荐页不自动重新请求，避免内容自动刷新。
-    if (pg === 1 && cachedRecommendPage && Date.now() - cachedRecommendTime < recommendCacheTtl) {
-      return cachedRecommendPage;
-    }
     let result;
     // 推荐榜已从分类栏移到推荐页：优先展示推荐榜。
     if (!cachedRecommendBoard) {
@@ -2648,10 +2644,6 @@ spider.danmaku = function (id, startMs, durationMs) {
           return { cell, params: { tab_type: tabType } };
         });
       }
-    }
-    if (pg === 1) {
-      cachedRecommendPage = result;
-      cachedRecommendTime = Date.now();
     }
     return result;
   };
