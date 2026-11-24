@@ -288,27 +288,21 @@ class JsSourceGateway {
       peers: drama.peers,
     );
 
-    // 多线路：把所有线路的分集都展开，标题写成「线路名 · 集名」，
-    // 详情页的 extractDetailRoutes 会据此还原线路切换（与 TVBox 源同一套编码）。
-    final multiRoute = routes.length > 1;
+    // 详情页只展示第一条线路的分集，不把其他线路合并进来：选集保持简洁，
+    // 标题不带「线路名 · 集名」前缀，详情页因此不出现线路切换条。
+    // 线路总数通过 routeCount 带给播放页；播放页切线路时按 routeIndex
+    // 重新解析详情，取对应线路的同一集。
     final episodes = <Episode>[];
-    for (var routeIndex = 0; routeIndex < routes.length; routeIndex++) {
-      final route = routes[routeIndex];
-      for (var i = 0; i < route.chapters.length; i++) {
-        final chapter = route.chapters[i];
-        final label = (chapter['title']?.toString() ?? '').trim();
-        episodes.add(
-          Episode({
-            ...chapter,
-            if (multiRoute)
-              'title':
-                  '${route.name} · ${label.isEmpty ? '第 ${i + 1} 集' : label}',
-            'routeName': route.name,
-            'routeIndex': routeIndex,
-            'routeCount': routes.length,
-          }, episodes.length + 1),
-        );
-      }
+    final primary = routes.first;
+    for (var i = 0; i < primary.chapters.length; i++) {
+      episodes.add(
+        Episode({
+          ...primary.chapters[i],
+          'routeName': primary.name,
+          'routeIndex': 0,
+          'routeCount': routes.length,
+        }, episodes.length + 1),
+      );
     }
 
     return DramaDetail(rich, episodes);
