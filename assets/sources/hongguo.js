@@ -2379,8 +2379,7 @@ spider.danmaku = function (id, startMs, durationMs) {
     }
     const previous = state.cursors.get(page);
     const list = [];
-    let offset = number(data.next_offset ?? cell.next_offset);
-    let hasMore = data.has_more !== false && cell.has_more !== false && offset > number(previous?.offset);
+    const explicitlyHasMore = data.has_more !== false && cell.has_more !== false;
     let currentCell = cell;
     let currentData = data;
 
@@ -2399,6 +2398,12 @@ spider.danmaku = function (id, startMs, durationMs) {
       }
     }
     appendCell(cell);
+
+    // 榜单等接口可能不给 next_offset：本页有数据且未显式 has_more=false 时，按本页条数推进，
+    // 否则第二页游标存不下来，会表现为「只显示 10 部、翻不出下一页」。
+    let offset = number(data.next_offset ?? cell.next_offset);
+    if (!offset && list.length > 0 && explicitlyHasMore) offset = list.length;
+    let hasMore = explicitlyHasMore && offset > number(previous?.offset);
 
     let rounds = 0;
     while (list.length < minimum && hasMore && rounds < 5) {
@@ -2609,7 +2614,7 @@ spider.danmaku = function (id, startMs, durationMs) {
       const selected = cell?.cell_selector?.outer_row?.items?.find(item => item.is_selected);
       const sub = selected?.sub_cell_selector?.outer_row?.items?.find(item => item.is_selected);
       if (selected?.selector_item_id !== group || sub?.selector_item_id !== board) throw failure('官方榜单配置已更新，请刷新榜单', 'INVALID_BOARD');
-      return { cell, params: { ...params, tab_type: 26 }, isRanking: true };
+      return { cell, data: response.data || {}, params: { ...params, tab_type: 26 }, isRanking: true };
     });
   };
 
