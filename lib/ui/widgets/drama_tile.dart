@@ -156,6 +156,19 @@ class DramaTile extends StatelessWidget {
     color: Theme.of(context).colorScheme.onSurfaceVariant,
   );
 
+  /// 卡片副标题：有题材标签时优先显示题材（家庭 / 都市 / 奇幻…），
+  /// 否则退回分类名。题材为空或全是「短剧」这类泛化词时仍显示分类，
+  /// 避免所有卡片都变成同一个词。
+  static String _categoryLine(Drama drama) {
+    const generic = {'', '短剧', '未分类'};
+    final tags = [
+      for (final tag in drama.tags)
+        if (tag.trim().isNotEmpty && !generic.contains(tag.trim())) tag.trim(),
+    ];
+    if (tags.isNotEmpty) return tags.take(2).join(' · ');
+    return drama.category;
+  }
+
   static double extentFor(BuildContext context, double width) {
     final scaler = MediaQuery.textScalerOf(context);
     final title = scaler.scale(titleStyle(context).fontSize!) * 1.3 * 2;
@@ -187,7 +200,12 @@ class DramaTile extends StatelessWidget {
       const SizedBox(height: 9),
       _line(context, drama.title, titleStyle(context), 2),
       const SizedBox(height: 4),
-      _line(context, subtitle ?? drama.category, subtitleStyle(context), 1),
+      _line(
+        context,
+        subtitle ?? _categoryLine(drama),
+        subtitleStyle(context),
+        1,
+      ),
     ],
   );
 }

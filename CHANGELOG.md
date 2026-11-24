@@ -14,6 +14,7 @@
 - 修复官方短剧源封面不显示：`js:` 源没有注册内核 provider，封面下载时会退回一个与封面站无关的默认 Referer，被字节跳动 CDN 判为盗链；现在这类源不再发送 Referer，按公开直链下载。App 端另加一层兜底：本地缓存失败时直接显示网络直链。本地服务版本来就让 `js:` 源封面走浏览器直链，不受影响。
 - 修复官方短剧源系列多季不显示：`JsSourceGateway` 补上 `seasons()`（走脚本的 `seriesSeasons`），`core_bridge.seasons()` 对 `js:` 源分流到沙箱，详情页才能出现「第 N 季」切换。本地服务版同步在 `js-sandbox.js` 补上 `seasons` 动作、`app.js` 详情页补上「切换季」按钮组。
 - 修复脚本源分类显示成 `find_drama` / `app:discover:*` / 「未分类」：分类名归一口径补上官方发现页与推荐流的内部标识，统一显示为「短剧 / 真人剧 / 漫剧 / AI 剧」。App 端改 `categoryNameOf`，本地服务版同步改 `js-sandbox.js` 的 `toDrama`。
+- 修复官方源「推荐」「全部」里所有剧只显示「短剧」：`hongguo.js` 的 `feed` 与 `discoveryPage` 两条列表路径都没有输出题材，现统一由脚本内的 `collectSubTitles()` 从官方接口响应的 `tags` / `sub_title_list` 提取（不依赖 guoapp 站源实现，红果接口自身即提供该字段），列表卡片优先显示题材（如「家庭 · 都市」），题材缺失时才退回分类名；详情页也补上 `vod_tag`。
 - 默认仍启用官方源（功能完整，构建时已内置签名即可播）。详情页只带 `drama.id` 不带 `source`，本地服务版补了从 `js:<id>:<源内编号>` 反推站源的逻辑，否则会误判成「当前版本不包含此站源」。
 - 「全部站源」面板右上角新增「管理JS源」入口，可直接跳到「我的 › JS 沙箱」管理内置 `hongguo.js` 与导入的脚本源；该入口不限制管理员。
 - 修复 Android 出包：`android/gradle.properties` 的 `android.builtInKotlin` 改回 `false`，兼容仍在用旧版 `kotlin-android` 插件的 `flutter_js`，避免 AGP 9 构建失败。

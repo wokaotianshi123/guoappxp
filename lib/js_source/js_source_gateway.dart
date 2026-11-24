@@ -477,11 +477,7 @@ class JsSourceGateway {
       episodes: intValue(vod['vod_episodes']) > 0
           ? intValue(vod['vod_episodes'])
           : int.tryParse(episodeMatch?.group(1) ?? '') ?? 0,
-      category: categoryNameOf(
-        (vod['vod_category']?.toString() ?? '').trim().isEmpty
-            ? fallbackCategory
-            : vod['vod_category'].toString(),
-      ),
+      category: _categoryOf(vod, fallbackCategory, tags),
       vip: vod['vip'] == true,
       heat: vod['vod_heat']?.toString() ?? '',
       views: vod['vod_views']?.toString() ?? '',
@@ -489,6 +485,22 @@ class JsSourceGateway {
       tags: tags,
       releaseStatus: vod['vod_release_status']?.toString() ?? '',
     );
+  }
+
+  /// 分类：优先脚本给的 `vod_category`；为空时退回当前 tab 的分类名；
+  /// 都为空则用第一个题材标签（对齐 guoapp 站源 dramaFromRow 的做法），
+  /// 避免「推荐」「全部」里所有剧都落到「短剧 / 未分类」。
+  String _categoryOf(
+    Map<String, dynamic> vod,
+    String fallbackCategory,
+    List<String> tags,
+  ) {
+    final raw = (vod['vod_category']?.toString() ?? '').trim();
+    if (raw.isNotEmpty) return categoryNameOf(raw);
+    final fallback = fallbackCategory.trim();
+    if (fallback.isNotEmpty) return categoryNameOf(fallback);
+    if (tags.isNotEmpty) return categoryNameOf(tags.first);
+    return categoryNameOf('');
   }
 
   List<String> _tagsOf(Map<String, dynamic> vod) {

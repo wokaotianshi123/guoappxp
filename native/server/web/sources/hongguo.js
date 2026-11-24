@@ -477,6 +477,50 @@ function cleanCoverUrl(url) {
   return trimmed;
 }
 
+/**
+ * 从官方接口对象里收集题材标签（家庭 / 都市 / 奇幻…）。
+ *
+ * 只依赖红果官方接口自己给的字段，不假设别的站源实现：
+ *   - `tags`：官方接口在 video_data / video_detail 里直接给的字符串数组，
+ *     这是唯一在官方响应里稳定出现的题材字段（原项目测试用例即
+ *     `tags: ['家庭', '战神', '爽文']`）。
+ *   - `sub_title` / `sub_title_list`：部分列表接口把题材放在这里，
+ *     每项可能是 { text } 或字符串，一并兜底。
+ *
+ * 刻意不读 `category_list` / `category_schema`：那是 guoapp 站源
+ * （modules/hongguo）自己的约定，红果官方接口并不保证提供，靠它会
+ * 在站源失效时连带把题材也弄丢。
+ */
+function collectSubTitles() {
+  const tags = [];
+  const push = (value) => {
+    const item = cleanText(value);
+    if (item && tags.indexOf(item) === -1) tags.push(item);
+  };
+  for (let i = 0; i < arguments.length; i++) {
+    const source = arguments[i];
+    if (!source || typeof source !== "object") continue;
+
+    // 1. 官方接口的 tags（主来源）
+    const plain = Array.isArray(source.tags) ? source.tags : [];
+    for (let j = 0; j < plain.length; j++) push(plain[j]);
+
+    // 2. sub_title_list（部分列表接口）
+    const subList = Array.isArray(source.sub_title_list) ? source.sub_title_list : [];
+    for (let j = 0; j < subList.length; j++) {
+      const entry = subList[j];
+      push(entry && typeof entry === "object" ? (entry.text || entry.title || entry.name) : entry);
+    }
+
+    // 3. 单个 sub_title 兜底
+    push(source.sub_title);
+    push(source.series_sub_title);
+
+    if (tags.length >= 6) break;
+  }
+  return tags.slice(0, 6);
+}
+
 async function init(ext) {
   return true;
 }
@@ -614,6 +658,8 @@ async function detail(id) {
   let vidList = [];
   let epTotalCount = 0;
   let accessibleCount = 0;
+  // 题材（家庭 / 都市 / 奇幻…）：详情页优先用官方接口给的 sub_title_list。
+  let tagList = [];
 
   // 1. 优先调用官方 App API 获取权威分集数据与精准 vid
   const appData = await fetchAppDetail(cleanId);
@@ -623,6 +669,7 @@ async function detail(id) {
     desc = cleanText(appData.series_intro || appData.video_desc || appData.intro || appData.desc);
     epTotalCount = Number(appData.episode_cnt || 0);
     accessibleCount = Number(appData.accessible_episode_cnt || appData.accessible_count || 0);
+    tagList = collectSubTitles(appData);
 
     if (Array.isArray(appData.video_list) && appData.video_list.length > 0) {
       for (let i = 0; i < appData.video_list.length; i++) {
@@ -773,6 +820,7 @@ async function detail(id) {
         vod_remarks: remarks,
         vod_play_from: "官方直链",
         vod_play_url: epUrls.join("#"),
+        vod_tag: tagList.join(","),
         accessible_count: 0
       }
     ]
@@ -2299,7 +2347,7 @@ spider.danmaku = function (id, startMs, durationMs) {
           vod_episodes: number(video.episode_cnt), vod_metric: metric, vod_heat: metric,
           vod_views: (typeof video.show_play_cnt === 'boolean' ? '' : text(video.show_play_cnt)) || (number(video.play_cnt) ? text(video.play_cnt) : ''),
           vod_score: text(video.score), vod_rank: rank,
-          vod_tag: text(video.sub_title)
+          vod_tag: subTitleTags(video).join(',')
         });
       }
       for (const child of cell.cell_data || []) visit(child);
@@ -2630,6 +2678,10 @@ spider.danmaku = function (id, startMs, durationMs) {
   const number = value => Math.max(0, Number.parseInt(value, 10) || 0);
   const identity = value => typeof value === 'string' && /^[1-9]\d{9,29}$/.test(value) ? value : '';
   const failure = (message, code) => Object.assign(new Error(message), { code });
+
+  // 题材标签统一走全局 collectSubTitles（见文件上方），这里只做去重兜底。
+  const subTitleTags = (...sources) => collectSubTitles(...sources);
+
   function videos(cells) {
     const rows = [];
     for (const cell of cells || []) {
@@ -2732,7 +2784,8 @@ spider.danmaku = function (id, startMs, durationMs) {
           vod_id: id, vod_name: title, vod_content: text(detail.series_intro || video.video_desc),
           vod_pic: cleanCoverUrl(text(detail.series_cover || video.cover)), vod_episodes: episodes,
           vod_remarks: episodes + '集', vod_start_episode: number(start?.vid_index) || 1,
-          vod_start_position: start && identity(video.highlight?.vid) === startId ? number(video.highlight.start_time_in_millisecond) / 1000 : 0
+          vod_start_position: start && identity(video.highlight?.vid) === startId ? number(video.highlight.start_time_in_millisecond) / 1000 : 0,
+          vod_tag: subTitleTags(detail, video).join(',')
         });
         state.seen.add(id);
       }
