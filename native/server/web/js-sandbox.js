@@ -636,22 +636,18 @@ var JsSandbox = (function () {
         failure.code = 'MISSING_EPISODE';
         throw failure;
       }
-      // 多线路：把所有线路的分集展开，标题写成「线路名 · 集名」，
-      // 前端 extractDetailRoutes 据此还原线路切换（与 TVBox 源同一套编码）。
-      var multiRoute = routes.length > 1;
+      // 详情页只展示第一条线路的分集，不把其他线路合并进来（标题不带前缀）；
+      // 线路总数通过 routeCount 带到播放页，切线路时按 route 重新解析。
       var episodes = [];
-      routes.forEach(function (route, routeIndex) {
-        route.chapters.forEach(function (chapter, position) {
-          episodes.push({
-            id: chapter.id,
-            title: multiRoute
-              ? route.name + ' · ' + (chapter.title || '第 ' + (position + 1) + ' 集')
-              : chapter.title,
-            index: episodes.length + 1,
-            routeName: route.name,
-            routeIndex: routeIndex,
-            routeCount: routes.length,
-          });
+      var primary = routes[0];
+      primary.chapters.forEach(function (chapter, position) {
+        episodes.push({
+          id: chapter.id,
+          title: chapter.title,
+          index: episodes.length + 1,
+          routeName: primary.name,
+          routeIndex: 0,
+          routeCount: routes.length,
         });
       });
       var merged = Object.assign({}, drama, {
@@ -679,29 +675,75 @@ var JsSandbox = (function () {
       sourceId = String(drama.id).split(':').pop();
     }
     var index = Number(payload.index || 0) + 1;
+    var chapter = payload.chapter || {};
+    var route = Number(payload.route || 0) || 0;
+    var routeCount = Number(chapter.routeCount) || 1;
     var flags = [{ quality: Number(payload.quality || 0), seriesId: sourceId }];
-    // 详情页把线路名写在 chapter.routeName 里，传给脚本的 play(flag, ...)。
-    var routeName = String(
-      (payload.chapter && payload.chapter.routeName) || '',
-    ).trim();
-    var flag = routeName || 'flag';
-    var target = playTarget(sourceId, payload.chapter, index);
-    return invoke(source, 'play', [flag, target, flags])
+
+    // 初始播放走详情页第一条线路；切线路时重新拉详情，按 route 取对应线路的同一集。
+    var prepare =
+      route > 0 && sourceId
+        ? invoke(source, 'detail', [sourceId]).then(function (result) {
+            var vod =
+              (result && result.vod) ||
+              (result && result.list && result.list[0]) ||
+              result ||
+              {};
+            var routes = routesOf(vod);
+            if (!routes.length) return null;
+            routeCount = routes.length;
+            var at = Math.min(route, routes.length - 1);
+            var line = routes[at];
+            var target = line.chapters[index - 1];
+            if (!target) return null;
+            return {
+              flag: line.name || 'flag',
+              target: String(target.id || ''),
+              route: at,
+            };
+          })
+        : Promise.resolve({
+            flag: String(chapter.routeName || '').trim() || 'flag',
+            target: playTarget(sourceId, chapter, index),
+            route: 0,
+          });
+
+    return prepare
+      .then(function (ctx) {
+        if (!ctx) {
+          var missing = new Error('这条线路没有这一集');
+          missing.code = 'MISSING_EPISODE';
+          throw missing;
+        }
+        return invoke(source, 'play', [ctx.flag, ctx.target, flags]).then(function (play) {
+          return { play: play, ctx: ctx };
+        });
+      })
       .catch(function (error) {
         // 编号可能是旧详情里的：重建一次目标再试。
         if (error && error.code === 'MISSING_EPISODE' && sourceId) {
           return invoke(source, 'detail', [sourceId]).then(function (result) {
             var vod = (result && result.vod) || {};
-            var chapters = chaptersOf(vod.vod_play_url);
+            var routes = routesOf(vod);
+            if (!routes.length) throw error;
+            var at = Math.min(route, routes.length - 1);
+            var chapters = routes[at].chapters;
             if (index > 0 && index <= chapters.length) {
-              return invoke(source, 'play', [flag, chapters[index - 1].id, flags]);
+              return invoke(source, 'play', [
+                routes[at].name || 'flag',
+                chapters[index - 1].id,
+                flags,
+              ]).then(function (play) {
+                return { play: play, ctx: { route: at } };
+              });
             }
             throw error;
           });
         }
         throw error;
       })
-      .then(function (play) {
+      .then(function (pair) {
+        var play = pair.play;
         if (!play || !play.url) {
           var failure = new Error(errorMessage({ code: (play && play.error) || 'NO_STREAM' }));
           failure.code = (play && play.error) || 'NO_STREAM';
@@ -725,8 +767,8 @@ var JsSandbox = (function () {
           mode: 'direct',
           quality: quality,
           qualities: quality ? [quality] : [],
-          routeIndex: 0,
-          routeCount: 1,
+          routeIndex: pair.ctx.route,
+          routeCount: routeCount,
           session: '',
           danmakuId: String(play.danmakuId || ''),
         };
