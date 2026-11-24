@@ -4,11 +4,8 @@ import 'package:flutter/services.dart';
 
 /// 出厂内置的 JS 数据源。
 ///
-/// 两份：
-/// 1. `hongguo-web.js` 走红果网页公开数据，不需要签名参数，开箱即可播，
-///    首次进入沙箱默认启用它；
-/// 2. `hongguo.js` 是官方 App 接口版本，画质与稳定性更好；签名参数在
-///    构建时经环境变量编译进包，用户无需在「签名参数」里填写。
+/// 只有一份：`hongguo.js` 是官方 App 接口版本，签名参数在构建时经环境变量
+/// 编译进包，用户无需在「签名参数」里填写。
 ///
 /// 其余源由用户从文件 / 网址 / 源码导入。
 class PresetJsSource {
@@ -39,13 +36,6 @@ class PresetJsSource {
 }
 
 const List<PresetJsSource> kPresetJsSources = [
-  PresetJsSource(
-    id: 'hongguoweb',
-    fileName: 'hongguo-web.js',
-    name: '红果短剧（网页）',
-    description: '走红果网页公开数据，无需签名参数；只支持浏览，播放受 DRM 限制',
-    assetPath: 'assets/sources/hongguo-web.js',
-  ),
   PresetJsSource(
     id: 'hongguo',
     fileName: 'hongguo.js',

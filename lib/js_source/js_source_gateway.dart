@@ -334,8 +334,9 @@ class JsSourceGateway {
     }
 
     final stream = play.url;
-    final detected = RegExp(r'/(2160|1080|720|480|360)p[./]')
-        .firstMatch(stream);
+    final detected = RegExp(
+      r'/(2160|1080|720|480|360)p[./]',
+    ).firstMatch(stream);
     final effective = play.quality > 0
         ? play.quality
         : int.tryParse(detected?.group(1) ?? '') ?? 0;
@@ -390,6 +391,51 @@ class JsSourceGateway {
 
   /// 沙箱的播放会话没有内核侧资源，释放是空操作。
   bool ownsSession(String session) => session.startsWith('js:');
+
+  /// 系列多季：脚本源用 `seriesSeasons` 暴露同一系列的不同季。
+  ///
+  /// 脚本返回的每一行都是完整的 vod（`vod_id` / `vod_name` / `vod_pic` /
+  /// `vod_episodes` / `season`），这里映射成 `DramaSeason`，界面上才能
+  /// 出现「第 N 季」切换。没有该能力的源（未实现 `seriesSeasons`）会抛错，
+  /// 由调用方当成「没有多季」处理。
+  Future<List<DramaSeason>> seasons(Drama drama) => _guard(() async {
+    final source = drama.source;
+    final sourceId = _cleanSourceId(drama);
+    if (sourceId.isEmpty) return const <DramaSeason>[];
+    final runtime = await _runtime(source, 'seasons');
+    final rows = await runtime.seriesSeasons(sourceId);
+    final seasons = <int, DramaSeason>{};
+    for (final vod in rows) {
+      final id = (vod['vod_id']?.toString() ?? '').trim();
+      final title = (vod['vod_name']?.toString() ?? '').trim();
+      if (id.isEmpty || title.isEmpty) continue;
+      final number = intValue(vod['season']);
+      if (number <= 0) continue;
+      final cover = normalizeCover(vod['vod_pic']?.toString() ?? '');
+      seasons[number] = DramaSeason(
+        number: number,
+        drama: Drama(
+          id: '$source:$id',
+          source: source,
+          sourceId: id,
+          title: title,
+          description: (vod['vod_content']?.toString() ?? '').trim(),
+          cover: cover,
+          episodes: intValue(vod['vod_episodes']),
+          category: categoryNameOf(
+            (vod['vod_category']?.toString() ?? '').trim().isEmpty
+                ? drama.category
+                : vod['vod_category'].toString(),
+          ),
+          vip: false,
+          releaseStatus: vod['vod_release_status']?.toString() ?? '',
+        ),
+      );
+    }
+    final sorted = seasons.values.toList()
+      ..sort((a, b) => a.number.compareTo(b.number));
+    return sorted;
+  });
 
   void dispose() {
     _pool.disposeAll();
@@ -504,16 +550,39 @@ String normalizeCover(String raw) {
 
 /// 分类名归一，与 `SourceCatalog.categoryName` 同一套口径，避免
 /// 「AI短剧」和「AI 短剧」在界面上分成两个 tab。
+///
+/// 脚本源会给出三种「技术性」分类值，必须在这里翻成人话，否则界面上
+/// 会直接显示 `app:discover:playlet`、`find_drama` 这类内部标识，或者
+/// 因为认不出来被归到「未分类」：
+/// 1. `app:discover:<genre>`：官方发现页的分类（推荐 tab 用的就是它）；
+/// 2. `app:*` / `hongguo-app:*`：官方接口里的榜单、剧场等标识；
+/// 3. `find_drama`：`SourceCatalog.recommendGenre`，推荐流的默认题材。
 String categoryNameOf(String raw) {
-  final compact = raw.trim().replaceAll(RegExp(r'\s+'), '');
+  final value = raw.trim();
+  if (value.startsWith('app:discover:')) {
+    return switch (value.split(':').last) {
+      'playlet' => '真人剧',
+      'motion_comic' => '漫剧',
+      'ai_playlet' => 'AI 剧',
+      _ => '短剧',
+    };
+  }
+  if (value.startsWith('app:') || value.startsWith('hongguo-app:')) {
+    return '短剧';
+  }
+  if (value == 'find_drama') return '短剧';
+  final compact = value.replaceAll(RegExp(r'\s+'), '');
   return switch (compact) {
     'AI成人短剧' || 'AI短剧' => 'AI 短剧',
     'AI成人漫剧' || 'AI漫剧' => 'AI 漫剧',
     'AI换脸' => 'AI 换脸',
     'AI魔改' => 'AI 魔改',
     'AI剧' => 'AI 剧',
+    'real-drama' || 'real_series' => '真人剧',
+    'comic-drama' || 'comic_series' || 'comic' => '漫剧',
+    'ai-drama' || 'ai_series' => 'AI 剧',
     '' => '未分类',
-    _ => raw.trim(),
+    _ => value,
   };
 }
 

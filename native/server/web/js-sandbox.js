@@ -320,6 +320,54 @@ var JsSandbox = (function () {
       .slice(0, 12);
   }
 
+  /// 分类名归一，与 App 端 `categoryNameOf` 同一套口径。
+  ///
+  /// 脚本源会给出 `app:discover:*`、`find_drama` 这类内部标识，直接显示在
+  /// 界面上就是「app:discover:playlet」或者干脆空着，所以统一翻成人话。
+  function categoryNameOf(raw) {
+    var value = String(raw == null ? '' : raw).trim();
+    if (value.indexOf('app:discover:') === 0) {
+      var genre = value.split(':').pop();
+      if (genre === 'playlet') return '真人剧';
+      if (genre === 'motion_comic') return '漫剧';
+      if (genre === 'ai_playlet') return 'AI 剧';
+      return '短剧';
+    }
+    if (value.indexOf('app:') === 0 || value.indexOf('hongguo-app:') === 0) {
+      return '短剧';
+    }
+    if (value === 'find_drama') return '短剧';
+    var compact = value.replace(/\s+/g, '');
+    switch (compact) {
+      case 'AI成人短剧':
+      case 'AI短剧':
+        return 'AI 短剧';
+      case 'AI成人漫剧':
+      case 'AI漫剧':
+        return 'AI 漫剧';
+      case 'AI换脸':
+        return 'AI 换脸';
+      case 'AI魔改':
+        return 'AI 魔改';
+      case 'AI剧':
+        return 'AI 剧';
+      case 'real-drama':
+      case 'real_series':
+        return '真人剧';
+      case 'comic-drama':
+      case 'comic_series':
+      case 'comic':
+        return '漫剧';
+      case 'ai-drama':
+      case 'ai_series':
+        return 'AI 剧';
+      case '':
+        return '未分类';
+      default:
+        return value;
+    }
+  }
+
   function toDrama(source, vod, fallbackCategory) {
     var rawId = String(vod.vod_id || '').trim();
     var remarks = String(vod.vod_remarks || '');
@@ -333,7 +381,9 @@ var JsSandbox = (function () {
       description: String(vod.vod_content || '').trim(),
       cover: cleanCover(vod.vod_pic),
       episodes: Number(vod.vod_episodes) || (counted ? Number(counted[1]) : 0),
-      category: String(vod.vod_category || fallbackCategory || '').trim(),
+      category: categoryNameOf(
+        String(vod.vod_category || fallbackCategory || '').trim(),
+      ),
       vip: vod.vip === true,
       heat: String(vod.vod_heat || ''),
       views: String(vod.vod_views || ''),
@@ -431,6 +481,16 @@ var JsSandbox = (function () {
         return scriptDetail(source, payload.drama || {}).catch(function (error) {
           throw new Error(errorMessage(error));
         });
+      case 'seasons': {
+        var drama = payload.drama || {};
+        var seasonId = String(drama.sourceId || '').trim();
+        if (!seasonId && drama.id && String(drama.id).indexOf(':') !== -1) {
+          seasonId = String(drama.id).split(':').pop();
+        }
+        return scriptSeasons(source, seasonId).then(function (rows) {
+          return { items: rows };
+        });
+      }
       case 'suggestions':
         if (!scriptId || !payload.query) return Promise.resolve({ items: [] });
         return invoke(source, 'suggestions', [String(payload.query)])
@@ -500,6 +560,39 @@ var JsSandbox = (function () {
           }),
       };
     });
+  }
+
+  /// 系列多季：脚本的 `seriesSeasons` 返回同一系列各季的完整 vod。
+  /// 没有该能力的源直接返回空列表，不影响详情页。
+  function scriptSeasons(source, sourceId) {
+    if (!sourceId) return Promise.resolve([]);
+    return invoke(source, 'seriesSeasons', [sourceId])
+      .then(function (result) {
+        var rows = (result && result.list) || [];
+        var seasons = [];
+        var seen = {};
+        rows.forEach(function (vod) {
+          if (!vod) return;
+          var id = String(vod.vod_id || '').trim();
+          var title = String(vod.vod_name || '').trim();
+          var number = Number(vod.season) || 0;
+          if (!id || !title || number <= 0 || seen[number]) return;
+          seen[number] = true;
+          seasons.push({
+            number: number,
+            drama: toDrama(source, vod, ''),
+            playable: vod.playable !== false,
+            status: String(vod.status || ''),
+          });
+        });
+        seasons.sort(function (a, b) {
+          return a.number - b.number;
+        });
+        return seasons;
+      })
+      .catch(function () {
+        return [];
+      });
   }
 
   function scriptDetail(source, drama) {
@@ -597,7 +690,7 @@ var JsSandbox = (function () {
     return !!handles(sourceOfDrama(drama));
   }
 
-  /// 详情页只带 drama.id（形如 `js:hongguoweb:7704...`），没有 source 字段。
+  /// 详情页只带 drama.id（形如 `js:hongguo:7704...`），没有 source 字段。
   /// 站源标识取最后一个冒号前的部分；脚本 id 里不含冒号，这样切分是安全的。
   function sourceOfDrama(drama) {
     if (!drama) return '';

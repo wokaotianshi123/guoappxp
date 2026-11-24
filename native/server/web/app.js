@@ -150,6 +150,8 @@ var state = {
   hasMore: false,
   drama: null,
   chapters: [],
+  // 脚本源的多季列表；内核源与单季剧保持空数组。
+  seasons: [],
   plan: null,
   index: 0,
   quality: 0,
@@ -1090,6 +1092,19 @@ function ensureDrama(id, source) {
     }
     state.drama = data.drama;
     state.chapters = data.chapters || [];
+    state.seasons = [];
+    // 脚本源的多季是异步补的：接口慢或没实现都不该拖住详情页。
+    api({ action: 'seasons', drama: data.drama })
+      .then(function (result) {
+        var items = (result && result.items) || [];
+        if (state.drama && state.drama.id === data.drama.id) {
+          state.seasons = items;
+          refreshSeasonChips();
+        }
+      })
+      .catch(function () {
+        // 没有多季能力，保持空列表。
+      });
     return state.drama;
   });
 }
@@ -1242,6 +1257,9 @@ function detailSectionHTML() {
   var peerSection = copies.length
     ? '<div class="chips"><span class="chips-label">切换播放源：</span>' + peerChips + '</div>'
     : '';
+  var seasons = state.seasons || [];
+  var seasonSection =
+    '<div id="season-chips">' + seasonChipsHTML(drama, seasons) + '</div>';
   return (
     '<div class="section"><div class="section-title">详情</div>' +
     '<div class="detail">' +
@@ -1251,9 +1269,39 @@ function detailSectionHTML() {
     '<div class="desc">' + escapeHTML(drama.description || '暂无简介') + '</div>' +
     '<div class="meta" style="color:var(--muted)">共 ' + (state.chapters || []).length + ' 集' +
     (drama.source ? ' · ' + escapeHTML(sourceLabel(drama.source)) : '') + '</div>' +
+    seasonSection +
     peerSection +
     '</div></div></div>'
   );
+}
+
+// 多季是异步补的（接口慢或脚本没实现都不该拖住播放页），所以先渲染一个
+// 空容器，等 seasons 回来再单独刷新这一块。
+function seasonChipsHTML(drama, seasons) {
+  if (!seasons || seasons.length <= 1) return '';
+  var chips = seasons
+    .map(function (season) {
+      if (!season.drama) return '';
+      var active = season.drama.id === drama.id;
+      var label = '第' + season.number + '季';
+      if (season.status) label += ' · ' + season.status;
+      return (
+        '<a class="chip season-chip' + (active ? ' active' : '') + '"' +
+        ' href="#/play?id=' + encodeURIComponent(season.drama.id) +
+        (season.drama.source ? '&source=' + encodeURIComponent(season.drama.source) : '') +
+        '&index=0">' + escapeHTML(label) + '</a>'
+      );
+    })
+    .join('');
+  if (!chips) return '';
+  return '<div class="chips"><span class="chips-label">切换季：</span>' + chips + '</div>';
+}
+
+// seasons 回来时如果播放页还在同一部剧，就地补上「切换季」，不重建 <video>。
+function refreshSeasonChips() {
+  var box = document.getElementById('season-chips');
+  if (!box || !state.drama) return;
+  box.innerHTML = seasonChipsHTML(state.drama, state.seasons || []);
 }
 
 // ---- 画质档（原画 / 锐化）----

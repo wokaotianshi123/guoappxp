@@ -116,10 +116,10 @@ class JsSourceService extends ChangeNotifier {
     }).whenComplete(() => _initializing = null);
   }
 
-  /// 首次启用谁：优先官方源（功能完整，补上签名参数即可播），其次网页版
-  /// （只用于浏览），都没有时才退回列表首个。
+  /// 首次启用谁：优先官方源（功能完整，签名已内置即可播），
+  /// 没有时才退回列表首个。
   String _defaultSourceId() {
-    for (final id in const ['hongguo', 'hongguoweb']) {
+    for (final id in const ['hongguo']) {
       if (_sources.any((source) => source.id == id)) return id;
     }
     return _sources.isEmpty ? '' : _sources.first.id;

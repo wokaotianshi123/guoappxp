@@ -333,8 +333,9 @@ abstract class AppRepository {
 
   /// 生成扫码登录二维码，返回 `id` 与 `qrBase64`（PNG）。
   /// [provider] 取 `quark` 或 `uc`，默认夸克。
-  Future<Map<String, dynamic>> netdiskLogin({String provider = 'quark'}) async =>
-      throw AppFailure('当前环境不支持网盘登录');
+  Future<Map<String, dynamic>> netdiskLogin({
+    String provider = 'quark',
+  }) async => throw AppFailure('当前环境不支持网盘登录');
   Future<Map<String, dynamic>> netdiskLoginPoll(String session) async =>
       const {};
 
@@ -358,8 +359,9 @@ abstract class AppRepository {
       throw AppFailure('当前环境不支持网盘分享');
 
   /// 清理网盘根目录下的临时转存目录。
-  Future<Map<String, dynamic>> netdiskCleanup({String provider = 'quark'}) async =>
-      const {};
+  Future<Map<String, dynamic>> netdiskCleanup({
+    String provider = 'quark',
+  }) async => const {};
 
   // ---- 饭太硬 / TVBox 接口订阅 ----
   Future<Map<String, dynamic>> tvboxStatus() async => const {};
@@ -502,7 +504,8 @@ class NativeRepository extends AppRepository {
     required int durationMs,
   }) async {
     final sandbox = jsSandbox;
-    if (sandbox != null && plan.danmakuId.isNotEmpty &&
+    if (sandbox != null &&
+        plan.danmakuId.isNotEmpty &&
         isJsPlaybackSession(plan.session)) {
       return sandbox.danmaku(plan, startMs: startMs, durationMs: durationMs);
     }
@@ -604,6 +607,7 @@ class NativeRepository extends AppRepository {
     jsSandbox?.cancelAll();
     return _cancelReads('catalog-');
   }
+
   @override
   Future<void> cancelSuggestions() => _cancelReads('suggestions');
   @override
@@ -748,8 +752,9 @@ class NativeRepository extends AppRepository {
       await _call({'action': 'netdiskStatus'});
 
   @override
-  Future<Map<String, dynamic>> netdiskLogin({String provider = 'quark'}) async =>
-      await _call({'action': 'netdiskLogin', 'source': provider});
+  Future<Map<String, dynamic>> netdiskLogin({
+    String provider = 'quark',
+  }) async => await _call({'action': 'netdiskLogin', 'source': provider});
 
   @override
   Future<Map<String, dynamic>> netdiskLoginCookie(
@@ -787,8 +792,9 @@ class NativeRepository extends AppRepository {
   }
 
   @override
-  Future<Map<String, dynamic>> netdiskCleanup({String provider = 'quark'}) async =>
-      await _call({'action': 'netdiskCleanup', 'source': provider});
+  Future<Map<String, dynamic>> netdiskCleanup({
+    String provider = 'quark',
+  }) async => await _call({'action': 'netdiskCleanup', 'source': provider});
 
   @override
   Future<Map<String, dynamic>> tvboxStatus() async =>
@@ -1447,6 +1453,7 @@ class NativeRepository extends AppRepository {
       ),
     );
   }
+
   @override
   Future<CatalogPage> cached(String source, {String category = ''}) async {
     // 沙箱源没有内核缓存表：交给它自己按分类现取，避免「全部」tab 一片空。
@@ -1454,22 +1461,16 @@ class NativeRepository extends AppRepository {
       return CatalogPage(const []);
     }
     return CatalogPage.fromJson(
-      await _call({
-        'action': 'cached',
-        'source': source,
-        'category': category,
-      }),
+      await _call({'action': 'cached', 'source': source, 'category': category}),
     );
   }
+
   /// 「全部源」里的 JS 源搜索会话：内核不认识 `js:` 前缀，脚本又在 Dart
   /// 侧跑，所以脚本源单独并发搜，再把结果并进内核的快照。
   final Map<String, JsSearchMerge> _jsSearches = {};
 
   @override
-  Future<SearchProgress> searchStart(
-    List<String> sources,
-    String query,
-  ) async {
+  Future<SearchProgress> searchStart(List<String> sources, String query) async {
     final sandbox = jsSandbox;
     final jsSources = sandbox == null
         ? const <String>[]
@@ -1590,6 +1591,16 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<List<DramaSeason>> seasons(Drama drama) async {
+    // JS 沙箱源的多季走脚本的 `seriesSeasons`，内核不认识 `js:` 源。
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(drama.source)) {
+      try {
+        return await sandbox.seasons(drama);
+      } catch (_) {
+        // 脚本没实现多季或接口暂不可用时，按「没有多季」处理，不影响详情页。
+        return const <DramaSeason>[];
+      }
+    }
     final result = await _call({'action': 'seasons', 'drama': drama.toJson()});
     return [
       for (final row in result['items'] as List? ?? const [])
@@ -1620,6 +1631,7 @@ class NativeRepository extends AppRepository {
       }),
     );
   }
+
   @override
   Future<PlaybackPlan> fallback(PlaybackPlan current) async {
     if (isJsPlaybackSession(current.session)) {
@@ -1633,6 +1645,7 @@ class NativeRepository extends AppRepository {
       }),
     );
   }
+
   @override
   Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async {
     if (isJsPlaybackSession(current.session)) {
@@ -1648,6 +1661,7 @@ class NativeRepository extends AppRepository {
       }),
     );
   }
+
   @override
   Future<void> cancelPlayback() async {
     jsSandbox?.cancelAll();

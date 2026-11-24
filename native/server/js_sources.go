@@ -290,9 +290,9 @@ func writeJsActiveID(id string) {
 	_ = os.WriteFile(filepath.Join(jsSourceRoot, "active.txt"), []byte(id), 0o644)
 }
 
-// jsPresetFiles 是随包发布的内置脚本。顺序即优先级：网页版在前，首次
-// 启动默认启用它（免签名、开箱能播）；官方源需要用户补签名参数。
-var jsPresetFiles = []string{"hongguo-web.js", "hongguo.js"}
+// jsPresetFiles 是随包发布的内置脚本。官方源的签名参数在构建时经
+// `-ldflags -X` 写进 exe，用户开箱即可播，不需要额外配置。
+var jsPresetFiles = []string{"hongguo.js"}
 
 // ensureJsPreset 把缺失的内置源补进沙箱目录，省得用户开箱没东西可播。
 // 已存在的（用户可能自己更新过）不动。

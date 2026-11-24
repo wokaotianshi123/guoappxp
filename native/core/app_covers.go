@@ -89,7 +89,18 @@ func nativeCoverReferer(downloader *Downloader, source, address string) string {
 			return referer.CoverReferer(address)
 		}
 	}
-	return downloader.providerBaseURL(source) + "/"
+	// JS 沙箱源（`js:`）没有注册内核 provider，原来会退回 providerBaseURL 的
+	// 默认值（一个跟封面站毫无关系的 cloudfront 域名）。对字节跳动 CDN 来说
+	// 等于伪造 Referer，会被当成盗链返回 403/404，表现就是列表封面全白。
+	// 这类源直接不带 Referer，让 CDN 按公开直链处理；其他源维持原逻辑。
+	if strings.HasPrefix(strings.TrimSpace(source), "js:") {
+		return ""
+	}
+	base := downloader.providerBaseURL(source)
+	if base == "" {
+		return ""
+	}
+	return base + "/"
 }
 
 func ValidNativeCoverURL(address *url.URL) bool {

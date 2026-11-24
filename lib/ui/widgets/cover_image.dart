@@ -316,17 +316,34 @@ class _CoverImageState extends State<CoverImage> {
     _failedPath = path;
     if (_retryOnFailure) _queueRetry();
     if (!widget.retryable) return widget.placeholder;
-    return Center(
-      child: IconButton(
-        tooltip: '重试海报',
-        onPressed: () => _retry(path),
-        icon: Icon(
-          Icons.refresh_rounded,
-          color: Theme.of(context).colorScheme.onSurfaceVariant,
-        ),
-      ),
-    );
+    // 本地缓存下载失败时退回网络直链：脚本源的封面是公开 https 直链，
+    // 内核那条下载链路（代理 / Referer / 缓存）出问题时不该整片空白。
+    final direct = widget.drama.cover.trim();
+    if (!DramaCover.imagesDisabled &&
+        (direct.startsWith('https://') || direct.startsWith('http://'))) {
+      return Image.network(
+        direct,
+        fit: BoxFit.cover,
+        cacheWidth: _decodeWidth,
+        gaplessPlayback: true,
+        excludeFromSemantics: true,
+        frameBuilder: fadeInFrameBuilder,
+        errorBuilder: (_, _, _) => _failedNetwork(path),
+      );
+    }
+    return _failedNetwork(path);
   }
+
+  Widget _failedNetwork(String? path) => Center(
+    child: IconButton(
+      tooltip: '重试海报',
+      onPressed: () => _retry(path),
+      icon: Icon(
+        Icons.refresh_rounded,
+        color: Theme.of(context).colorScheme.onSurfaceVariant,
+      ),
+    ),
+  );
 
   @override
   Widget build(BuildContext context) => FutureBuilder<String>(

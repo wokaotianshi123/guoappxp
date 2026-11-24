@@ -65,6 +65,5 @@ flutter:
   uses-material-design: true
   assets:
     # JS 沙箱的内置数据源。用户可在 我的 › JS 沙箱 里导入 / 替换。
-    # hongguo-web.js 走网页公开数据（免签名），hongguo.js 走官方 App 接口（需签名）。
-    - assets/sources/hongguo-web.js
+    # hongguo.js 走官方 App 接口，签名参数在构建时注入。
     - assets/sources/hongguo.js
