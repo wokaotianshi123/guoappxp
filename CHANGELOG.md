@@ -14,7 +14,7 @@
 - 默认仍启用官方源（功能完整，构建时已内置签名即可播）；网页源作为备选。详情页只带 `drama.id` 不带 `source`，本地服务版补了从 `js:<id>:<源内编号>` 反推站源的逻辑，否则会误判成「当前版本不包含此站源」。
 - 「全部站源」面板右上角新增「管理JS源」入口，可直接跳到「我的 › JS 沙箱」管理内置 `hongguo.js` 与导入的脚本源；该入口不限制管理员。
 - 修复 Android 出包：`android/gradle.properties` 的 `android.builtInKotlin` 改回 `false`，兼容仍在用旧版 `kotlin-android` 插件的 `flutter_js`，避免 AGP 9 构建失败。
-- 修复 Android 出包的 JVM target 冲突：`flutter_js` 把 Kotlin target 写死成 1.8 而 Java 是 11，现由根 `build.gradle.kts` 覆盖为 11，并把 KGP 一致性校验降为警告。
+- 修复 Android 出包的 JVM target 冲突：`flutter_js` 把 Kotlin target 写死成 1.8 而 Java 是 11，改用官方开关 `kotlin.jvm.target.validation.mode=warning` 把 KGP 一致性校验降为警告，不再中断 `:flutter_js:compileReleaseKotlin`。
 
 ## 2.1.3+131
 
