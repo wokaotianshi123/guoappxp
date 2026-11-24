@@ -55,6 +55,7 @@ class PlaybackLoader {
     bool localOnly = false,
     bool online = false,
     bool adBlock = true,
+    int routeIndex = -1,
   }) => _load(() async {
     if (online) {
       return _resolveWithVerify(
@@ -80,6 +81,7 @@ class PlaybackLoader {
         item,
         quality: quality,
         adBlock: adBlock,
+        routeIndex: routeIndex,
       ),
       await _verified(episode),
     );

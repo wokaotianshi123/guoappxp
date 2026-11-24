@@ -295,6 +295,7 @@ abstract class AppRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
+    int routeIndex = -1,
   });
   Future<PlaybackPlan> fallback(PlaybackPlan current);
 
@@ -1614,10 +1615,16 @@ class NativeRepository extends AppRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
+    int routeIndex = -1,
   }) async {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(drama.source)) {
-      return sandbox.resolve(drama, episode, quality: quality);
+      return sandbox.resolve(
+        drama,
+        episode,
+        quality: quality,
+        routeIndex: routeIndex,
+      );
     }
     return PlaybackPlan.fromJson(
       await _call({

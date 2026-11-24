@@ -884,6 +884,8 @@ class PlaybackSession extends ChangeNotifier {
     }
     _resumePosition = position;
     _openedAt = position;
+    // 切集时沿用当前选中的线路，避免默认回到线路 1。
+    final keepRoute = _plan?.routeIndex ?? 0;
     _index = index;
     _loading = true;
     _error = null;
@@ -928,6 +930,7 @@ class PlaybackSession extends ChangeNotifier {
               quality: _quality,
               online: _online,
               adBlock: store.playbackPreferences.adBlock,
+              routeIndex: keepRoute,
             );
       if (prepared == null) return;
       final plan = prepared;
