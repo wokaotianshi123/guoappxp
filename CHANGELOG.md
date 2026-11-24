@@ -13,6 +13,7 @@
 - 另附免签名的 `hongguo-web.js`（源名「红果短剧（网页）」）：走 `hongguoduanju.com` 的公开网页数据，26 个分类、详情与分集列表都能出，不需要任何密钥。**播放受 DRM 限制**——该站播放接口返回的 video / audio 分轨是 CENC 加密的（mp4 内含 encv/enca 与 tenc box），密钥由播放器 SDK 用 `player_access_key` 派生，没有它浏览器与播放器都解不出来，所以这个源定位为「免签名浏览」，点播放会明确提示「片源受版权保护」。
 - 默认仍启用官方源（功能完整，构建时已内置签名即可播）；网页源作为备选。详情页只带 `drama.id` 不带 `source`，本地服务版补了从 `js:<id>:<源内编号>` 反推站源的逻辑，否则会误判成「当前版本不包含此站源」。
 - 「全部站源」面板右上角新增「管理JS源」入口，可直接跳到「我的 › JS 沙箱」管理内置 `hongguo.js` 与导入的脚本源；该入口不限制管理员。
+- 修复 Android 出包：`android/gradle.properties` 的 `android.builtInKotlin` 改回 `false`，兼容仍在用旧版 `kotlin-android` 插件的 `flutter_js`，避免 AGP 9 构建失败。
 
 ## 2.1.3+131
 
