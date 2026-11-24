@@ -414,6 +414,7 @@ class LocalStore extends ChangeNotifier {
   bool allowsSource(String source) =>
       !locked &&
       (SourceSite.isCustomId(source) ||
+          SourceSite.isJsId(source) ||
           (SourceSite.isAvailable(source) &&
               (SourceSite.isModule(source) || profile.allows(source)))) &&
       sourceEnabled(source);
@@ -421,12 +422,16 @@ class LocalStore extends ChangeNotifier {
     ...SourceSite.values.where((site) => allowsSource(site.id)),
     for (final site in _customSources)
       if (allowsSource(site.id)) site.asSourceSite,
+    for (final site in SourceSite.jsValues)
+      if (allowsSource(site.id)) site,
   ];
   List<SourceSite> get permittedSources => [
     for (final site in SourceSite.values)
       if (!locked && (site.module || profile.allows(site.id))) site,
     for (final site in _customSources)
       if (!locked) site.asSourceSite,
+    for (final site in SourceSite.jsValues)
+      if (!locked) site,
   ];
 
   /// 站源是否在发现、搜索、追剧等入口显示。
@@ -441,8 +446,10 @@ class LocalStore extends ChangeNotifier {
   };
 
   Future<void> setSourceEnabled(String source, bool enabled) {
-    // 自定义源不在核心注册源列表里，但显示开关要能正常切换。
-    if (!SourceSite.isCustomId(source) && !SourceSite.isAvailable(source)) {
+    // 自定义源 / JS 沙箱源不在核心注册源列表里，但显示开关要能正常切换。
+    if (!SourceSite.isCustomId(source) &&
+        !SourceSite.isJsId(source) &&
+        !SourceSite.isAvailable(source)) {
       return Future.error(StateError('站源无效'));
     }
     final epoch = _epoch;
@@ -667,7 +674,9 @@ class LocalStore extends ChangeNotifier {
   });
 
   Future<void> setSource(String value) {
-    if (!allowsSource(value)) return Future.error(StateError('当前用户没有此站源权限'));
+    if (!allowsSource(value)) {
+      return Future.error(StateError('当前用户没有此站源权限'));
+    }
     return _userSetting('source', value);
   }
 

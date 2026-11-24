@@ -14,6 +14,8 @@ import 'boss_key.dart';
 import 'core_bridge.dart';
 import 'diary_service.dart';
 import 'local_files.dart';
+import 'js_source/js_source_gateway.dart';
+import 'js_source/js_source_service.dart';
 import 'local_store.dart';
 import 'picture_in_picture.dart';
 import 'portable_data.dart';
@@ -137,10 +139,21 @@ class _AppBootstrapState extends State<AppBootstrap>
         preferences,
         LocalFiles(Directory(path.join(support.path, 'store'))),
       );
+      // JS 沙箱：装载脚本源并挂成站源。失败不该挡启动——沙箱没有脚本时
+      // 只是一类空站源，内核源照常可用。
+      try {
+        final jsService = JsSourceService();
+        await JsSourceGateway.instance.attach(jsService);
+        JsSourceService.current ??= jsService;
+      } catch (error) {
+        DiaryService.add('[JS] 沙箱初始化失败：$error');
+      }
       if (!mounted) return;
       setState(() {
         store = local;
         repository.access = local;
+        // 沙箱站源是在 LocalStore 打开之后才挂上的，唤醒一次让源栏重排。
+        local.sourcesChanged();
       });
     } catch (failure) {
       if (mounted) setState(() => error = failure);

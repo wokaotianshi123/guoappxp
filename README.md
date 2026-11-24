@@ -35,6 +35,7 @@ Flutter 多端独立影视应用，手机、平板、电脑和电视分别适配
 - **发现**：站源名旁切换站源；分类 Tab 依次为推荐 / 全部 / 各榜单 / 各题材，榜单封面标出名次。第一个 Tab 顶部大卡片显示最近看过或推荐的剧。滑到底自动加载，下拉或「刷新」重新拉取当前分类。
 - **搜索**：只搜当前站源，保留最近搜索；红果有输入联想。
 - **详情**：封面模糊作底，显示集数、完结状态、分类、播放量、标签和简介；选集每组 30 集，落在续播那一集，看过的集变浅，VIP 集有标记。打开时后台预缓冲续播集。
+- **JS 沙箱**：`我的 › JS 沙箱` 导入 CatPawOpen / CatVodOpen 脚本源（`.js` 文件、网络直链或粘贴源码），脚本在端侧独立上下文里跑，目录、搜索、详情、取流都由脚本自己完成，与内核站源同权出现在站源菜单里；本地服务版入口在顶栏「自定义源」右侧。内置两份红果源：官方源（签名随安装包内置，开箱即可播，构建时通过环境变量注入，见 [SIGNING_SETUP.md](SIGNING_SETUP.md)）和网页源（免签名，可浏览分类与详情，播放受该站 DRM 限制）。
 
 ### 播放
 
@@ -114,4 +115,4 @@ Flutter 多端独立影视应用，手机、平板、电脑和电视分别适配
 
 ## 开发
 
-构建、测试、架构和发布流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，参与开发和编写社区站源见 [CONTRIBUTING.md](CONTRIBUTING.md)，版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。
+构建、测试、架构和发布流程见 [DEVELOPMENT.md](DEVELOPMENT.md)，参与开发和编写社区站源见 [CONTRIBUTING.md](CONTRIBUTING.md)，官方源签名参数的 GitHub Secret / 环境变量设置见 [SIGNING_SETUP.md](SIGNING_SETUP.md)，版本更新记录见 [CHANGELOG.md](CHANGELOG.md)。

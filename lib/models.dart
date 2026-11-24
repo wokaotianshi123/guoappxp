@@ -16,10 +16,22 @@ abstract final class SourceClass {
   /// 用户在「自定义XBPQ」里自己添加的源（MacCMS 站点 / XBPQ 规则），
   /// 与模块安装的源分开成组；本机没加过这类源时整组不出现。
   static const xbpq = 'xbpq';
+
+  /// JS 沙箱里导入的脚本源（`js:` 前缀）。与 XBPQ 一样属于「谁用谁配」的
+  /// 本机内容，独立成组，避免和内核站源混在一起被当成内置源。
+  static const jsSandbox = 'js';
   static const other = 'other';
 
   /// 界面分段顺序。类目以外的自定义类目排在后面。
-  static const order = [shortDrama, video, huangguo, adult, xbpq, other];
+  static const order = [
+    shortDrama,
+    video,
+    huangguo,
+    adult,
+    xbpq,
+    jsSandbox,
+    other,
+  ];
 
   static String labelOf(String key) => switch (key) {
     shortDrama => '短剧类',
@@ -27,6 +39,7 @@ abstract final class SourceClass {
     huangguo => '黄果类',
     adult => '成人类',
     xbpq => 'XBPQ',
+    jsSandbox => 'JS 沙箱',
     other => '其他站源',
     _ => key,
   };
@@ -115,6 +128,7 @@ const _legacyClasses = <String, String>{
 /// 保证两边把同一个源放进同一类：自定义XBPQ 的源自成一组；黄果类成员按标识
 /// 恒定归黄果类；其余以清单的 category/family 为准，没写的按标识查老表。
 String sourceClassOf(String id, {String category = ''}) {
+  if (SourceSite.isJsId(id)) return SourceClass.jsSandbox;
   if (SourceSite.isCustomId(id)) return SourceClass.xbpq;
   if (_huangguoClasses.contains(id)) return SourceClass.huangguo;
   return SourceClass.normalize(category) ??
@@ -207,6 +221,10 @@ class SourceSite {
   /// `custom:3f2a…` 原样显示给用户。LocalStore 加载 / 同步自定义源后写进来。
   static final Map<String, SourceSite> _custom = {};
 
+  /// JS 沙箱里已导入的脚本源，由 `JsSourceGateway` 安装。和自定义源一样
+  /// 不在内核注册表里，但显示名、类目和可用性都要能被 [byId] 查到。
+  static List<SourceSite> _jsSites = const [];
+
   static void install(Iterable<SourceSite> sites) {
     _installed = List.unmodifiable(sites.where((site) => site.id.isNotEmpty));
     _arrange();
@@ -239,9 +257,19 @@ class SourceSite {
       ..addAll(custom);
   }
 
+  static void installJs(Iterable<SourceSite> sites) {
+    _jsSites = List.unmodifiable(
+      sites.where((site) => site.id.isNotEmpty),
+    );
+  }
+
   static List<SourceSite> get allValues => _all;
   static List<SourceSite> get values => _available;
+  static List<SourceSite> get jsValues => _jsSites;
   static bool isCustomId(String id) => id.startsWith('custom:');
+
+  /// JS 沙箱源（`js:<脚本 id>`）。
+  static bool isJsId(String id) => id.startsWith('js:');
 
   /// 该 id 对应的源是否由站源模块提供。未知 id 一律为假。
   static bool isModule(String id) =>
@@ -251,7 +279,9 @@ class SourceSite {
   /// `isCustomMaccmsSource`）。这里必须与之一致，否则站源列表能显示名字，
   /// 一点目录 / 详情 / 播放就被 AppRepository 拦成「当前版本不包含此站源」。
   static bool isAvailable(String id) =>
-      _available.any((site) => site.id == id) || isCustomId(id);
+      _available.any((site) => site.id == id) ||
+      isCustomId(id) ||
+      isJsId(id);
   static bool isKnown(String id) => _all.any((site) => site.id == id);
   static bool isAdult(String id) =>
       _all.any((site) => site.id == id && site.adult);
@@ -259,8 +289,11 @@ class SourceSite {
     for (final site in _all) {
       if (site.id == id) return site;
     }
-    // 自定义源没有注册进核心，但显示名要从本机配置里取；
+    // 自定义源 / JS 沙箱源没有注册进核心，但显示名要从本机配置里取；
     // 都不认识时才退化成把 id 当名字。
+    for (final site in _jsSites) {
+      if (site.id == id) return site;
+    }
     return _custom[id] ?? SourceSite(id, id, '', available: false);
   }
 }

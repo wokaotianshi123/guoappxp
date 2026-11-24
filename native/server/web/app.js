@@ -370,6 +370,17 @@ function matchesTitleQuery(title, query) {
 }
 
 function api(payload) {
+  // 脚本源（js: 前缀）不走核心：Worker 已经能给出核心同形状的 JSON。
+  // 详情请求只带 drama.id（`js:<id>:<源内编号>`），没有 source 字段，
+  // 所以这里连 drama 一起判断。
+  if (
+    window.JsSandbox &&
+    payload &&
+    (JsSandbox.handles(payload.source) || JsSandbox.handlesDrama(payload.drama))
+  ) {
+    var handled = JsSandbox.handleRequest(payload);
+    if (handled) return handled;
+  }
   return fetch('/api/request', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
@@ -397,6 +408,8 @@ function coverSrc(drama) {
   }
   var cover = drama.cover ? String(drama.cover) : '';
   if (/^https?:\/\//i.test(cover)) {
+    // 脚本源的封面是 CDN 直链，浏览器直接取即可；走核心会因未知站源 404。
+    if (String(drama.source || '').indexOf('js:') === 0) return cover;
     query.set('u', cover);
   }
   return '/api/cover?' + query.toString();
@@ -567,12 +580,21 @@ function link(hash) {
 }
 
 function loadSources() {
-  return fetch('/api/sources')
-    .then(function (response) {
+  // JS 沙箱源与内核站源分开取：脚本源的清单在服务端 js_sources 目录里，
+  // 这里拼到同一个下拉框，源菜单与 App 端一样按分组折叠。
+  var sandboxItems = window.JsSandbox
+    ? JsSandbox.sourceEntries()
+    : Promise.resolve([]);
+  return Promise.all([
+    fetch('/api/sources').then(function (response) {
       return response.json();
-    })
-    .then(function (data) {
-      var items = (data && data.items) || [];
+    }),
+    sandboxItems,
+  ])
+    .then(function (results) {
+      var data = results[0];
+      var jsItems = results[1] || [];
+      var items = ((data && data.items) || []).concat(jsItems);
       state.sourceNames = {};
       // 保留全部站源名称映射（含隐藏的），供收藏夹/播放记录标注来源。
       items.forEach(function (item) {
@@ -1900,6 +1922,9 @@ function stopPlayback() {
 function apiPlay(payload) {
   if (payload && payload.adBlock === undefined) {
     payload.adBlock = state.adBlock;
+  }
+  if (window.JsSandbox && JsSandbox.handlesDrama(payload && payload.drama)) {
+    return JsSandbox.handlePlay(payload);
   }
   return fetch('/api/play', {
     method: 'POST',
@@ -5938,6 +5963,10 @@ function render() {
   if (modulesButton) {
     modulesButton.classList.toggle('active', current.path === 'modules');
   }
+  var jsSandboxButton = document.getElementById('js-sandbox-btn');
+  if (jsSandboxButton) {
+    jsSandboxButton.classList.toggle('active', current.path === 'js-sandbox');
+  }
   var task;
   // #/drama 与 #/play 统一渲染融合观看页（播放器在上、选集居中、详情沉底）；
   // 旧链接 #/play 继续兼容，落到同一页并带上 index。
@@ -5949,6 +5978,10 @@ function render() {
     task = renderFavorites(params.get('tab') || '');
   } else if (current.path === 'custom-sources') {
     task = Promise.resolve().then(renderCustomSources);
+  } else if (current.path === 'js-sandbox') {
+    task = Promise.resolve().then(function () {
+      return JsSandbox.render(view);
+    });
   } else if (current.path === 'modules') {
     task = Promise.resolve().then(renderModules);
   } else if (current.path === 'live') {

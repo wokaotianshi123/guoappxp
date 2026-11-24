@@ -15,6 +15,7 @@ import '../downloads/downloads_page.dart';
 import '../history/history_page.dart';
 import '../modules/modules_page.dart';
 import '../netdisk/netdisk_page.dart';
+import '../settings/js_sandbox_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../settings/settings_page.dart';
@@ -82,6 +83,11 @@ class MinePage extends StatelessWidget {
   void _openSources(BuildContext context) =>
       openPage<void>(context, (_) => SourcesPage(store: store));
 
+  /// JS 沙箱：导入 / 启用 .js 脚本源。脚本在端侧独立上下文里跑，与内核
+  /// 站源完全解耦——与「自定义XBPQ」并列，一个管规则源，一个管脚本源。
+  void _openJsSandbox(BuildContext context) =>
+      openPage<void>(context, (_) => JsSandboxPage(store: store));
+
   /// 网盘与订阅：夸克扫码登录、分享直解，以及饭太硬 / TVBox 订阅。
   void _openNetdisk(BuildContext context) =>
       openPage<void>(context, (_) => NetdiskPage(store: store));
@@ -113,6 +119,11 @@ class MinePage extends StatelessWidget {
         icon: Icons.dns_outlined,
         title: '自定义XBPQ',
         onTap: () => _openSources(context),
+      ),
+      _Entry(
+        icon: Icons.javascript_rounded,
+        title: 'JS 沙箱',
+        onTap: () => _openJsSandbox(context),
       ),
       _Entry(
         icon: Icons.cloud_outlined,

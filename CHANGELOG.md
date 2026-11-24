@@ -1,5 +1,19 @@
 # 更新日志
 
+## 2.1.4+132
+
+从 THLRedGuo 移植 JS 数据源沙箱（CatPawOpen / CatVodOpen 脚本源），App 与本地服务版都能直接载入第三方 `.js` 源并播放。（开发快照，需在对应平台实机验证）
+
+- 新增 JS 沙箱：脚本在端侧独立 JS 上下文里执行，`spider.meta/home/category/detail/play/search/suggestions/rankingBoards/rankings/recommendations/seriesSeasons/feed/danmaku` 全部走脚本自身实现，取到的直链直接交给播放器，新增脚本源不需要重编内核。
+- App 入口在「我的 › JS 沙箱」：支持导入 `.js` 文件、网络直链、粘贴源码，可启用 / 删除 / 清空 / 重新扫描，并显示最近的接口往来与失败原因。
+- 本地服务版入口在顶栏「自定义源」右侧的「JS 沙箱」，同一套脚本以 Web Worker 运行，请求经 `/api/js/fetch` 代发（绕过 CORS、带 UA），播放流经 `/api/js/stream` 代理（透传 Range、改写 m3u8 分片地址）。
+- 脚本源以 `js:` 前缀挂进站源体系：出现在站源菜单与「JS 沙箱」分组里，支持分类、全部源搜索、榜单、追剧、观看记录与弹幕，本机脚本不参与用户站源权限判定。
+- 内置官方短剧源 `hongguo.js`（即 THLRedGuo 的 `assets/sources/hongguo.js`），首次进入沙箱自动安装。
+- 官方源签名参数改为构建时经环境变量 `HONGGUO_SIGNING_CONFIG` 注入（GitHub 上同名 Secret，值为 `{"id":"…","material":"…"}`）：App 以 `--dart-define` 编译进包、沙箱无需再填；本地服务版以 `-ldflags -X` 写进 exe，不落盘 `signing.json`、网页端不显示密钥。仓库里的明文已从数据目录删除并加入 `.gitignore`，设置方式见 `SIGNING_SETUP.md`。
+- 另附免签名的 `hongguo-web.js`（源名「红果短剧（网页）」）：走 `hongguoduanju.com` 的公开网页数据，26 个分类、详情与分集列表都能出，不需要任何密钥。**播放受 DRM 限制**——该站播放接口返回的 video / audio 分轨是 CENC 加密的（mp4 内含 encv/enca 与 tenc box），密钥由播放器 SDK 用 `player_access_key` 派生，没有它浏览器与播放器都解不出来，所以这个源定位为「免签名浏览」，点播放会明确提示「片源受版权保护」。
+- 默认仍启用官方源（功能完整，构建时已内置签名即可播）；网页源作为备选。详情页只带 `drama.id` 不带 `source`，本地服务版补了从 `js:<id>:<源内编号>` 反推站源的逻辑，否则会误判成「当前版本不包含此站源」。
+- 「全部站源」面板右上角新增「管理JS源」入口，可直接跳到「我的 › JS 沙箱」管理内置 `hongguo.js` 与导入的脚本源；该入口不限制管理员。
+
 ## 2.1.3+131
 
 移植 GoMovie 的详情页线路区块、播放加载体验与 UC 网盘，并修复黄豆模块请求体丢失。（开发快照，需在对应平台实机验证）

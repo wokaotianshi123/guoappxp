@@ -9,7 +9,13 @@ BUNDLED_DIRECTORY = ROOT / 'native' / 'core' / 'bundled'
 # 限制级模块（清单 adult=true）同样内置，但应用端默认关闭显示。
 MODULE_SOURCE_DIRECTORY = ROOT / 'modules'
 MODULE_FILES = ('manifest.json', 'main.js')
-ENVIRONMENT_DEFINES = ['PROJECT_URL', 'TELEGRAM_GROUP_URL', 'TELEGRAM_CHANNEL_URL']
+ENVIRONMENT_DEFINES = [
+    'PROJECT_URL',
+    'TELEGRAM_GROUP_URL',
+    'TELEGRAM_CHANNEL_URL',
+    # 官方源签名参数，构建时以 --dart-define 编译进 App（GitHub 上为 Secret）。
+    'HONGGUO_SIGNING_CONFIG',
+]
 
 
 class AppBuild:
@@ -36,6 +42,27 @@ class AppBuild:
     @property
     def linker_flags(self):
         return '-s -w'
+
+    @property
+    def webserver_linker_flags(self):
+        """本地服务版把签名参数直接写进 exe，不落盘 signing.json。
+
+        用两个纯 base64 的 -X 变量而不是整段 JSON：ldflags 对引号敏感，
+        id / material 本身只含 base64 字符，传起来不会被 shell 或链接器拆开。
+        """
+        flags = ''
+        raw = os.environ.get('HONGGUO_SIGNING_CONFIG', '').strip()
+        if not raw:
+            return flags
+        try:
+            profile = json.loads(raw)
+            signing_id = profile['id']
+            signing_material = profile['material']
+        except (ValueError, KeyError, TypeError) as error:
+            raise SystemExit(f'HONGGUO_SIGNING_CONFIG 不是合法的签名参数 JSON：{error}')
+        flags += f' -X main.builtInSigningID={signing_id}'
+        flags += f' -X main.builtInSigningMaterial={signing_material}'
+        return flags
 
 
 app = AppBuild()

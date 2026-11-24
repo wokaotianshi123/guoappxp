@@ -37,6 +37,10 @@ import (
 var (
 	editionSlug = "guoapp"
 	appVersion  = "dev"
+	// 构建时由 scripts/build_web.py 通过 -ldflags -X 写入的官方源签名参数。
+	// 本地服务版不落盘 signing.json，也不在网页上暴露密钥。
+	builtInSigningID       = ""
+	builtInSigningMaterial = ""
 )
 
 // 名称由 slug 推导，避免通过 -X 传入中文在 Windows 上被系统编码破坏。
@@ -701,7 +705,7 @@ func sourceGroupOf(id string) (string, string) {
 	return "", ""
 }
 
-func sourceAvailable(source string) bool {	// 自定义源（custom: 前缀）不在注册表里，问 core 会得到「不可用」。能出现在
+func sourceAvailable(source string) bool { // 自定义源（custom: 前缀）不在注册表里，问 core 会得到「不可用」。能出现在
 	// customSources 列表里的自定义源本身就已经登记成功，这里直接放行。
 	if strings.HasPrefix(strings.ToLower(strings.TrimSpace(source)), "custom:") {
 		return true
@@ -1114,6 +1118,8 @@ func main() {
 	setLibraryDirectory(directory)
 	setVisibilityDirectory(directory)
 	setLiveWebDirectory(directory)
+	// JS 沙箱的脚本目录：与播放记录一样跟着数据目录走。
+	setJsSourceDirectory(directory)
 	// 核心要求缓存目录也是绝对路径，缺了会直接报「应用缓存目录无效」进不去。
 	// 服务版没有系统级缓存目录，跟便携版一致放到数据目录下的 cache，
 	// 删数据目录时一并带走。
@@ -1139,6 +1145,8 @@ func main() {
 	if err != nil {
 		log.Fatalf("读取内置网页失败：%v", err)
 	}
+	// 首次启动把内置的官方脚本源写进沙箱目录，开箱即可播。
+	ensureJsPreset(func(name string) ([]byte, error) { return fs.ReadFile(site, name) })
 	mux := http.NewServeMux()
 	mux.HandleFunc("/", func(writer http.ResponseWriter, request *http.Request) {
 		http.Redirect(writer, request, "/web/", http.StatusFound)
@@ -1166,6 +1174,12 @@ func main() {
 	mux.HandleFunc("/api/source-visibility", handleSourceVisibility)
 	mux.HandleFunc("/api/custom-sources", handleCustomSources)
 	mux.HandleFunc("/api/custom-sources/", handleCustomSources)
+	mux.HandleFunc("/api/js/sources", handleJsSources)
+	mux.HandleFunc("/api/js/source", handleJsSourceScript)
+	mux.HandleFunc("/api/js/active", handleJsActive)
+	mux.HandleFunc("/api/js/signing", handleJsSigning)
+	mux.HandleFunc("/api/js/fetch", handleJsFetch)
+	mux.HandleFunc("/api/js/stream", handleJsStream)
 	mux.HandleFunc("/api/modules", handleModules)
 	mux.HandleFunc("/api/modules/", handleModules)
 	mux.HandleFunc("/api/netdisk/", handleNetdisk)

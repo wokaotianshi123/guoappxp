@@ -149,6 +149,7 @@ jobs:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
+          HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
       - name: 校验 APK 签名证书
         shell: bash
         env:
@@ -209,6 +210,8 @@ jobs:
         shell: pwsh
         run: choco upgrade innosetup --no-progress -y
       - run: python scripts/build_windows.py
+        env:
+          HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
       - uses: actions/upload-artifact@v4
         with:
           name: windows
@@ -243,6 +246,8 @@ jobs:
           flutter precache --ios
       - name: Build unsigned iOS packages
         run: python scripts/build_ios.py
+        env:
+          HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
       - uses: actions/upload-artifact@v4
         with:
           name: ios-unsigned
@@ -277,6 +282,8 @@ jobs:
           flutter precache --macos
       - name: Build macOS packages
         run: python scripts/build_macos.py
+        env:
+          HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
       - uses: actions/upload-artifact@v4
         with:
           name: macos
@@ -297,6 +304,8 @@ jobs:
       - *setup-python
       - name: Build local server packages
         run: python scripts/build_web.py
+        env:
+          HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
       - uses: actions/upload-artifact@v4
         with:
           name: webserver

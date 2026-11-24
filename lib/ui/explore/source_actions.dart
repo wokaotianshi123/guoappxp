@@ -4,6 +4,7 @@ import '../../local_store.dart';
 import '../../models.dart';
 import '../modules/modules_page.dart';
 import '../search/search_page.dart';
+import '../settings/js_sandbox_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../widgets/choice_panel.dart';
@@ -35,23 +36,30 @@ Future<void> pickSource(BuildContext anchor, LocalStore store) async {
         : null,
     selected: store.source,
     grid: ChoiceGrid.sources,
-    // 右上角两个入口：模块装的源去「自定义模块」管，自己加的源去「自定义XBPQ」管。
-    actions: store.profile.admin
-        ? [
-            (
-              label: '管理模块项',
-              icon: Icons.extension_outlined,
-              onPressed: () =>
-                  openPage<void>(anchor, (_) => ModulesPage(store: store)),
-            ),
-            (
-              label: '管理XBPQ',
-              icon: Icons.dns_outlined,
-              onPressed: () =>
-                  openPage<void>(anchor, (_) => SourcesPage(store: store)),
-            ),
-          ]
-        : const [],
+    // 右上角入口：模块装的源去「自定义模块」管，自己加的源去「自定义XBPQ」管，
+    // 脚本源（含内置 hongguo.js）去「JS 沙箱」管。JS 沙箱人人可用，不跟管理员权限挂钩。
+    actions: [
+      if (store.profile.admin) ...[
+        (
+          label: '管理模块项',
+          icon: Icons.extension_outlined,
+          onPressed: () =>
+              openPage<void>(anchor, (_) => ModulesPage(store: store)),
+        ),
+        (
+          label: '管理XBPQ',
+          icon: Icons.dns_outlined,
+          onPressed: () =>
+              openPage<void>(anchor, (_) => SourcesPage(store: store)),
+        ),
+      ],
+      (
+        label: '管理JS源',
+        icon: Icons.javascript_rounded,
+        onPressed: () =>
+            openPage<void>(anchor, (_) => JsSandboxPage(store: store)),
+      ),
+    ],
   );
   if (value == null || value == store.source) return;
   try {

@@ -59,6 +59,10 @@ def build_binary(goos, goarch, output):
     output.parent.mkdir(parents=True, exist_ok=True)
     build_environment = dict(environment, GOOS=goos, GOARCH=goarch)
     flags = f'-s -w -X main.editionSlug={app.slug} -X main.appVersion={version}'
+    signing_flags = app.webserver_linker_flags
+    if signing_flags:
+        flags += ' ' + signing_flags.strip()
+        print('本地服务版签名参数已内置到 exe。', flush=True)
     print('Building ' + output.name, flush=True)
     subprocess.run([go, 'build', '-trimpath', '-ldflags=' + flags, '-o', str(output), './server'],
                    cwd=native, env=build_environment, check=True)

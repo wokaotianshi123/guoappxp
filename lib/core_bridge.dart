@@ -21,6 +21,7 @@ import 'diary_service.dart';
 import 'webview_bridge.dart';
 import 'sorani_account.dart';
 import 'source_modules.dart';
+import 'js_source/js_source_gateway.dart';
 
 typedef _NativeRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -393,6 +394,11 @@ abstract class AppRepository {
 
 class NativeRepository extends AppRepository {
   static final _coverDecoder = CoverDecoder();
+
+  /// JS 沙箱网关。沙箱挂载后才有值；没挂载时所有入口退回内核，老用户
+  /// 不会因为沙箱初始化慢半拍而看到一排空列表。
+  JsSourceGateway? get jsSandbox =>
+      JsSourceGateway.instance.attached ? JsSourceGateway.instance : null;
   static final _coverPaths = <String, String>{};
   NativeRepository({this.background = false});
   final bool background;
@@ -474,16 +480,20 @@ class NativeRepository extends AppRepository {
     Episode episode, {
     int quality = 0,
     bool online = false,
-  }) async => PlaybackPlan.fromJson(
-    await _read('preload', {
-      'action': 'preload',
-      'drama': drama.toJson(),
-      'chapter': episode.raw,
-      'index': episode.number,
-      'quality': quality,
-      'force': online || access?.canDownload == false,
-    }),
-  );
+  }) async {
+    // 沙箱源没有内核预缓冲队列：返回 null 让预加载器跳过，播放时照常解析。
+    if (jsSandbox?.handles(drama.source) == true) return null;
+    return PlaybackPlan.fromJson(
+      await _read('preload', {
+        'action': 'preload',
+        'drama': drama.toJson(),
+        'chapter': episode.raw,
+        'index': episode.number,
+        'quality': quality,
+        'force': online || access?.canDownload == false,
+      }),
+    );
+  }
 
   @override
   Future<DanmakuPage> danmaku(
@@ -491,6 +501,11 @@ class NativeRepository extends AppRepository {
     required int startMs,
     required int durationMs,
   }) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && plan.danmakuId.isNotEmpty &&
+        isJsPlaybackSession(plan.session)) {
+      return sandbox.danmaku(plan, startMs: startMs, durationMs: durationMs);
+    }
     if (plan.local || plan.session.isEmpty || plan.danmakuId.isEmpty) {
       throw AppFailure('本集暂不支持弹幕');
     }
@@ -585,7 +600,10 @@ class NativeRepository extends AppRepository {
   }
 
   @override
-  Future<void> cancelCatalog() => _cancelReads('catalog-');
+  Future<void> cancelCatalog() {
+    jsSandbox?.cancelAll();
+    return _cancelReads('catalog-');
+  }
   @override
   Future<void> cancelSuggestions() => _cancelReads('suggestions');
   @override
@@ -598,6 +616,10 @@ class NativeRepository extends AppRepository {
     bool more = false,
     bool force = false,
   }) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(source)) {
+      return sandbox.recommendations(source, genre, more ? 0 : 1);
+    }
     _authorize(source);
     return CatalogPage.fromJson(
       await _read('recommendations-$source-$genre', {
@@ -622,6 +644,10 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<Drama> followCheck(Drama drama) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(drama.source)) {
+      return (await sandbox.detail(drama)).drama;
+    }
     _authorize(drama.source);
     final result = await _call({
       'action': 'followCheck',
@@ -635,8 +661,21 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<List<RankingBoard>> rankingBoards() async {
+    final sandbox = jsSandbox;
+    final jsBoards = <RankingBoard>[];
+    if (sandbox != null) {
+      for (final site in SourceSite.jsValues) {
+        if (!sandbox.handles(site.id)) continue;
+        try {
+          jsBoards.addAll(await sandbox.rankingBoards(site.id));
+        } catch (_) {
+          // 单个脚本没实现榜单不该让整个榜单请求失败。
+        }
+      }
+    }
     final result = await _call({'action': 'rankingBoards'});
     return [
+          ...jsBoards,
           for (final row in result['items'] as List? ?? [])
             RankingBoard.fromJson(Map<String, dynamic>.from(row as Map)),
         ]
@@ -654,6 +693,10 @@ class NativeRepository extends AppRepository {
     int page = 1,
     bool force = false,
   }) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(board.source)) {
+      return sandbox.rankings(board.source, board, page);
+    }
     _authorize(board.source);
     return RankingPage.fromJson(
       await _call({
@@ -666,8 +709,8 @@ class NativeRepository extends AppRepository {
   }
 
   void _authorize(String source, {bool download = false}) {
-    // 自定义源不进核心注册源列表，显式放行，避免顶层可用性判定再次收窄时
-    // 把所有 XBPQ / MacCMS 源拦成「当前版本不包含此站源」。
+    // 自定义源 / JS 沙箱源不进核心注册源列表，显式放行，避免顶层可用性
+    // 判定再次收窄时把所有 XBPQ / MacCMS / 脚本源拦成「当前版本不包含此站源」。
     if (!SourceSite.isCustomId(source) && !SourceSite.isAvailable(source)) {
       throw AppFailure('当前版本不包含此站源');
     }
@@ -687,6 +730,10 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<List<String>> suggestions(String source, String query) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(source)) {
+      return sandbox.suggestions(source, query);
+    }
     _authorize(source);
     final result = await _read('suggestions', {
       'action': 'suggestions',
@@ -1347,6 +1394,11 @@ class NativeRepository extends AppRepository {
     String source, {
     bool force = false,
   }) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(source)) {
+      final rows = await sandbox.categories(source);
+      return rows.isEmpty ? const [CatalogCategory.all] : rows;
+    }
     final result = await _read('categories-$source', {
       'action': 'categories',
       'source': source,
@@ -1366,51 +1418,115 @@ class NativeRepository extends AppRepository {
     String category = '',
     String lane = '',
     bool force = false,
-  }) async => CatalogPage.fromJson(
-    await _read(
-      switch ((query.isEmpty, lane.isEmpty)) {
-        (false, _) => 'catalog-$source-search',
-        (true, true) => 'catalog-$source',
-        (true, false) => 'catalog-$source-$lane',
-      },
-      {
-      'action': 'catalog',
-      'source': source,
-      'page': page,
-      'query': query,
-      'category': category,
-      'force': force,
-    }),
-  );
-  @override
-  Future<CatalogPage> cached(String source, {String category = ''}) async =>
-      CatalogPage.fromJson(
-        await _call({
-          'action': 'cached',
-          'source': source,
-          'category': category,
-        }),
+  }) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(source)) {
+      return sandbox.catalog(
+        source,
+        category,
+        page,
+        query: query,
+        force: force,
       );
+    }
+    return CatalogPage.fromJson(
+      await _read(
+        switch ((query.isEmpty, lane.isEmpty)) {
+          (false, _) => 'catalog-$source-search',
+          (true, true) => 'catalog-$source',
+          (true, false) => 'catalog-$source-$lane',
+        },
+        {
+          'action': 'catalog',
+          'source': source,
+          'page': page,
+          'query': query,
+          'category': category,
+          'force': force,
+        },
+      ),
+    );
+  }
+  @override
+  Future<CatalogPage> cached(String source, {String category = ''}) async {
+    // 沙箱源没有内核缓存表：交给它自己按分类现取，避免「全部」tab 一片空。
+    if (jsSandbox?.handles(source) == true) {
+      return CatalogPage(const []);
+    }
+    return CatalogPage.fromJson(
+      await _call({
+        'action': 'cached',
+        'source': source,
+        'category': category,
+      }),
+    );
+  }
+  /// 「全部源」里的 JS 源搜索会话：内核不认识 `js:` 前缀，脚本又在 Dart
+  /// 侧跑，所以脚本源单独并发搜，再把结果并进内核的快照。
+  final Map<String, JsSearchMerge> _jsSearches = {};
+
   @override
   Future<SearchProgress> searchStart(
     List<String> sources,
     String query,
-  ) async => SearchProgress.fromJson(
-    await _call({
-      'action': 'searchStart',
-      'sources': sources,
-      'query': query,
-      'page': 1,
-    }),
-  );
+  ) async {
+    final sandbox = jsSandbox;
+    final jsSources = sandbox == null
+        ? const <String>[]
+        : [
+            for (final source in sources)
+              if (sandbox.handles(source)) source,
+          ];
+    final native = [
+      for (final source in sources)
+        if (!SourceSite.isJsId(source)) source,
+    ];
+    if (jsSources.isEmpty) {
+      return SearchProgress.fromJson(
+        await _call({
+          'action': 'searchStart',
+          'sources': sources,
+          'query': query,
+          'page': 1,
+        }),
+      );
+    }
+    _jsSearches.removeWhere((_, merge) => merge.finished);
+    final merge = JsSearchMerge(query: query, sources: jsSources)
+      ..run(sandbox!, query);
+    merge.onlyJs = native.isEmpty;
+    if (native.isEmpty) {
+      final id = 'js-${DateTime.now().microsecondsSinceEpoch}';
+      _jsSearches[id] = merge;
+      return merge.snapshot(id);
+    }
+    final base = SearchProgress.fromJson(
+      await _call({
+        'action': 'searchStart',
+        'sources': native,
+        'query': query,
+        'page': 1,
+      }),
+    );
+    _jsSearches[base.id] = merge;
+    return merge.merge(base);
+  }
 
   @override
-  Future<SearchProgress> searchPoll(String id) async => SearchProgress.fromJson(
-    await _call({'action': 'searchPoll', 'search': id}),
-  );
+  Future<SearchProgress> searchPoll(String id) async {
+    final merge = _jsSearches[id];
+    if (merge != null && merge.onlyJs) {
+      return merge.snapshot(id);
+    }
+    final base = SearchProgress.fromJson(
+      await _call({'action': 'searchPoll', 'search': id}),
+    );
+    return merge == null ? base : merge.merge(base);
+  }
 
   @override
   Future<void> searchCancel(String id) async {
+    _jsSearches.remove(id);
     try {
       await _call({'action': 'searchCancel', 'search': id});
     } catch (_) {
@@ -1462,9 +1578,15 @@ class NativeRepository extends AppRepository {
   }
 
   @override
-  Future<DramaDetail> detail(Drama drama) async => DramaDetail.fromJson(
-    await _call({'action': 'detail', 'drama': drama.toJson()}),
-  );
+  Future<DramaDetail> detail(Drama drama) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(drama.source)) {
+      return sandbox.detail(drama);
+    }
+    return DramaDetail.fromJson(
+      await _call({'action': 'detail', 'drama': drama.toJson()}),
+    );
+  }
 
   @override
   Future<List<DramaSeason>> seasons(Drama drama) async {
@@ -1481,38 +1603,54 @@ class NativeRepository extends AppRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
-  }) async => PlaybackPlan.fromJson(
-    await _call({
-      'action': 'resolve',
-      'drama': drama.toJson(),
-      'chapter': episode.raw,
-      'index': episode.number,
-      'quality': quality,
-      'adBlock': adBlock,
-      'sequence': ++_playbackSequence,
-    }),
-  );
+  }) async {
+    final sandbox = jsSandbox;
+    if (sandbox != null && sandbox.handles(drama.source)) {
+      return sandbox.resolve(drama, episode, quality: quality);
+    }
+    return PlaybackPlan.fromJson(
+      await _call({
+        'action': 'resolve',
+        'drama': drama.toJson(),
+        'chapter': episode.raw,
+        'index': episode.number,
+        'quality': quality,
+        'adBlock': adBlock,
+        'sequence': ++_playbackSequence,
+      }),
+    );
+  }
   @override
-  Future<PlaybackPlan> fallback(PlaybackPlan current) async =>
-      PlaybackPlan.fromJson(
-        await _call({
-          'action': 'fallback',
-          'session': current.session,
-          'sequence': ++_playbackSequence,
-        }),
-      );
+  Future<PlaybackPlan> fallback(PlaybackPlan current) async {
+    if (isJsPlaybackSession(current.session)) {
+      throw AppFailure('这个 JS 源只返回了一条线路', code: 'NO_ROUTE');
+    }
+    return PlaybackPlan.fromJson(
+      await _call({
+        'action': 'fallback',
+        'session': current.session,
+        'sequence': ++_playbackSequence,
+      }),
+    );
+  }
   @override
-  Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async =>
-      PlaybackPlan.fromJson(
-        await _call({
-          'action': 'selectRoute',
-          'session': current.session,
-          'route': route,
-          'sequence': ++_playbackSequence,
-        }),
-      );
+  Future<PlaybackPlan> selectRoute(PlaybackPlan current, int route) async {
+    if (isJsPlaybackSession(current.session)) {
+      if (route == current.routeIndex) return current;
+      throw AppFailure('这个 JS 源只返回了一条线路', code: 'NO_ROUTE');
+    }
+    return PlaybackPlan.fromJson(
+      await _call({
+        'action': 'selectRoute',
+        'session': current.session,
+        'route': route,
+        'sequence': ++_playbackSequence,
+      }),
+    );
+  }
   @override
   Future<void> cancelPlayback() async {
+    jsSandbox?.cancelAll();
     await _call({'action': 'cancelPlayback', 'sequence': ++_playbackSequence});
   }
 
@@ -1697,7 +1835,7 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<void> release(String session) async {
-    if (session.isEmpty) {
+    if (session.isEmpty || isJsPlaybackSession(session)) {
       return;
     }
     try {
