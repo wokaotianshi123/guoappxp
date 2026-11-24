@@ -27,7 +27,18 @@ class DramaFeed extends ChangeNotifier {
   bool get canLoadMore =>
       _hasMore && !_loading && !_loadingMore && _error.isEmpty;
 
+  DateTime? _lastAutoReload;
+
   Future<void> reload({bool force = false}) async {
+    // 自动刷新节流：60 秒内非强制的重复刷新直接忽略，避免反复加载/重建。
+    // 手动刷新（force: true）不受限。
+    if (!force) {
+      final last = _lastAutoReload;
+      if (last != null && DateTime.now().difference(last).inSeconds < 60) {
+        return;
+      }
+      _lastAutoReload = DateTime.now();
+    }
     final generation = ++_generation;
     _loading = true;
     _loadingMore = false;
