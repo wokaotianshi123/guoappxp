@@ -2347,7 +2347,7 @@ spider.danmaku = function (id, startMs, durationMs) {
           vod_episodes: number(video.episode_cnt), vod_metric: metric, vod_heat: metric,
           vod_views: (typeof video.show_play_cnt === 'boolean' ? '' : text(video.show_play_cnt)) || (number(video.play_cnt) ? text(video.play_cnt) : ''),
           vod_score: text(video.score), vod_rank: rank,
-          vod_tag: subTitleTags(video).join(',')
+          vod_tag: collectSubTitles(video).join(',')
         });
       }
       for (const child of cell.cell_data || []) visit(child);
@@ -2679,9 +2679,6 @@ spider.danmaku = function (id, startMs, durationMs) {
   const identity = value => typeof value === 'string' && /^[1-9]\d{9,29}$/.test(value) ? value : '';
   const failure = (message, code) => Object.assign(new Error(message), { code });
 
-  // 题材标签统一走全局 collectSubTitles（见文件上方），这里只做去重兜底。
-  const subTitleTags = (...sources) => collectSubTitles(...sources);
-
   function videos(cells) {
     const rows = [];
     for (const cell of cells || []) {
@@ -2785,7 +2782,7 @@ spider.danmaku = function (id, startMs, durationMs) {
           vod_pic: cleanCoverUrl(text(detail.series_cover || video.cover)), vod_episodes: episodes,
           vod_remarks: episodes + '集', vod_start_episode: number(start?.vid_index) || 1,
           vod_start_position: start && identity(video.highlight?.vid) === startId ? number(video.highlight.start_time_in_millisecond) / 1000 : 0,
-          vod_tag: subTitleTags(detail, video).join(',')
+          vod_tag: collectSubTitles(detail, video).join(',')
         });
         state.seen.add(id);
       }
