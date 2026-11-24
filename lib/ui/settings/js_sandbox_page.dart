@@ -485,20 +485,9 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
             ),
             Padding(
               padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-              child: Row(
-                children: [
-                  Expanded(
-                    child: Text(
-                      '已导入脚本（${sources.length}）',
-                      style: Theme.of(context).textTheme.titleSmall,
-                    ),
-                  ),
-                  TextButton.icon(
-                    onPressed: _showActions,
-                    icon: const Icon(Icons.add_rounded, size: 18),
-                    label: const Text('导入'),
-                  ),
-                ],
+              child: Text(
+                '已导入脚本（${sources.length}）',
+                style: Theme.of(context).textTheme.titleSmall,
               ),
             ),
             if (sources.isEmpty)
