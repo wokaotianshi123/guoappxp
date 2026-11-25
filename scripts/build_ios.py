@@ -98,12 +98,46 @@ def build_core(simulator=False, bundles=()):
     run(arguments + ['-output', str(framework)])
 
 
+def read_version():
+    """从 pubspec.yaml 读出 `2.1.5+133` 这种版本串，拆成 name / build number。
+
+    TestFlight 要求 CFBundleShortVersionString 与 CFBundleVersion 分开给，
+    而且构建号必须单调递增，所以不能整串直接塞进去。
+    """
+    raw = re.search(r'^version:\s*(\S+)', (root / 'pubspec.yaml').read_text(),
+                    re.MULTILINE).group(1)
+    name, _, build = raw.partition('+')
+    return raw, name.strip(), (build or '1').strip()
+
+
+def validate_signed_package(package):
+    """签名包必须带描述文件，且能通过 codesign 校验。"""
+    with zipfile.ZipFile(package) as archive:
+        names = archive.namelist()
+        prefix = 'Payload/Runner.app/'
+        if prefix + 'embedded.mobileprovision' not in names:
+            raise SystemExit('签名 IPA 缺少 embedded.mobileprovision。')
+    # 解出来让 codesign 真正验一遍（zip 里的签名不会被直接检查）。
+    import tempfile
+    with tempfile.TemporaryDirectory() as directory:
+        with zipfile.ZipFile(package) as archive:
+            archive.extractall(directory)
+        application = Path(directory) / 'Payload' / 'Runner.app'
+        run(['codesign', '--verify', '--deep', '--strict', str(application)])
+        signature = subprocess.run(
+            ['codesign', '-dv', '--entitlements', ':-', str(application)],
+            capture_output=True, text=True)
+        print(signature.stderr.strip() or signature.stdout.strip())
+
+
 def main():
     parser = argparse.ArgumentParser(description='构建 iOS 核心和应用')
     parser.add_argument('--core-only', action='store_true')
     parser.add_argument('--simulator', action='store_true', help='额外生成模拟器核心；不启动模拟器')
     parser.add_argument('--export-options', type=Path, help='使用自己的 Xcode 签名配置导出 IPA')
     parser.add_argument('--bundle', action='append', default=[], help='内置模块目录，可多次指定；也可用逗号分隔写在环境变量 BUNDLED_MODULES 里')
+    parser.add_argument('--build-name', help='覆盖 CFBundleShortVersionString（默认取 pubspec 的版本号）')
+    parser.add_argument('--build-number', help='覆盖 CFBundleVersion（默认取 pubspec 的 + 之后那段）')
     options = parser.parse_args()
     write_app_config()
     build_core(options.simulator, options.bundle)
@@ -116,19 +150,26 @@ def main():
     run(['pod', 'install'], cwd=root / 'ios')
     output = root / 'dist' / 'ios'
     output.mkdir(parents=True, exist_ok=True)
-    version = re.search(r'^version:\s*(\S+)', (root / 'pubspec.yaml').read_text(), re.MULTILINE).group(1)
+    version, version_name, version_build = read_version()
+    # TestFlight 里两个号必须分开：短版本给人看，构建号必须递增。
+    build_name = (options.build_name or version_name).strip()
+    build_number = (options.build_number or version_build).strip()
+    stamp = [f'--build-name={build_name}', f'--build-number={build_number}']
     artifacts = []
     if options.export_options:
         config = options.export_options.expanduser().resolve()
         if not config.is_file():
             raise SystemExit('ExportOptions.plist 不存在。')
-        run([flutter, 'build', 'ipa', '--release', '--no-pub', '--export-options-plist', str(config), *app.flutter_arguments])
+        run([flutter, 'build', 'ipa', '--release', '--no-pub',
+             '--export-options-plist', str(config), *stamp, *app.flutter_arguments])
         for package in (root / 'build' / 'ios' / 'ipa').glob('*.ipa'):
             destination = output / f'{app.slug}-{version}-ios.ipa'
             shutil.copy2(package, destination)
+            validate_signed_package(destination)
             artifacts.append(destination)
     else:
-        run([flutter, 'build', 'ios', '--release', '--no-codesign', '--no-pub', *app.flutter_arguments])
+        run([flutter, 'build', 'ios', '--release', '--no-codesign', '--no-pub',
+             *stamp, *app.flutter_arguments])
         application = root / 'build' / 'ios' / 'iphoneos' / 'Runner.app'
         validate_unsigned_application(application)
         symbols = subprocess.check_output(['xcrun', 'nm', '-gU', str(application / 'Runner')], text=True)

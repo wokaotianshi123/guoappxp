@@ -16,7 +16,11 @@ on:
         type: boolean
         default: true
       ios:
-        description: '构建 iOS 未签名 IPA（需在 Mac 侧验证）'
+        description: '构建 iOS 包（有签名凭据则签名并上传 TestFlight）'
+        type: boolean
+        default: false
+      testflight:
+        description: '上传到 TestFlight（需要签名与 App Store Connect 凭据）'
         type: boolean
         default: false
       macos:
@@ -244,13 +248,86 @@ jobs:
           go version
           flutter --version
           flutter precache --ios
-      - name: Build unsigned iOS packages
-        run: python scripts/build_ios.py
+      - name: 配置 iOS 发布签名
+        id: signing
+        shell: bash
+        env:
+          APPLE_CERTIFICATE_P12_BASE64: ${{ secrets.APPLE_CERTIFICATE_P12_BASE64 || vars.APPLE_CERTIFICATE_P12_BASE64 }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD || vars.APPLE_CERTIFICATE_PASSWORD }}
+          IOS_PROVISION_PROFILE_BASE64: ${{ secrets.IOS_PROVISION_PROFILE_BASE64 || vars.IOS_PROVISION_PROFILE_BASE64 }}
+          APPLE_TEAM_ID: ${{ vars.APPLE_TEAM_ID }}
+          PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
+        run: |
+          set -euo pipefail
+          # 证书与描述文件都齐才算「可签名」；缺一个就退回未签名构建，
+          # 这样没配 Secrets 的仓库仍然能出包。
+          if [ -n "${APPLE_CERTIFICATE_P12_BASE64}" ] && \
+             [ -n "${APPLE_CERTIFICATE_PASSWORD}" ] && \
+             [ -n "${IOS_PROVISION_PROFILE_BASE64}" ]; then
+            python scripts/configure_ios_signing.py
+            echo "signed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "signed=false" >> "$GITHUB_OUTPUT"
+            echo "::notice::未配置 iOS 签名凭据，本次只生成未签名 IPA。"
+          fi
+      - name: Build iOS packages
+        shell: bash
         env:
           HONGGUO_SIGNING_CONFIG: ${{ secrets.HONGGUO_SIGNING_CONFIG }}
+        run: |
+          set -euo pipefail
+          if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+            python scripts/build_ios.py --export-options ios/ExportOptions.plist
+          else
+            python scripts/build_ios.py
+          fi
+      - name: 上传到 TestFlight
+        if: ${{ inputs.testflight && steps.signing.outputs.signed == 'true' }}
+        shell: bash
+        env:
+          APP_STORE_CONNECT_KEY_ID: ${{ secrets.APP_STORE_CONNECT_KEY_ID || vars.APP_STORE_CONNECT_KEY_ID }}
+          APP_STORE_CONNECT_ISSUER_ID: ${{ secrets.APP_STORE_CONNECT_ISSUER_ID || vars.APP_STORE_CONNECT_ISSUER_ID }}
+          APP_STORE_CONNECT_PRIVATE_KEY: ${{ secrets.APP_STORE_CONNECT_PRIVATE_KEY || vars.APP_STORE_CONNECT_PRIVATE_KEY }}
+          PACKAGE_NAME: ${{ vars.PACKAGE_NAME }}
+        run: |
+          set -euo pipefail
+          ipa=$(find dist/ios -maxdepth 1 -type f -name '*.ipa' ! -name '*unsigned*' | head -n1)
+          if [ -z "$ipa" ]; then
+            echo "::error::没有找到签名 IPA，无法上传。"
+            exit 1
+          fi
+          python scripts/upload_testflight.py "$ipa"
+          python scripts/set_testflight_notes.py || true
+      - name: 构建结果说明
+        shell: bash
+        run: |
+          set -euo pipefail
+          {
+            echo "## iOS 构建产物"
+            echo ""
+            if [ "${{ steps.signing.outputs.signed }}" = "true" ]; then
+              echo "已签名 IPA，可直接用于 TestFlight（内部测试）。"
+            else
+              echo "未签名 IPA（\`*-ios-unsigned.ipa\`），用于侧载自签："
+              echo ""
+              echo "| 工具 | 适用系统 | 有效期 |"
+              echo "| --- | --- | --- |"
+              echo "| TrollStore | iOS 14.0 beta2 – 16.6.1 / 16.7 RC / 17.0 | 永久 |"
+              echo "| Sideloadly / AltStore | iOS 7 及以上 | 7 天（到期重签） |"
+              echo ""
+              echo "用法：把 IPA 传到手机「文件」，在 TrollStore 里打开即可安装；"
+              echo "Sideloadly 则连电脑、用免费 Apple ID 自签后安装。"
+            fi
+            echo ""
+            echo "详见 docs/ios-testflight.md。"
+          } >> "$GITHUB_STEP_SUMMARY"
+      - name: 清理 iOS 临时签名凭据
+        if: always()
+        shell: bash
+        run: python scripts/configure_ios_signing.py --clean || true
       - uses: actions/upload-artifact@v4
         with:
-          name: ios-unsigned
+          name: ios-packages
           path: dist/ios/*
           if-no-files-found: error
           retention-days: 14
