@@ -1191,12 +1191,16 @@ class EpisodeSheet extends StatefulWidget {
     required this.onSeasons,
     required this.canDownload,
     required this.onDownload,
+    this.initialTab = 0,
   });
   final PlaybackSession session;
   final LocalStore store;
   final VoidCallback onSeasons;
   final bool canDownload;
   final ValueChanged<List<int>> onDownload;
+
+  /// 0 = 选集，1 = 简介。推荐流的「简介」直接落到第二页。
+  final int initialTab;
 
   @override
   State<EpisodeSheet> createState() => _EpisodeSheetState();
@@ -1205,8 +1209,7 @@ class EpisodeSheet extends StatefulWidget {
 class _EpisodeSheetState extends State<EpisodeSheet> {
   final _selected = <int>{};
   bool _selecting = false;
-  /// 0 = 选集（底部条的默认入口），1 = 简介。
-  int _tab = 0;
+  late int _tab = widget.initialTab.clamp(0, 1);
 
   void _switchTab(int tab) => setState(() {
     _tab = tab;

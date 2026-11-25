@@ -176,14 +176,6 @@ class AppearanceSettings extends StatelessWidget {
                 const Divider(indent: 16, endIndent: 16),
               ],
               SwitchTile(
-                title: '在主页底栏显示历史',
-                subtitle: '关闭后仍可在「我的」里打开观看记录',
-                value: store.historyTab,
-                onChanged: (value) =>
-                    saveSetting(context, () => store.setHistoryTab(value)),
-              ),
-              const Divider(indent: 16, endIndent: 16),
-              SwitchTile(
                 title: '在主页显示模糊封面按钮',
                 subtitle: '发现页站源按钮左边显示眼睛按钮，点一下模糊封面，再点恢复',
                 value: store.blurCoversButton,

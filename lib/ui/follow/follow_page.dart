@@ -7,8 +7,10 @@ import '../../models.dart';
 import '../../source_modules.dart';
 import '../app_scope.dart';
 import '../detail/detail_page.dart';
+import '../history/history_page.dart';
 import '../settings/settings_rows.dart';
 import '../shell/app_shell.dart';
+import '../theme/motion.dart';
 import '../widgets/drama_grid.dart';
 import '../widgets/drama_tile.dart';
 import '../widgets/focus_ring.dart';
@@ -45,6 +47,8 @@ class _FollowPageState extends State<FollowPage> {
   final _editButton = FocusNode();
   final _entered = <Object>{};
   var _source = '';
+  var _filter = '';
+  var _section = 0;
   Set<String>? _selection;
 
   @override
@@ -131,7 +135,138 @@ class _FollowPageState extends State<FollowPage> {
   }
 
   @override
-  Widget build(BuildContext context) => ListenableBuilder(
+  Widget build(BuildContext context) {
+    final form = AppScope.formFactorOf(context);
+    return PopScope(
+      canPop: _selection == null,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) _finishEditing();
+      },
+      child: Scaffold(
+        body: SafeArea(
+          bottom: false,
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              _rail(
+                wide: form == FormFactor.pad || form == FormFactor.window,
+              ),
+              Expanded(
+                child: _section == 0
+                    ? _followBody(context)
+                    : HistoryPage(
+                        store: widget.store,
+                        root: true,
+                        embedded: true,
+                      ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _railItem({
+    required IconData icon,
+    required String label,
+    required bool selected,
+    required VoidCallback onTap,
+  }) {
+    final colors = Theme.of(context).colorScheme;
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 3),
+      child: FocusRing(
+        radius: 12,
+        child: Material(
+          color: selected
+              ? colors.primaryContainer.withValues(alpha: .55)
+              : Colors.transparent,
+          borderRadius: BorderRadius.circular(12),
+          child: InkWell(
+            key: ValueKey('library-$label'),
+            borderRadius: BorderRadius.circular(12),
+            onTap: onTap,
+            child: SizedBox(
+              height: 44,
+              child: Row(
+                children: [
+                  AnimatedContainer(
+                    duration: Motion.short,
+                    width: 3,
+                    height: 20,
+                    decoration: BoxDecoration(
+                      color: selected ? colors.primary : Colors.transparent,
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  Icon(
+                    icon,
+                    size: 18,
+                    color: selected
+                        ? colors.primary
+                        : colors.onSurfaceVariant,
+                  ),
+                  const SizedBox(width: 6),
+                  Expanded(
+                    child: Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: selected
+                            ? FontWeight.w800
+                            : FontWeight.w500,
+                        color: selected ? colors.primary : colors.onSurface,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 6),
+                ],
+              ),
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _rail({required bool wide}) => Padding(
+    padding: EdgeInsets.fromLTRB(wide ? 12 : 8, 10, wide ? 8 : 4, 10),
+    child: SizedBox(
+      width: wide ? 132 : 92,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _railItem(
+            icon: Icons.bookmark_border_rounded,
+            label: '追剧',
+            selected: _section == 0,
+            onTap: () => _switch(0),
+          ),
+          _railItem(
+            icon: Icons.history_rounded,
+            label: '历史记录',
+            selected: _section == 1,
+            onTap: () => _switch(1),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  void _switch(int section) {
+    if (section == _section) return;
+    setState(() {
+      _section = section;
+      _selection = null;
+    });
+  }
+
+  Widget _followBody(BuildContext context) => ListenableBuilder(
     listenable: Listenable.merge([widget.store, _query]),
     builder: (context, _) {
       final follows = widget.store.favorites;
@@ -140,7 +275,8 @@ class _FollowPageState extends State<FollowPage> {
       final shown = [
         for (final drama in follows)
           if ((source.isEmpty || drama.source == source) &&
-              matchesFollowTitle(drama, _query.text))
+              matchesFollowTitle(drama, _query.text) &&
+              _matches(drama))
             drama,
       ];
       final view = (
@@ -152,19 +288,31 @@ class _FollowPageState extends State<FollowPage> {
           for (final drama in shown) drama.id,
         }),
       );
-      return PopScope(
-        canPop: _selection == null,
-        onPopInvokedWithResult: (didPop, _) {
-          if (!didPop) _finishEditing();
-        },
-        child: switch (AppScope.formFactorOf(context)) {
-          FormFactor.phone => _phone(context, view),
-          FormFactor.pad || FormFactor.window => _wide(context, view),
-          FormFactor.television => _television(context, view),
-        },
-      );
+      return switch (AppScope.formFactorOf(context)) {
+        FormFactor.phone => _phone(context, view),
+        FormFactor.pad || FormFactor.window => _wide(context, view),
+        FormFactor.television => _television(context, view),
+      };
     },
   );
+
+  /// 「想看 / 在看 / 已看」由观看记录派生，不额外存状态。
+  bool _matches(Drama drama) {
+    if (_filter.isEmpty) return true;
+    final watch = widget.store.watched(drama.id);
+    final total = drama.episodes;
+    final done =
+        watch != null &&
+        watch.finished &&
+        (total <= 0 || watch.episode >= total);
+    return switch (_filter) {
+      'want' => watch == null,
+      'watching' => watch != null && !done,
+      'done' => done,
+      'updates' => widget.store.following(drama.id)?.hasUpdates ?? false,
+      _ => true,
+    };
+  }
 
   Set<String> _ids(_View view) => {for (final drama in view.shown) drama.id};
 
@@ -261,11 +409,30 @@ class _FollowPageState extends State<FollowPage> {
     ),
   );
 
-  Widget? _sources(_View view, {required double inset, bool scroll = false}) {
-    if (view.sources.length < 2) return null;
+  Widget _filterChip(String id, String label) => FocusRing(
+    radius: 8,
+    child: ChoiceChip(
+      key: ValueKey('follow-filter-$id'),
+      label: Text(label),
+      showCheckmark: false,
+      selected: _filter == id,
+      onSelected: (_) => setState(() => _filter = id),
+    ),
+  );
+
+  /// 一行筛选：先是观看状态，多站源时右侧再跟站源筛选。
+  Widget _chips(_View view, {required double inset, bool scroll = false}) {
     final chips = [
-      _sourceChip('', '全部', view),
-      for (final site in view.sources) _sourceChip(site.id, site.name, view),
+      _filterChip('', '全部'),
+      _filterChip('want', '想看'),
+      _filterChip('watching', '在看'),
+      _filterChip('done', '已看'),
+      _filterChip('updates', '有更新'),
+      if (view.sources.length > 1) ...[
+        const SizedBox(width: 6),
+        _sourceChip('', '全部站源', view),
+        for (final site in view.sources) _sourceChip(site.id, site.name, view),
+      ],
     ];
     if (scroll) {
       return SingleChildScrollView(
@@ -294,7 +461,7 @@ class _FollowPageState extends State<FollowPage> {
               child: selection == null
                   ? PageHeader(
                       key: const ValueKey(false),
-                      title: '追剧',
+                      title: '我的追剧 · ${view.shown.length}',
                       actions: [_editButtonFor(view, icon: false)],
                     )
                   : PageHeader(
@@ -310,7 +477,7 @@ class _FollowPageState extends State<FollowPage> {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: _search(),
             ),
-            ?_sources(view, inset: 16, scroll: true),
+            _chips(view, inset: 16, scroll: true),
           ],
         ),
       ),
@@ -344,7 +511,12 @@ class _FollowPageState extends State<FollowPage> {
                           child: Row(
                             spacing: 8,
                             children: [
-                              Expanded(child: _title('追剧', 28)),
+                              Expanded(
+                                child: _title(
+                                  '我的追剧 · ${view.shown.length}',
+                                  28,
+                                ),
+                              ),
                               SizedBox(
                                 width: (constraints.maxWidth - 400).clamp(
                                   160.0,
@@ -378,7 +550,7 @@ class _FollowPageState extends State<FollowPage> {
               ),
             ),
           ),
-          ?_sources(view, inset: 24),
+          _chips(view, inset: 24),
         ],
       ),
     ),
@@ -447,7 +619,7 @@ class _FollowPageState extends State<FollowPage> {
                   ),
                 ),
               ),
-            ?_sources(view, inset: televisionInset),
+            _chips(view, inset: televisionInset),
           ],
         ),
       ),

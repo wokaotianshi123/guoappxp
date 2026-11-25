@@ -1,5 +1,6 @@
 import 'dart:async';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
@@ -21,13 +22,12 @@ const _shade = Color(0xFF161214);
 
 /// 推荐：整屏播放一部剧，上下滑动换下一部。
 ///
-/// 与 THLRedGuo 的推荐流（`VideoFeedScreen`）结构一致：
-/// * 每屏给**完整的播放器**（`PlaybackPage`），带进度条、暂停、选集、
-///   倍速、清晰度等全部控件，不是简化版；
-/// * 只有「当前页」真正挂播放器，相邻页只显示封面占位——与 THLRedGuo
-///   的 `_page()` 判断 `index == feed.index` 是同一套做法，避免多个
-///   播放器实例同时抢解码器与画中画状态；
-/// * 滑到倒数第二部就自动补页，推荐条数不设上限。
+/// 版面与 THLRedGuo 的推荐流一致：一屏一部剧，左下角是剧名 / 集数 / 简介，
+/// 右侧是追剧、选集、全屏、弹幕、详情、设置，底部一条进度条。触屏用滑动、
+/// 桌面端用滚轮或按住拖动翻页，PageUp / PageDown 同样可以。
+///
+/// 只有「当前这一屏」挂播放器，相邻页面只显示封面占位——同屏多个播放器会
+/// 抢解码器。切剧时旧的一屏从树上摘下来，播放器由它自己释放。
 class RecommendPage extends StatefulWidget {
   const RecommendPage({super.key, required this.store});
   final LocalStore store;
@@ -40,8 +40,8 @@ class _RecommendPageState extends State<RecommendPage> {
   RecommendFeed? _feed;
   final _pager = PageController();
   int _pagerIndex = 0;
+  bool _moving = false;
 
-  /// 当前页的播放句柄。切页时释放旧的、建新的——同一时刻只有一个播放器。
   PlaybackHandle? _handle;
   String _handleDrama = '';
 
@@ -59,43 +59,70 @@ class _RecommendPageState extends State<RecommendPage> {
 
   @override
   void dispose() {
-    _disposeHandle();
+    _handle = null;
     _feed?.dispose();
     _pager.dispose();
     super.dispose();
   }
 
-  void _disposeHandle() {
-    _handle?.dispose();
+  void _dropHandle() {
     _handle = null;
     _handleDrama = '';
   }
 
-  void _openDetail(Drama drama) => openPage<void>(
-    context,
-    (_) => DetailPage(store: widget.store, drama: drama),
-  );
+  void _openDetail(RecommendFeed feed) {
+    final drama = feed.current;
+    if (drama == null) return;
+    openPage<void>(
+      context,
+      (_) => DetailPage(store: widget.store, drama: drama),
+    );
+  }
+
+  bool _busy(RecommendFeed feed) =>
+      _moving || feed.loading || feed.loadingMore;
 
   Future<void> _move(RecommendFeed feed, int direction) async {
+    if (_busy(feed)) return;
     final target = feed.index + direction;
     if (target < 0) return;
     if (target >= feed.items.length) {
       if (!feed.hasMore) return;
-      await feed.loadMore();
+      setState(() => _moving = true);
+      try {
+        await feed.loadMore();
+      } finally {
+        if (mounted) setState(() => _moving = false);
+      }
       if (!mounted || target >= feed.items.length) return;
     }
     if (!_pager.hasClients) return;
-    await _pager.animateToPage(
-      target,
-      duration: Motion.of(context, Motion.medium),
-      curve: Motion.standard,
-    );
+    setState(() => _moving = true);
+    try {
+      await _pager.animateToPage(
+        target,
+        duration: Motion.of(context, Motion.medium),
+        curve: Motion.standard,
+      );
+    } finally {
+      if (mounted) setState(() => _moving = false);
+    }
   }
 
   void _refresh(RecommendFeed feed) {
-    _disposeHandle();
+    _dropHandle();
     if (_pager.hasClients) _pager.jumpToPage(0);
     unawaited(feed.refresh());
+  }
+
+  /// 桌面端滚轮：一格翻一屏，与竖屏播放器的滚轮切集手感一致。
+  void _wheel(PointerSignalEvent event, RecommendFeed feed) {
+    if (event is! PointerScrollEvent) return;
+    final delta = event.scrollDelta.dy;
+    if (delta == 0) return;
+    GestureBinding.instance.pointerSignalResolver.register(event, (_) {
+      unawaited(_move(feed, delta > 0 ? 1 : -1));
+    });
   }
 
   @override
@@ -108,6 +135,9 @@ class _RecommendPageState extends State<RecommendPage> {
       listenable: feed,
       builder: (context, _) {
         final source = widget.store.source;
+        // 换源或刷新时列表会被清空，旧的播放句柄由被摘下来的播放页释放，
+        // 这里只丢掉引用，避免拿着已释放的会话再建一屏。
+        if (feed.loading || feed.items.isEmpty) _dropHandle();
         final body = switch (feed) {
           _ when source.isEmpty => StatusView(
             title: '还没有选择站源',
@@ -144,49 +174,183 @@ class _RecommendPageState extends State<RecommendPage> {
         _pager.jumpToPage(feed.index);
       });
     }
-    return CallbackShortcuts(
-      bindings: {
-        const SingleActivator(LogicalKeyboardKey.pageDown): () =>
-            unawaited(_move(feed, 1)),
-        const SingleActivator(LogicalKeyboardKey.pageUp): () =>
-            unawaited(_move(feed, -1)),
-      },
-      child: Focus(
-        autofocus: true,
-        child: PageView.builder(
-          key: ValueKey('recommend-pager-${widget.store.source}'),
-          controller: _pager,
-          scrollDirection: Axis.vertical,
-          itemCount: pages.length,
-          onPageChanged: (index) {
-            _pagerIndex = index;
-            feed.select(index);
-            _disposeHandle();
-            if (pages.length - index <= 2) unawaited(feed.loadMore());
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        CallbackShortcuts(
+          bindings: {
+            const SingleActivator(LogicalKeyboardKey.pageDown): () =>
+                unawaited(_move(feed, 1)),
+            const SingleActivator(LogicalKeyboardKey.pageUp): () =>
+                unawaited(_move(feed, -1)),
           },
-          itemBuilder: (context, index) => _slide(feed, index),
+          child: Focus(
+            autofocus: true,
+            child: ScrollConfiguration(
+              behavior: ScrollConfiguration.of(context).copyWith(
+                scrollbars: false,
+                dragDevices: const {
+                  PointerDeviceKind.touch,
+                  PointerDeviceKind.mouse,
+                  PointerDeviceKind.stylus,
+                  PointerDeviceKind.invertedStylus,
+                  PointerDeviceKind.trackpad,
+                },
+              ),
+              child: PageView.builder(
+                key: ValueKey('recommend-pager-${widget.store.source}'),
+                controller: _pager,
+                scrollDirection: Axis.vertical,
+                itemCount: pages.length,
+                onPageChanged: (index) {
+                  _pagerIndex = index;
+                  _dropHandle();
+                  feed.select(index);
+                  if (pages.length - index <= 2) unawaited(feed.loadMore());
+                },
+                itemBuilder: (context, index) => Listener(
+                  onPointerSignal: (event) => _wheel(event, feed),
+                  child: _slide(feed, index),
+                ),
+              ),
+            ),
+          ),
         ),
+        _topBar(feed),
+      ],
+    );
+  }
+
+  Widget _topBar(RecommendFeed feed) {
+    final current = feed.current;
+    final detailError = current == null ? null : feed.detailError(current.id);
+    return Positioned(
+      left: 0,
+      right: 0,
+      top: 0,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 4, 8, 0),
+            child: Row(
+              children: [
+                const Text(
+                  '推荐',
+                  style: TextStyle(
+                    color: Colors.white,
+                    fontSize: 21,
+                    fontWeight: FontWeight.w800,
+                    shadows: [Shadow(color: Colors.black54, blurRadius: 8)],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    feed.items.isEmpty
+                        ? '上滑换剧'
+                        : '上滑换剧 · ${feed.index + 1}/${feed.items.length}',
+                    style: TextStyle(
+                      color: Colors.white.withValues(alpha: .72),
+                      fontSize: 12,
+                      shadows: const [
+                        Shadow(color: Colors.black54, blurRadius: 8),
+                      ],
+                    ),
+                  ),
+                ),
+                _barButton(
+                  'feed-refresh',
+                  '刷新推荐',
+                  Icons.refresh_rounded,
+                  feed.loading ? null : () => _refresh(feed),
+                ),
+                _barButton(
+                  'feed-previous',
+                  '上一部',
+                  Icons.keyboard_arrow_up_rounded,
+                  feed.index > 0 && !feed.loading
+                      ? () => unawaited(_move(feed, -1))
+                      : null,
+                ),
+                _barButton(
+                  'feed-next',
+                  '下一部',
+                  Icons.keyboard_arrow_down_rounded,
+                  feed.loading ? null : () => unawaited(_move(feed, 1)),
+                ),
+              ],
+            ),
+          ),
+          if (feed.loadingMore)
+            const Padding(
+              padding: EdgeInsets.only(top: 2),
+              child: LinearProgressIndicator(minHeight: 2),
+            ),
+          if (detailError != null && current != null)
+            Padding(
+              padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
+              child: Material(
+                color: Colors.black.withValues(alpha: .45),
+                borderRadius: BorderRadius.circular(10),
+                child: Padding(
+                  padding: const EdgeInsets.fromLTRB(12, 6, 6, 6),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        child: Text(
+                          '这一部暂时无法播放',
+                          style: TextStyle(
+                            fontSize: 12,
+                            color: Colors.white.withValues(alpha: .8),
+                          ),
+                        ),
+                      ),
+                      TextButton(
+                        onPressed: () =>
+                            unawaited(feed.loadDetail(current, force: true)),
+                        child: const Text('重试'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+        ],
       ),
     );
   }
+
+  Widget _barButton(
+    String id,
+    String tooltip,
+    IconData icon,
+    VoidCallback? onPressed,
+  ) => FocusRing(
+    radius: 999,
+    child: IconButton(
+      key: ValueKey(id),
+      tooltip: tooltip,
+      onPressed: onPressed,
+      icon: Icon(icon),
+      color: Colors.white,
+      disabledColor: Colors.white.withValues(alpha: .3),
+      style: IconButton.styleFrom(
+        backgroundColor: Colors.black.withValues(alpha: .28),
+        minimumSize: const Size(40, 40),
+      ),
+    ),
+  );
 
   Widget _slide(RecommendFeed feed, int index) {
     final drama = feed.items[index];
     final current = index == feed.index;
 
-    // 非当前页：只显示剧名与封面，不建播放器。与 THLRedGuo 一致。
-    if (!current) {
-      return _CoverPlaceholder(drama: drama);
-    }
+    if (!current) return _CoverPlaceholder(drama: drama);
 
     final detail = feed.detailOf(drama.id);
     if (detail == null) {
-      // 详情还没到：先出封面 + 加载态，同时触发拉取。
-      //
-      // 这里必须延到帧后：`loadDetail` 会同步 notifyListeners，
-      // 而当前正在 build（PageView 的 itemBuilder 内），直接调用会触发
-      // 「setState() called during build」。
-      if (!feed.detailLoading(drama.id)) {
+      if (!feed.detailLoading(drama.id) && feed.detailError(drama.id) == null) {
         WidgetsBinding.instance.addPostFrameCallback((_) {
           if (!mounted) return;
           unawaited(feed.loadDetail(drama));
@@ -200,21 +364,17 @@ class _RecommendPageState extends State<RecommendPage> {
       );
     }
 
-    // 当前页：完整的播放器。切剧时换一个新句柄。
-    if (_handleDrama != drama.id) {
-      // 建播放器同样不能在 build 里做（会初始化解码器并可能触发通知），
-      // 延到帧后；这一帧先显示封面。
+    if (_handleDrama != drama.id || _handle == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
         if (!mounted) return;
-        if (_handleDrama == drama.id) return;
+        if (_handleDrama == drama.id || _handle != null) return;
         setState(() {
-          _disposeHandle();
           _handle = PlaybackHandle(
             repository: AppScope.of(context).repository,
             store: widget.store,
             detail: detail,
             index: _startIndex(feed, drama, detail),
-            position: _startPosition(feed, drama),
+            position: widget.store.watched(drama.id)?.position.toDouble() ?? 0,
             autoplay: true,
             preopen: false,
           );
@@ -223,83 +383,16 @@ class _RecommendPageState extends State<RecommendPage> {
       });
       return _CoverPlaceholder(drama: drama, loading: true);
     }
-    final handle = _handle!;
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        PlaybackPage(store: widget.store, handle: handle),
-        // 顶部标题条 + 底部剧名，浮在播放器之上但不挡控件。
-        Positioned(
-          left: 14,
-          right: 14,
-          top: 8,
-          child: IgnorePointer(
-            child: Row(
-              children: [
-                Text(
-                  '推荐',
-                  style: TextStyle(
-                    fontSize: 19,
-                    fontWeight: FontWeight.w800,
-                    color: Colors.white.withValues(alpha: 0.94),
-                    shadows: const [Shadow(blurRadius: 8, color: Colors.black54)],
-                  ),
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    '上滑换剧 · ${index + 1}/${feed.items.length}',
-                    style: TextStyle(
-                      fontSize: 12,
-                      color: Colors.white.withValues(alpha: 0.72),
-                      shadows: const [
-                        Shadow(blurRadius: 8, color: Colors.black54),
-                      ],
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ),
-        ),
-        // 右下角：详情与换一批（其余控件播放器自带）。
-        Positioned(
-          right: 10,
-          bottom: 96,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            spacing: 8,
-            children: [
-              _SideButton(
-                icon: Icons.info_outline_rounded,
-                tooltip: '详情与选集',
-                onPressed: () => _openDetail(drama),
-              ),
-              _SideButton(
-                icon: Icons.refresh_rounded,
-                tooltip: '换一批推荐',
-                onPressed: () => _refresh(feed),
-              ),
-              _SideButton(
-                icon: Icons.keyboard_arrow_up_rounded,
-                tooltip: '上一部',
-                onPressed: feed.index > 0
-                    ? () => unawaited(_move(feed, -1))
-                    : null,
-              ),
-              _SideButton(
-                icon: Icons.keyboard_arrow_down_rounded,
-                tooltip: '下一部',
-                onPressed: () => unawaited(_move(feed, 1)),
-              ),
-            ],
-          ),
-        ),
-      ],
+
+    return PlaybackPage(
+      key: ValueKey('feed-player-${drama.id}'),
+      store: widget.store,
+      handle: _handle!,
+      feed: true,
+      onOpenDetail: () => _openDetail(feed),
     );
   }
 
-  /// 从上次看到的位置继续；没有记录就从推荐流给的开头集开始。
   int _startIndex(RecommendFeed feed, Drama drama, DramaDetail detail) {
     final watched = widget.store.watched(drama.id);
     if (watched != null) {
@@ -309,11 +402,6 @@ class _RecommendPageState extends State<RecommendPage> {
       if (index >= 0) return index;
     }
     return 0;
-  }
-
-  double _startPosition(RecommendFeed feed, Drama drama) {
-    final watched = widget.store.watched(drama.id);
-    return watched?.position.toDouble() ?? 0;
   }
 }
 
@@ -423,34 +511,6 @@ class _CoverPlaceholder extends StatelessWidget {
           ),
         ),
       ],
-    ),
-  );
-}
-
-class _SideButton extends StatelessWidget {
-  const _SideButton({
-    required this.icon,
-    required this.tooltip,
-    required this.onPressed,
-  });
-  final IconData icon;
-  final String tooltip;
-  final VoidCallback? onPressed;
-
-  @override
-  Widget build(BuildContext context) => Tooltip(
-    message: tooltip,
-    child: FocusRing(
-      radius: 999,
-      child: IconButton(
-        onPressed: onPressed,
-        icon: Icon(icon),
-        color: Colors.white,
-        disabledColor: Colors.white.withValues(alpha: 0.3),
-        style: IconButton.styleFrom(
-          backgroundColor: Colors.black.withValues(alpha: 0.38),
-        ),
-      ),
     ),
   );
 }

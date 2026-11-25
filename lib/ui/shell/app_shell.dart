@@ -14,7 +14,6 @@ import '../app_scope.dart';
 import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
-import '../history/history_page.dart';
 import '../recommend/recommend_page.dart';
 import '../mine/mine_page.dart';
 import '../modules/module_install.dart';
@@ -28,7 +27,6 @@ enum AppTab {
   explore('发现', Icons.explore_outlined, Icons.explore),
   recommend('推荐', Icons.play_circle_outline_rounded, Icons.play_circle_rounded),
   follow('追剧', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
-  history('历史', Icons.history_rounded, Icons.history_rounded),
   mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
 
   const AppTab(this.label, this.icon, this.selectedIcon);
@@ -223,16 +221,7 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
-  List<AppTab> get _tabs => [
-    for (final tab in AppTab.values)
-      if (switch (tab) {
-        AppTab.history =>
-          widget.store.historyTab && !AppScope.of(context).television,
-        AppTab.explore || AppTab.recommend || AppTab.follow || AppTab.mine =>
-          true,
-      })
-        tab,
-  ];
+  List<AppTab> get _tabs => AppTab.values;
 
   void _select(AppTab tab) {
     _barsShown.value = true;
@@ -352,7 +341,6 @@ class _AppShellState extends State<AppShell> {
       entryFocus: _followEntry,
       onExitUp: _tabFocus[AppTab.follow.index].requestFocus,
     ),
-    AppTab.history => HistoryPage(store: widget.store, root: true),
     AppTab.mine => MinePage(
       store: widget.store,
       downloads: _downloads!,
@@ -474,10 +462,7 @@ class _AppShellState extends State<AppShell> {
                         final entry = switch (_tab) {
                           AppTab.follow => _followEntry,
                           AppTab.mine => _mineEntry,
-                          AppTab.explore ||
-                          AppTab.recommend ||
-                          AppTab.history =>
-                            null,
+                          AppTab.explore || AppTab.recommend => null,
                         };
                         if (event is KeyUpEvent ||
                             event.logicalKey != LogicalKeyboardKey.arrowDown ||

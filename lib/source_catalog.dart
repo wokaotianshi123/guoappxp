@@ -34,8 +34,11 @@ class SourceCatalog {
   /// XBPQ 三种源都会冒出与站源设置不符的多余分类（如「成长」「都市」「未分类」），
   /// 而且用户浏览得越多、tab 越多。分类只认 `Categories` / `home.class` /
   /// `type_name` 给出的结果；缓存剧集只用于显示，不再参与分类生成。
+  ///
+  /// 站源自己也声明了「全部」（官方源的 `app:discover:all`）时去重掉：预置的
+  /// 空 id 分类对任何站源都是「全部」，留着站源那条只会让分类条出现两个同名 tab。
   List<CatalogCategory> get categories {
-    final names = <String>{};
+    final names = <String>{CatalogCategory.all.name};
     final remote = <CatalogCategory>[];
     for (final category in _remote) {
       if (category.id.isEmpty) continue;

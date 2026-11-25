@@ -1,6 +1,5 @@
 import 'package:duanju_app/ui/app_scope.dart';
 import 'package:duanju_app/ui/follow/follow_page.dart';
-import 'package:duanju_app/ui/history/history_page.dart';
 import 'package:duanju_app/ui/mine/mine_page.dart';
 import 'package:duanju_app/ui/shell/app_shell.dart';
 import 'package:flutter/material.dart';
@@ -31,7 +30,6 @@ Future<void> selectTab(WidgetTester tester, AppTab tab) async {
 
 Finder pageOf(AppTab tab) => switch (tab) {
   AppTab.follow => find.byType(FollowPage),
-  AppTab.history => find.byType(HistoryPage),
   AppTab.mine => find.byType(MinePage),
   _ => throw StateError('unexpected tab: $tab'),
 };
@@ -53,7 +51,7 @@ void main() {
     expect(mounted.contains(AppTab.recommend), isTrue);
   });
 
-  testWidgets('未访问推荐时，追剧 / 历史 / 我的各自显示自己的页面', (
+  testWidgets('未访问推荐时，追剧 / 我的各自显示自己的页面', (
     tester,
   ) async {
     await pumpShell(tester);
@@ -62,14 +60,14 @@ void main() {
 
     // IndexedStack 只把 index 指向的 child 标为 onstage，其余 child 被 Finder
     // 跳过。因此「能找到该页面」等价于「index 没有错位、也没有越界空白」。
-    for (final tab in [AppTab.follow, AppTab.history, AppTab.mine]) {
+    for (final tab in [AppTab.follow, AppTab.mine]) {
       await selectTab(tester, tab);
       expect(
         pageOf(tab),
         findsOneWidget,
         reason: '切到${tab.label}后应显示对应页面，而不是空白',
       );
-      for (final other in [AppTab.follow, AppTab.history, AppTab.mine]) {
+      for (final other in [AppTab.follow, AppTab.mine]) {
         if (other == tab) continue;
         expect(
           pageOf(other),

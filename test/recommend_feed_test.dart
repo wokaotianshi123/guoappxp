@@ -8,7 +8,7 @@ import 'package:flutter_test/flutter_test.dart';
 import 'support/fakes.dart';
 
 /// 推荐流的两条核心约定：
-/// 1. 不限制推荐个数——滑到底要能继续补页；
+/// 1. 取流固定走「全部」分类，且不限制个数——滑到底要能继续补页；
 /// 2. 每部剧的详情按需加载并缓存，供全屏播放建播放句柄。
 void main() {
   const jsOfficial = 'js:hongguo';
@@ -102,22 +102,21 @@ class _PagedRepository extends FakeRepository {
   final requested = <String>[];
 
   @override
-  Future<CatalogPage> recommendations(
-    String source,
-    String genre, {
-    bool more = false,
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
     bool force = false,
   }) async {
-    final page = more ? _served + 1 : 1;
-    _served = page;
+    expect(category, isEmpty, reason: '推荐流固定从「全部」分类取流');
     final items = [
       for (var i = 0; i < pageSize; i++)
         drama('r$page-$i', source: source, title: '推荐 $page-$i'),
     ];
     return CatalogPage(items, page: page, hasMore: page < pages);
   }
-
-  int _served = 0;
 
   @override
   Future<DramaDetail> detail(Drama target) async {

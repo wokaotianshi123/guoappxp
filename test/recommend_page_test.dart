@@ -76,10 +76,12 @@ void main() {
 /// 固定返回两部推荐的假仓库；detail 故意留空，让页面停在封面占位分支。
 class _FeedRepository extends FakeRepository {
   @override
-  Future<CatalogPage> recommendations(
-    String source,
-    String genre, {
-    bool more = false,
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
     bool force = false,
   }) async => CatalogPage(
     [

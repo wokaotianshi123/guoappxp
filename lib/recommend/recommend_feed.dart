@@ -9,8 +9,8 @@ import '../models.dart';
 /// 推荐流的数据源：上下滑动换一部剧。
 ///
 /// 与「发现」页的分类列表不同，这里一次只放一部剧在屏幕上，靠翻页换剧。
-/// 优先用站源自己的推荐接口（`recommendations`，目前官方源支持），
-/// 站源没有推荐能力时退化成该源「全部」目录，保证这个入口永远有内容。
+/// 取流固定走站源的「全部」分类：官方源那边「推荐」是 `tab_type 38` 的信息流，
+/// 而「全部」（`tab_type 8`）才是可无限翻页的主列表，翻到底能一直补页。
 class RecommendFeed extends ChangeNotifier {
   RecommendFeed(this.repository, this.store) {
     store.addListener(_storeChanged);
@@ -87,9 +87,6 @@ class RecommendFeed extends ChangeNotifier {
   }
 
   /// 推荐接口只有部分站源支持；其余站源用「全部」目录顶上。
-  bool get _usesRecommendations =>
-      _source.isNotEmpty && SourceSite.byId(_source).recommends;
-
   void _storeChanged() {
     if (store.source == _source) return;
     _source = store.source;
@@ -112,7 +109,7 @@ class RecommendFeed extends ChangeNotifier {
     _notify();
     if (source.isEmpty) return;
     try {
-      final page = await _load(source, 1, false);
+      final page = await _load(source, 1);
       if (_disposed || generation != _generation) return;
       _items = _unique(page.items);
       _page = page.page;
@@ -139,7 +136,7 @@ class RecommendFeed extends ChangeNotifier {
     _loadingMore = true;
     _notify();
     try {
-      final page = await _load(source, _page + 1, true);
+      final page = await _load(source, _page + 1);
       if (_disposed || generation != _generation) return;
       final known = {for (final item in _items) item.id};
       _items = [
@@ -159,15 +156,9 @@ class RecommendFeed extends ChangeNotifier {
     }
   }
 
-  Future<CatalogPage> _load(String source, int page, bool more) {
-    if (_usesRecommendations) {
-      return repository.recommendations(source, _genre, more: more);
-    }
-    return repository.catalog(source, category: '', page: page);
-  }
-
-  /// 推荐接口的题材参数：沿用「发现」页推荐 tab 的口径。
-  static const _genre = 'find_drama';
+  /// 推荐流固定取站源「全部」分类，空分类 id 在每种源上都代表「全部」。
+  Future<CatalogPage> _load(String source, int page) =>
+      repository.catalog(source, category: '', page: page);
 
   List<Drama> _unique(Iterable<Drama> values) {
     final seen = <String>{};
