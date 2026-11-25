@@ -139,7 +139,9 @@ function writeEpisodesReversed(value) {
 }
 
 var state = {
-  source: 'hongguo',
+  // 首页默认源：JS 沙箱里的官方免费短剧。脚本在端侧跑，不依赖商店模块是否
+  // 安装；模块红果在下面 loadSources 里作为兜底。
+  source: 'js:hongguo',
   categories: [],
   categoriesSource: '',
   category: '',
@@ -636,7 +638,16 @@ function loadSources() {
             .join('')
         : '<option value="">无显示中的站源</option>';
       if (visibleItems.length && !visibleItems.some(function (item) { return item.id === state.source; })) {
-        state.source = visibleItems[0].id;
+        // 默认源是 JS 沙箱的官方短剧；它还没导入时退回模块红果，再不行用首个。
+        var fallback = ['js:hongguo', 'hongguo'];
+        var preferred = '';
+        for (var i = 0; i < fallback.length; i++) {
+          if (visibleItems.some(function (item) { return item.id === fallback[i]; })) {
+            preferred = fallback[i];
+            break;
+          }
+        }
+        state.source = preferred || visibleItems[0].id;
       }
       sourceSelect.value = state.source;
     })

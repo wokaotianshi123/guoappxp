@@ -15,7 +15,7 @@ class _TopicRepository extends FakeRepository {
 }
 
 void main() {
-  test('categories normalize remote names and add cached topics', () async {
+  test('categories only contain what the source declares', () async {
     final repository = FakeRepository()
       ..categoryList = const [
         CatalogCategory.all,
@@ -33,12 +33,17 @@ void main() {
     await catalog.loadCategories();
     expect(
       [for (final category in catalog.categories) category.id],
-      ['', 'short_play', 'comic', 'local:成长', 'local:都市'],
+      ['', 'short_play', 'comic'],
     );
     expect(catalog.categories[2].name, 'AI 漫剧');
+    // 缓存里出现的「都市 / 成长 / 未分类」都不该冒成分类 tab。
+    expect(
+      catalog.categories.map((category) => category.name),
+      ['全部', '真人剧', 'AI 漫剧'],
+    );
   });
 
-  test('server topics replace the cached topics', () async {
+  test('duplicate declared categories are deduped', () async {
     final repository = FakeRepository()
       ..categoryList = const [
         CatalogCategory.all,
@@ -58,23 +63,36 @@ void main() {
     );
   });
 
-  test('a cached topic lists every remembered drama in it', () async {
-    final repository = _TopicRepository()
+  test('cached drama categories never become tabs', () async {
+    final repository = FakeRepository()
+      ..categoryList = const [CatalogCategory.all]
       ..cachedPages['hongguo|'] = CatalogPage([
         drama('1', category: '都市'),
         drama('2', category: '成长'),
       ]);
     final catalog = SourceCatalog(repository, SourceSite.byId('hongguo'));
     await catalog.loadCategories();
-    final topic = catalog.categories.last;
-    expect(topic.local, isTrue);
-
-    final page = await catalog.fetch(topic);
-    expect(repository.catalogRequests, ['hongguo|||1']);
     expect(
-      [for (final item in page.items) item.id],
-      ['hongguo:1', 'hongguo:p1'],
+      [for (final category in catalog.categories) category.id],
+      [''],
     );
+  });
+
+  test('fetch passes the declared category id through untouched', () async {
+    final repository = _TopicRepository()
+      ..categoryList = const [
+        CatalogCategory.all,
+        CatalogCategory('short_play', '真人剧'),
+      ]
+      ..cachedPages['hongguo|'] = CatalogPage([
+        drama('1', category: '都市'),
+      ]);
+    final catalog = SourceCatalog(repository, SourceSite.byId('hongguo'));
+    await catalog.loadCategories();
+
+    final page = await catalog.fetch(catalog.categories.last);
+    expect(repository.catalogRequests, ['hongguo|short_play||1']);
+    expect([for (final item in page.items) item.id], ['hongguo:p1']);
     expect(page.hasMore, isTrue);
   });
 

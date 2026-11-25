@@ -223,3 +223,48 @@ String jsMetaSummary(JsSourceMeta meta) => jsonEncode({
   'name': meta.name,
   'version': meta.version,
 });
+
+/// 从 zip 批量导入脚本源的结果。
+class JsZipImportResult {
+  const JsZipImportResult({
+    this.imported = const [],
+    this.failed = const [],
+    this.error = '',
+  });
+  const JsZipImportResult.failed(this.error)
+    : imported = const [],
+      failed = const [];
+
+  final List<JsSourceMeta> imported;
+
+  /// 失败项，形如 `文件名（原因）`，直接显示给用户。
+  final List<String> failed;
+  final String error;
+
+  bool get success => imported.isNotEmpty;
+}
+
+/// 订阅里的一条脚本源：显示名（可能为空）+ 脚本地址。
+class JsSubscriptionEntry {
+  const JsSubscriptionEntry(this.name, this.url);
+  final String name;
+  final String url;
+}
+
+/// 从订阅导入的结果。
+class JsSubscriptionResult {
+  const JsSubscriptionResult({
+    this.imported = const [],
+    this.failed = const [],
+    this.error = '',
+  });
+  const JsSubscriptionResult.failed(this.error)
+    : imported = const [],
+      failed = const [];
+
+  final List<JsSourceMeta> imported;
+  final List<String> failed;
+  final String error;
+
+  bool get success => imported.isNotEmpty;
+}

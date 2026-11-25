@@ -29,7 +29,12 @@ const _movedFlags = {
   'televisionKeyboard': 'televisionKeyboard',
 };
 const _movedTexts = {'themeColor'};
-const _backupFlags = {
+
+/// 首页默认源：JS 沙箱里的官方免费短剧（`js:hongguo`）。
+///
+/// 与模块红果是同一套内容，但脚本在端侧跑，不依赖商店模块是否安装，也不会
+/// 因为模块卸载而整个首页空掉。模块红果退为兜底。
+const _preferredSource = 'js:hongguo';const _backupFlags = {
   'exportAfterDownload',
   'deleteAfterAutoExport',
   'deleteAfterManualExport',
@@ -578,14 +583,44 @@ class LocalStore extends ChangeNotifier {
 
   String get source {
     if (locked) return '';
+    final available = sources;
+    bool has(String id) => available.any((site) => site.id == id);
     final value = _userSettings['source'];
-    if (sources.any((site) => site.id == value)) return value as String;
-    // 用户没选过站源时默认落在红果：它是内置主源，分类、搜索、推荐、追剧都最完整，
-    // 不像商店模块那样可能没装或站点抖动。红果被关掉或不可用时才退回列表首个。
-    if (sources.any((site) => site.id == hongguoSourceId)) {
-      return hongguoSourceId;
+    if (value is String && value.isNotEmpty && has(value)) {
+      // 模块红果与 JS 沙箱的官方源是同一套内容。用户之前存的是模块红果时
+      // 自动升到脚本版：脚本在端侧跑，不依赖模块是否安装，也不受站点抖动
+      // 影响。用户明确选过别的源就尊重原选择。
+      if (value == hongguoSourceId && has(_preferredSource)) {
+        return _preferredSource;
+      }
+      return value;
     }
-    return sources.firstOrNull?.id ?? '';
+    // 没选过站源时优先落在 JS 沙箱的官方免费短剧：它是内置主源，分类、
+    // 搜索、推荐、追剧都最完整，而且不依赖商店模块是否安装。
+    if (has(_preferredSource)) return _preferredSource;
+    // 脚本源还没装上（或用户删了脚本）时退回模块红果，再不行用列表首个。
+    if (has(hongguoSourceId)) return hongguoSourceId;
+    return available.firstOrNull?.id ?? '';
+  }
+
+  /// 把首页源从模块红果迁到 JS 沙箱的官方源。
+  ///
+  /// 只在「当前就是模块红果或还没选过」时改一次；用户自己选过别的源就保持
+  /// 原样。脚本源要在 [JsSourceGateway.attach] 之后才挂进 [SourceSite]，所以
+  /// 由启动流程在挂载完成后调用。
+  Future<bool> adoptJsDefaultSource() async {
+    if (locked) return false;
+    if (!sources.any((site) => site.id == _preferredSource)) return false;
+    final value = _userSettings['source'];
+    final current = value is String && value.isNotEmpty ? value : '';
+    if (current == _preferredSource) return false;
+    if (current.isNotEmpty && current != hongguoSourceId) return false;
+    try {
+      await _userSetting('source', _preferredSource);
+      return true;
+    } catch (_) {
+      return false;
+    }
   }
 
   DownloadPreferences get downloadPreferences {

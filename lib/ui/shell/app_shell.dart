@@ -15,7 +15,7 @@ import '../explore/explore_page.dart';
 import '../explore/source_actions.dart';
 import '../follow/follow_page.dart';
 import '../history/history_page.dart';
-import '../audiobook/audiobook_screen.dart';
+import '../recommend/recommend_page.dart';
 import '../mine/mine_page.dart';
 import '../modules/module_install.dart';
 import '../widgets/bar_button.dart';
@@ -26,7 +26,7 @@ import '../widgets/source_bar.dart';
 
 enum AppTab {
   explore('发现', Icons.explore_outlined, Icons.explore),
-  audiobook('听书', Icons.headphones_outlined, Icons.headphones),
+  recommend('推荐', Icons.play_circle_outline_rounded, Icons.play_circle_rounded),
   follow('追剧', Icons.bookmark_border_rounded, Icons.bookmark_rounded),
   history('历史', Icons.history_rounded, Icons.history_rounded),
   mine('我的', Icons.person_outline_rounded, Icons.person_rounded);
@@ -37,16 +37,16 @@ enum AppTab {
   final IconData selectedIcon;
 }
 
-/// 启动时就挂载的标签：默认停在「发现」，听书页暂不进树。
+/// 启动时就挂载的标签：默认停在「发现」，推荐流暂不进树。
 ///
-/// [IndexedStack] 会一次性构建所有 children，听书页只要在树里就会立刻
-/// initState → 拉书池，首屏请求和发现页抢限流 / IPC / CPU，打开软件就被拖卡。
-/// 听书改为用户第一次切过去时才挂载（见 [_AppShellState]）。未挂载的标签
+/// [IndexedStack] 会一次性构建所有 children，推荐流只要在树里就会立刻
+/// initState → 拉推荐列表，首屏请求和发现页抢限流 / IPC / CPU，打开软件就被拖卡。
+/// 推荐流改为用户第一次切过去时才挂载（见 [_AppShellState]）。未挂载的标签
 /// 必须用空占位对齐 index，否则 IndexedStack 的子节点位置与 [_tab.index]
 /// 错位，表现为切到追剧 / 历史 / 我的时整页透明或空白。
 /// 单独抽出来便于回归测试锁住这条策略。
 Set<AppTab> initialMountedTabs() =>
-    <AppTab>{...AppTab.values}..remove(AppTab.audiobook);
+    <AppTab>{...AppTab.values}..remove(AppTab.recommend);
 
 Future<T?> openPage<T>(BuildContext context, WidgetBuilder builder) =>
     Navigator.of(
@@ -228,10 +228,7 @@ class _AppShellState extends State<AppShell> {
       if (switch (tab) {
         AppTab.history =>
           widget.store.historyTab && !AppScope.of(context).television,
-        AppTab.explore ||
-        AppTab.audiobook ||
-        AppTab.follow ||
-        AppTab.mine =>
+        AppTab.explore || AppTab.recommend || AppTab.follow || AppTab.mine =>
           true,
       })
         tab,
@@ -349,10 +346,7 @@ class _AppShellState extends State<AppShell> {
 
   Widget _root(AppTab tab) => switch (tab) {
     AppTab.explore => ExplorePage(key: _explore, store: widget.store),
-    AppTab.audiobook => AudiobookScreen(
-      repository: AppScope.of(context).repository,
-      profileId: widget.store.profile.id,
-    ),
+    AppTab.recommend => RecommendPage(store: widget.store),
     AppTab.follow => FollowPage(
       store: widget.store,
       entryFocus: _followEntry,
@@ -481,7 +475,7 @@ class _AppShellState extends State<AppShell> {
                           AppTab.follow => _followEntry,
                           AppTab.mine => _mineEntry,
                           AppTab.explore ||
-                          AppTab.audiobook ||
+                          AppTab.recommend ||
                           AppTab.history =>
                             null,
                         };

@@ -36,6 +36,7 @@ class _PlaybackRepository extends FakeRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
+    int routeIndex = -1,
   }) async {
     resolved.add((episode: episode.number, quality: quality));
     if (resolveFailure.isNotEmpty) throw AppFailure(resolveFailure);

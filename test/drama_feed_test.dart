@@ -115,8 +115,9 @@ void main() {
         },
       ),
     );
-    final older = feed.reload();
-    final newer = feed.reload();
+    // 自动刷新有 60 秒节流，这里用 force 绕过，确保真的发起两次请求。
+    final older = feed.reload(force: true);
+    final newer = feed.reload(force: true);
     answers[1].complete(CatalogPage([b]));
     await newer;
     answers[0].complete(CatalogPage([a]));

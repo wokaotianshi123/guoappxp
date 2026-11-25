@@ -219,7 +219,6 @@ class ExploreFeed extends ChangeNotifier {
   void _metadataChanged() {
     final drama = repository.catalogUpdates.latest;
     if (drama == null || drama.source != source?.id) return;
-    _catalog?.remember([drama]);
     for (final feed in _feeds.values) {
       feed.update(drama);
     }

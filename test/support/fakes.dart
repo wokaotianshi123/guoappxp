@@ -315,6 +315,7 @@ class FakeRepository extends AppRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
+    int routeIndex = -1,
   }) async => throw UnimplementedError();
 
   @override

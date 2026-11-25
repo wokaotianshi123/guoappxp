@@ -27,6 +27,7 @@ class _RouteRepository extends FakeRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
+    int routeIndex = -1,
   }) async => _plan(0);
 
   @override

@@ -21,42 +21,32 @@ class SourceCatalog {
   final SourceSite source;
   List<CatalogCategory> _remote = const [];
   List<RankingBoard> _boards = const [];
-  final _library = <String, Drama>{};
 
   static const recommendGenre = 'find_drama';
-  static const topicPrefix = 'tag:';
 
   bool get recommends => source.recommends;
 
   List<RankingBoard> get boards => _boards;
 
+  /// 分类条严格等于站源声明的分类（外加预置的「全部」）。
+  ///
+  /// 以前这里会从已缓存剧集里反推出 `local:xxx` 分类追加进去，导致模块 / JS /
+  /// XBPQ 三种源都会冒出与站源设置不符的多余分类（如「成长」「都市」「未分类」），
+  /// 而且用户浏览得越多、tab 越多。分类只认 `Categories` / `home.class` /
+  /// `type_name` 给出的结果；缓存剧集只用于显示，不再参与分类生成。
   List<CatalogCategory> get categories {
     final names = <String>{};
-    final remote = [
-      for (final category in _remote)
-        if (category.id.isNotEmpty && names.add(categoryName(category.name)))
-          CatalogCategory(category.id, categoryName(category.name)),
-    ];
-    final topics = remote.any(
-      (category) => category.id.startsWith(topicPrefix),
-    );
-    final local = topics
-        ? const <String>[]
-        : ({
-            for (final drama in _library.values) categoryName(drama.category),
-          }.where(names.add).toList()..sort());
-    return [
-      CatalogCategory.all,
-      ...remote,
-      for (final name in local)
-        CatalogCategory('local:$name', name, local: true),
-    ];
+    final remote = <CatalogCategory>[];
+    for (final category in _remote) {
+      if (category.id.isEmpty) continue;
+      final name = categoryName(category.name);
+      if (!names.add(name)) continue;
+      remote.add(CatalogCategory(category.id, name));
+    }
+    return [CatalogCategory.all, ...remote];
   }
 
   Future<void> loadCategories({bool force = false}) async {
-    try {
-      remember((await repository.cached(source.id)).items);
-    } catch (_) {}
     try {
       _boards = [
         for (final board in await repository.rankingBoards())
@@ -72,33 +62,22 @@ class SourceCatalog {
     bool force = false,
   }) => repository.rankings(board, page: page, force: force);
 
-  void remember(Iterable<Drama> items) {
-    for (final drama in items) {
-      if (drama.source != source.id) continue;
-      _library[drama.id] = _library[drama.id]?.merge(drama) ?? drama;
-    }
-  }
-
-  Future<CatalogPage> cached(CatalogCategory category) async => _within(
-    category,
-    await repository.cached(source.id, category: _request(category)),
-  );
+  Future<CatalogPage> cached(
+    CatalogCategory category,
+  ) => repository.cached(source.id, category: category.id);
 
   Future<CatalogPage> fetch(
     CatalogCategory category, {
     int page = 1,
     String lane = '',
     bool force = false,
-  }) async {
-    final result = await repository.catalog(
-      source.id,
-      category: _request(category),
-      page: page,
-      lane: lane,
-      force: force,
-    );
-    return _within(category, result);
-  }
+  }) => repository.catalog(
+    source.id,
+    category: category.id,
+    page: page,
+    lane: lane,
+    force: force,
+  );
 
   Future<CatalogPage> recommendations({
     bool more = false,
@@ -125,21 +104,4 @@ class SourceCatalog {
     );
   }
 
-  String _request(CatalogCategory category) =>
-      category.local ? '' : category.id;
-
-  CatalogPage _within(CatalogCategory category, CatalogPage page) {
-    remember(page.items);
-    if (!category.local) return page;
-    return CatalogPage(
-      [
-        for (final drama in _library.values)
-          if (categoryName(drama.category) == category.name) drama,
-      ],
-      hasMore: page.hasMore,
-      warning: page.warning,
-      page: page.page,
-      fresh: page.fresh,
-    );
-  }
 }

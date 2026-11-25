@@ -37,28 +37,28 @@ Finder pageOf(AppTab tab) => switch (tab) {
 };
 
 void main() {
-  test('启动默认「发现」时听书页不进树，避免提前加载书池', () {
+  test('启动默认「发现」时推荐流不进树，避免提前拉推荐列表', () {
     final mounted = initialMountedTabs();
     expect(mounted.contains(AppTab.explore), isTrue);
-    expect(mounted.contains(AppTab.audiobook), isFalse);
+    expect(mounted.contains(AppTab.recommend), isFalse);
     expect(mounted.length, AppTab.values.length - 1);
   });
 
-  test('切到听书后再切回，挂载集合幂等，不会重建页面重复加载', () {
+  test('切到推荐后再切回，挂载集合幂等，不会重建页面重复加载', () {
     final mounted = initialMountedTabs();
-    expect(mounted.add(AppTab.audiobook), isTrue);
+    expect(mounted.add(AppTab.recommend), isTrue);
     final count = mounted.length;
-    expect(mounted.add(AppTab.audiobook), isFalse);
+    expect(mounted.add(AppTab.recommend), isFalse);
     expect(mounted.length, count);
-    expect(mounted.contains(AppTab.audiobook), isTrue);
+    expect(mounted.contains(AppTab.recommend), isTrue);
   });
 
-  testWidgets('未访问听书时，追剧 / 历史 / 我的各自显示自己的页面', (
+  testWidgets('未访问推荐时，追剧 / 历史 / 我的各自显示自己的页面', (
     tester,
   ) async {
     await pumpShell(tester);
-    // 回归前提：听书从未被切过去，IndexedStack 的 children 少一个。
-    expect(initialMountedTabs().contains(AppTab.audiobook), isFalse);
+    // 回归前提：推荐从未被切过去，IndexedStack 的 children 少一个。
+    expect(initialMountedTabs().contains(AppTab.recommend), isFalse);
 
     // IndexedStack 只把 index 指向的 child 标为 onstage，其余 child 被 Finder
     // 跳过。因此「能找到该页面」等价于「index 没有错位、也没有越界空白」。

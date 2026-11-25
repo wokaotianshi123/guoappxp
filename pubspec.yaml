@@ -45,6 +45,9 @@ dependencies:
   # 沙箱里的 fetch 宿主用 Dart 发请求（QuickJS 不自带 XHR），与站源模块
   # 共用同一套 UA / 超时策略。
   http: ^1.6.0
+  # JS 沙箱导出 / 导入脚本源 zip。本就在 file_picker 的依赖树里，
+  # 这里显式声明只是为了能直接引用，不会引入新的原生插件。
+  archive: ^4.7.1
 
 dev_dependencies:
   flutter_test:

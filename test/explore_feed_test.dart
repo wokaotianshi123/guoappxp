@@ -81,10 +81,11 @@ void main() {
     explore.select('short_play');
     await pumpEventQueue();
     await explore.refresh();
-    expect(repository.catalogRequests, [
-      'hongguo|short_play||1',
-      'hongguo|short_play||1!',
-    ]);
+    // 预取相邻 tab（「全部」）会额外发非强制请求；这里只断言强制刷新落在当前 tab。
+    expect(
+      repository.catalogRequests.where((request) => request.endsWith('!')).toList(),
+      ['hongguo|short_play||1!'],
+    );
   });
 
   test('ranking boards of this source follow all, with their ranks', () async {

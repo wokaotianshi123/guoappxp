@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 import 'dart:typed_data';
 
+import 'package:archive/archive.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path/path.dart' as p;
 import 'package:path_provider/path_provider.dart';
@@ -339,6 +340,177 @@ class JsSourceService extends ChangeNotifier {
     await _preferences?.remove(_activeSourceKey);
     _changed();
   });
+
+  // ------------------------------------------------------------ 打包 / 订阅
+
+  /// 把选中的脚本源打成一个 zip（每源一个 `.js`）。
+  ///
+  /// [ids] 为空表示导出全部。与模块导出同一套用法：zip 里直接是脚本文件，
+  /// 重新导入时按每个文件的 meta 还原，不需要额外的清单。
+  Uint8List exportZip({List<String> ids = const []}) {
+    final wanted = ids.isEmpty ? null : ids.toSet();
+    final archive = Archive();
+    for (final source in _sources) {
+      if (wanted != null && !wanted.contains(source.id)) continue;
+      final script = _scripts[source.id];
+      if (script == null) continue;
+      final name = source.fileName.isNotEmpty
+          ? source.fileName
+          : '${source.id}.js';
+      archive.add(ArchiveFile.string(name, script));
+    }
+    if (archive.isEmpty) throw StateError('没有可导出的脚本源');
+    return ZipEncoder().encodeBytes(archive);
+  }
+
+  /// 从 zip 导入脚本源：包内每个 `.js` 按 meta 安装，非 js 条目忽略。
+  ///
+  /// 返回成功导入的源名与失败原因，界面据此汇总提示。
+  Future<JsZipImportResult> importZip(Uint8List bytes) async {
+    final Archive archive;
+    try {
+      archive = ZipDecoder().decodeBytes(bytes);
+    } catch (error) {
+      return JsZipImportResult.failed('不是有效的 zip：$error');
+    }
+    final imported = <JsSourceMeta>[];
+    final failed = <String>[];
+    for (final file in archive) {
+      if (!file.isFile) continue;
+      final name = p.basename(file.name);
+      if (!name.toLowerCase().endsWith('.js')) continue;
+      String script;
+      try {
+        script = normalizeJsScript(utf8.decode(file.content));
+      } catch (_) {
+        failed.add('$name（无法读取）');
+        continue;
+      }
+      final result = await import(script, name);
+      if (result.success) {
+        imported.add(result.meta!);
+      } else {
+        failed.add('$name（${result.error}）');
+      }
+    }
+    return JsZipImportResult(imported: imported, failed: failed);
+  }
+
+  /// 从订阅地址导入。
+  ///
+  /// 订阅就是一个远程 JSON，里面列出若干脚本源的名称与地址，形如
+  /// `{"sources":[{"name":"…","url":"…"}]}`；也接受裸数组、以及
+  /// `{"url":"…"}` 这种单个脚本的写法。解析后逐个下载安装。
+  Future<JsSubscriptionResult> importSubscription(String url) async {
+    final Uint8List bytes;
+    try {
+      bytes = await _download(url.trim(), 2 * 1024 * 1024);
+    } on Exception catch (error) {
+      return JsSubscriptionResult.failed('订阅拉取失败：$error');
+    }
+    final text = utf8.decode(bytes, allowMalformed: true);
+    final entries = parseJsSubscription(text);
+    if (entries.isEmpty) {
+      // 不是订阅，而是一个脚本直链：按普通网址导入处理。
+      final single = await importFromUrl(url);
+      if (single.success) {
+        return JsSubscriptionResult(imported: [single.meta!], failed: const []);
+      }
+      return JsSubscriptionResult.failed(
+        '既不是订阅 JSON，也不是可导入的脚本：${single.error}',
+      );
+    }
+    final imported = <JsSourceMeta>[];
+    final failed = <String>[];
+    for (final entry in entries) {
+      final result = await importFromUrl(entry.url);
+      if (result.success) {
+        imported.add(result.meta!);
+      } else {
+        failed.add('${entry.name}（${result.error}）');
+      }
+    }
+    return JsSubscriptionResult(imported: imported, failed: failed);
+  }
+
+  /// 解析订阅 JSON，取出「名称 + 脚本地址」列表。
+  ///
+  /// 兼容几种常见写法：`{"sources":[…]}`、裸数组、以及脚本名作 key 的映射。
+  static List<JsSubscriptionEntry> parseJsSubscription(String text) {
+    Object? decoded;
+    try {
+      decoded = jsonDecode(text);
+    } catch (_) {
+      return const [];
+    }
+    final rows = <Object?>[];
+    if (decoded is List) {
+      rows.addAll(decoded);
+    } else if (decoded is Map) {
+      for (final key in const ['sources', 'js', 'scripts', 'list', 'data']) {
+        final value = decoded[key];
+        if (value is List) {
+          rows.addAll(value);
+          break;
+        }
+      }
+      if (rows.isEmpty) {
+        // 映射写法：{ "源名": "https://…/a.js" }
+        for (final entry in decoded.entries) {
+          if (entry.value is String) {
+            rows.add({'name': '${entry.key}', 'url': entry.value});
+          }
+        }
+      }
+    }
+    final entries = <JsSubscriptionEntry>[];
+    for (final row in rows) {
+      if (row is String && row.trim().startsWith('http')) {
+        entries.add(JsSubscriptionEntry('', row.trim()));
+        continue;
+      }
+      if (row is! Map) continue;
+      final url =
+          (row['url'] ?? row['address'] ?? row['src'] ?? row['path'] ?? '')
+              .toString()
+              .trim();
+      if (!url.startsWith('http')) continue;
+      final name = (row['name'] ?? row['title'] ?? '').toString().trim();
+      entries.add(JsSubscriptionEntry(name, url));
+    }
+    return entries;
+  }
+
+  /// 统一下载：限制大小，避免订阅里塞进一个超大文件。
+  Future<Uint8List> _download(String url, int limit) async {
+    final uri = Uri.parse(url);
+    if (!{'http', 'https'}.contains(uri.scheme) ||
+        uri.host.isEmpty ||
+        uri.userInfo.isNotEmpty) {
+      throw const FormatException('只支持 http / https 地址');
+    }
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 15);
+    try {
+      final request = await client.getUrl(uri);
+      request.headers.set('User-Agent', 'Mozilla/5.0 (guoapp js sandbox)');
+      final response = await request.close().timeout(
+        const Duration(seconds: 15),
+      );
+      if (response.statusCode < 200 || response.statusCode >= 300) {
+        throw HttpException('HTTP ${response.statusCode}', uri: uri);
+      }
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(const Duration(seconds: 15))) {
+        if (bytes.length + chunk.length > limit) {
+          throw const FormatException('文件过大');
+        }
+        bytes.add(chunk);
+      }
+      return bytes.takeBytes();
+    } finally {
+      client.close(force: true);
+    }
+  }
 
   @override
   void dispose() {

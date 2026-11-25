@@ -10,6 +10,7 @@ import '../../local_store.dart';
 import '../../models.dart';
 import '../app_scope.dart';
 import '../../live/live_page.dart';
+import '../audiobook/audiobook_page.dart';
 import '../detail/detail_page.dart';
 import '../downloads/downloads_page.dart';
 import '../history/history_page.dart';
@@ -69,9 +70,6 @@ class MinePage extends StatelessWidget {
     ),
   );
 
-  Widget _userCard(BuildContext context) =>
-      _UserCard(store: store, onTap: () => openUsers(context, store));
-
   /// 自定义模块入口：站源模块的安装、更新、导出与在线仓库。模块曾经藏在
   /// 「站源 › 模块」里面，改成和 下载 / 直播 / 设置 平级的独立入口，
   /// 模块页不再套在站源页的页签里（issue #7）。
@@ -88,6 +86,16 @@ class MinePage extends StatelessWidget {
   void _openJsSandbox(BuildContext context) =>
       openPage<void>(context, (_) => JsSandboxPage(store: store));
 
+  /// 听书：找书 / 书架 / 历史。原来是底部一级标签，现在收进「我的」，
+  /// 功能不变，只是不再常驻首屏。
+  void _openAudiobook(BuildContext context) => openPage<void>(
+    context,
+    (_) => AudiobookPage(
+      repository: AppScope.of(context).repository,
+      store: store,
+    ),
+  );
+
   /// 网盘与订阅：夸克扫码登录、分享直解，以及饭太硬 / TVBox 订阅。
   void _openNetdisk(BuildContext context) =>
       openPage<void>(context, (_) => NetdiskPage(store: store));
@@ -98,45 +106,56 @@ class MinePage extends StatelessWidget {
   Widget _entries(BuildContext context) => Column(
     crossAxisAlignment: CrossAxisAlignment.stretch,
     spacing: 12,
-    children: [
-      if (store.canDownload)
-        _Entry(
-          icon: Icons.download_rounded,
-          title: '下载',
-          onTap: () => _openDownloads(context),
-        ),
-      _Entry(
-        icon: Icons.live_tv_rounded,
-        title: '直播',
-        onTap: () => unawaited(openLive(context, store: store)),
-      ),
-      _Entry(
-        icon: Icons.extension_outlined,
-        title: '自定义模块',
-        onTap: () => _openModules(context),
-      ),
-      _Entry(
-        icon: Icons.dns_outlined,
-        title: '自定义XBPQ',
-        onTap: () => _openSources(context),
-      ),
-      _Entry(
-        icon: Icons.javascript_rounded,
-        title: 'JS 沙箱',
-        onTap: () => _openJsSandbox(context),
-      ),
-      _Entry(
-        icon: Icons.cloud_outlined,
-        title: '网盘与订阅',
-        onTap: () => _openNetdisk(context),
-      ),
-      _Entry(
-        icon: Icons.settings_outlined,
-        title: '设置',
-        onTap: () => _openSettings(context),
-      ),
-    ],
+    children: _entryWidgets(context),
   );
+
+  /// 「我的」里的入口，顺序即用户看到的自上而下顺序。
+  ///
+  /// 「最近观看」由页面上方的海报区承担（标题右侧「全部」进完整记录），
+  /// 所以这里从「直播」开始，避免出现两个同名入口。
+  List<Widget> _entryWidgets(BuildContext context) => [
+    _Entry(
+      icon: Icons.live_tv_rounded,
+      title: '直播',
+      onTap: () => unawaited(openLive(context, store: store)),
+    ),
+    _Entry(
+      icon: Icons.headphones_rounded,
+      title: '听书',
+      onTap: () => _openAudiobook(context),
+    ),
+    _Entry(
+      icon: Icons.extension_outlined,
+      title: '自定义模块',
+      onTap: () => _openModules(context),
+    ),
+    _Entry(
+      icon: Icons.dns_outlined,
+      title: '自定义XBPQ',
+      onTap: () => _openSources(context),
+    ),
+    _Entry(
+      icon: Icons.javascript_rounded,
+      title: 'JS 沙箱',
+      onTap: () => _openJsSandbox(context),
+    ),
+    _Entry(
+      icon: Icons.cloud_outlined,
+      title: '网盘与订阅',
+      onTap: () => _openNetdisk(context),
+    ),
+    if (store.canDownload)
+      _Entry(
+        icon: Icons.download_rounded,
+        title: '下载',
+        onTap: () => _openDownloads(context),
+      ),
+    _Entry(
+      icon: Icons.settings_outlined,
+      title: '设置',
+      onTap: () => _openSettings(context),
+    ),
+  ];
 
   Widget _poster(
     BuildContext context,
@@ -169,10 +188,6 @@ class MinePage extends StatelessWidget {
       padding: const EdgeInsets.only(bottom: 24),
       children: [
         const PageHeader(title: '我的'),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: _userCard(context),
-        ),
         SectionHeader(
           title: '最近观看',
           action: '全部',
@@ -207,21 +222,9 @@ class MinePage extends StatelessWidget {
 
   Widget _wide(BuildContext context) {
     final desktop = AppScope.formFactorOf(context) == FormFactor.window;
-    final side = desktop ? 360.0 : 340.0;
-    final gap = desktop ? 32.0 : 28.0;
-    const sectionPadding = EdgeInsets.fromLTRB(4, 12, 0, 0);
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth - 48;
-        final split = width >= side + gap + 400;
-        final summary = Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            _userCard(context),
-            const SizedBox(height: 16),
-            _entries(context),
-          ],
-        );
         final recent = Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
@@ -229,14 +232,10 @@ class MinePage extends StatelessWidget {
               title: '最近观看',
               action: '全部',
               onAction: () => _openHistory(context),
-              padding: split ? const EdgeInsets.only(left: 4) : sectionPadding,
+              padding: const EdgeInsets.only(left: 4),
             ),
             const SizedBox(height: 10),
-            _historyGrid(
-              context,
-              split ? width - side - gap : width,
-              desktop: desktop,
-            ),
+            _historyGrid(context, width, desktop: desktop),
           ],
         );
         return ListView(
@@ -245,21 +244,50 @@ class MinePage extends StatelessWidget {
             const PageHeader(title: '我的'),
             Padding(
               padding: const EdgeInsets.fromLTRB(24, 8, 24, 0),
-              child: split
-                  ? Row(
-                      crossAxisAlignment: CrossAxisAlignment.start,
-                      spacing: gap,
-                      children: [
-                        SizedBox(width: side, child: summary),
-                        Expanded(child: recent),
-                      ],
-                    )
-                  : Column(
-                      crossAxisAlignment: CrossAxisAlignment.stretch,
-                      spacing: 12,
-                      children: [summary, recent],
-                    ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                spacing: 16,
+                children: [
+                  recent,
+                  // 入口固定「最近观看 → 直播 → 听书 → …」的自上而下顺序；
+                  // 宽屏只是把同一份列表排成两列，读序仍是行优先。
+                  _wideEntries(context, width),
+                ],
+              ),
             ),
+          ],
+        );
+      },
+    );
+  }
+
+  /// 宽屏下的入口列表：两列行优先排布，顺序与手机端完全一致。
+  Widget _wideEntries(BuildContext context, double width) {
+    final twoColumn = width >= 720;
+    final entries = _entryWidgets(context);
+    if (!twoColumn) return _entries(context);
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const gap = 12.0;
+        final columnWidth = (constraints.maxWidth - gap) / 2;
+        return Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          spacing: gap,
+          children: [
+            for (var start = 0; start < entries.length; start += 2)
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                spacing: gap,
+                children: [
+                  SizedBox(width: columnWidth, child: entries[start]),
+                  SizedBox(
+                    width: columnWidth,
+                    child: start + 1 < entries.length
+                        ? entries[start + 1]
+                        : const SizedBox.shrink(),
+                  ),
+                ],
+              ),
           ],
         );
       },
@@ -337,21 +365,20 @@ class MinePage extends StatelessWidget {
                   children: [
                     Expanded(
                       child: _TelevisionEntry(
-                        icon: Icons.person_rounded,
+                        icon: Icons.live_tv_rounded,
                         primary: true,
                         focusNode: recent.isEmpty ? entryFocus : null,
-                        title: store.profile.name,
-                        subtitle:
-                            '${store.profile.admin ? '管理员' : '普通用户'} · 切换用户',
-                        onTap: () => openUsers(context, store),
+                        title: '直播',
+                        subtitle: '卫视与直播频道',
+                        onTap: () => unawaited(openLive(context, store: store)),
                       ),
                     ),
                     Expanded(
                       child: _TelevisionEntry(
-                        icon: Icons.live_tv_rounded,
-                        title: '直播',
-                        subtitle: '卫视与直播频道',
-                        onTap: () => unawaited(openLive(context, store: store)),
+                        icon: Icons.headphones_rounded,
+                        title: '听书',
+                        subtitle: '找书、书架与收听历史',
+                        onTap: () => _openAudiobook(context),
                       ),
                     ),
                     Expanded(
@@ -372,12 +399,29 @@ class MinePage extends StatelessWidget {
                     ),
                     Expanded(
                       child: _TelevisionEntry(
+                        icon: Icons.javascript_rounded,
+                        title: 'JS 沙箱',
+                        subtitle: '导入与启用 .js 脚本源',
+                        onTap: () => _openJsSandbox(context),
+                      ),
+                    ),
+                    Expanded(
+                      child: _TelevisionEntry(
                         icon: Icons.cloud_outlined,
                         title: '网盘与订阅',
                         subtitle: '夸克登录、分享直解与 TVBox 订阅',
                         onTap: () => _openNetdisk(context),
                       ),
                     ),
+                    if (store.canDownload)
+                      Expanded(
+                        child: _TelevisionEntry(
+                          icon: Icons.download_rounded,
+                          title: '下载',
+                          subtitle: '缓存、导出与合并',
+                          onTap: () => _openDownloads(context),
+                        ),
+                      ),
                     Expanded(
                       child: _TelevisionEntry(
                         icon: Icons.settings_outlined,
@@ -444,78 +488,6 @@ class MinePage extends StatelessWidget {
             ],
           ),
       ],
-    );
-  }
-}
-
-class _UserCard extends StatelessWidget {
-  const _UserCard({required this.store, required this.onTap});
-  final LocalStore store;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final profile = store.profile;
-    return FocusRing(
-      radius: 20,
-      child: Material(
-        color: colors.surfaceContainer,
-        borderRadius: BorderRadius.circular(20),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: Padding(
-            padding: const EdgeInsets.all(16),
-            child: Row(
-              spacing: 14,
-              children: [
-                Container(
-                  width: 48,
-                  height: 48,
-                  decoration: BoxDecoration(
-                    color: colors.primaryContainer,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.person_rounded,
-                    size: 26,
-                    color: colors.onPrimaryContainer,
-                  ),
-                ),
-                Expanded(
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    spacing: 2,
-                    children: [
-                      Text(
-                        profile.name,
-                        maxLines: 1,
-                        overflow: TextOverflow.ellipsis,
-                        style: const TextStyle(
-                          fontSize: 18,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      Text(
-                        '${profile.admin ? '管理员' : '普通用户'} · 轻点切换用户',
-                        style: TextStyle(
-                          fontSize: 13,
-                          color: colors.onSurfaceVariant,
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                Icon(
-                  Icons.chevron_right_rounded,
-                  color: colors.onSurfaceVariant,
-                ),
-              ],
-            ),
-          ),
-        ),
-      ),
     );
   }
 }

@@ -16,6 +16,7 @@ class _Repository extends FakeRepository {
     Episode episode, {
     int quality = 0,
     bool adBlock = true,
+    int routeIndex = -1,
   }) async => const PlaybackPlan(
     url: 'https://media.test/a.m3u8',
     session: 's1',
