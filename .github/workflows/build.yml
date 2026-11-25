@@ -82,6 +82,10 @@ jobs:
       # 内置站源覆盖全部平台是发布前提：漏一个平台就有一整类安装包没有站源，
       # 因此这一项不设 continue-on-error。
       - run: python scripts/check_bundled_platforms.py
+      # 布局隐患自查：CrossAxisAlignment.stretch 用在无界交叉轴上会让整块
+      # 子树被丢弃（表现为宽屏下某些区块消失）。这类问题只在特定尺寸出现，
+      # 单元测试容易漏，因此单独静态检查。
+      - run: python scripts/audit_stretch.py
 
   prepare:
     runs-on: ubuntu-latest

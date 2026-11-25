@@ -262,6 +262,12 @@ class MinePage extends StatelessWidget {
   }
 
   /// 宽屏下的入口列表：两列行优先排布，顺序与手机端完全一致。
+  ///
+  /// 这里刻意不用 [CrossAxisAlignment.stretch]：`_wide` 的 Column 处在
+  /// ListView 里，垂直方向是无界的，而 Row 的交叉轴正是垂直方向——
+  /// stretch 会要求子项高度等于 infinity，直接触发布局断言失败，
+  /// 表现为「我的」页只剩最近观看、入口全部消失。用 start 让每行按
+  /// 卡片自身的固定高度（60）排布即可。
   Widget _wideEntries(BuildContext context, double width) {
     final twoColumn = width >= 720;
     final entries = _entryWidgets(context);
@@ -276,7 +282,7 @@ class MinePage extends StatelessWidget {
           children: [
             for (var start = 0; start < entries.length; start += 2)
               Row(
-                crossAxisAlignment: CrossAxisAlignment.stretch,
+                crossAxisAlignment: CrossAxisAlignment.start,
                 spacing: gap,
                 children: [
                   SizedBox(width: columnWidth, child: entries[start]),

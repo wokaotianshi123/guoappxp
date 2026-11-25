@@ -74,6 +74,38 @@ void main() {
     expect(tops, orderedEquals([...tops]..sort()), reason: '入口顺序不对：$tops');
   });
 
+  // 回归：宽屏（Windows / 平板）曾经因为 Row 用了 CrossAxisAlignment.stretch
+  // 而整块入口消失——那个方向是无界高度，stretch 会要求 infinity 并触发布局
+  // 断言，界面只剩「最近观看」。这里逐个断言入口真的渲染出来了。
+  for (final form in [FormFactor.window, FormFactor.pad]) {
+    testWidgets('${form.name} 宽屏下所有入口都在', (tester) async {
+      tester.view.physicalSize = const Size(1600, 1000);
+      tester.view.devicePixelRatio = 1.0;
+      addTearDown(tester.view.reset);
+
+      await pumpMine(tester, form: form);
+
+      for (final label in expected) {
+        expect(find.text(label), findsWidgets, reason: '宽屏缺少入口：$label');
+      }
+      // 布局能正常完成（没有 overflow / 断言）才会走到这里。
+      expect(tester.takeException(), isNull);
+    });
+  }
+
+  testWidgets('窄窗口退化为单列，入口仍然齐全', (tester) async {
+    tester.view.physicalSize = const Size(700, 1000);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    await pumpMine(tester, form: FormFactor.window);
+
+    for (final label in expected) {
+      expect(find.text(label), findsWidgets, reason: '窄窗口缺少入口：$label');
+    }
+    expect(tester.takeException(), isNull);
+  });
+
   testWidgets('不再显示「管理员」标识', (tester) async {
     await pumpMine(tester, form: FormFactor.phone);
     expect(find.textContaining('管理员'), findsNothing);
