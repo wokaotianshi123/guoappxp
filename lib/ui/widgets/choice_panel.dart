@@ -170,51 +170,53 @@ class _ChoicePanel<T> extends StatelessWidget {
     final colors = Theme.of(context).colorScheme;
     final television = form == FormFactor.television;
     final spacing = television ? 12.0 : 8.0;
-    final header = Row(
+    final titleBlock = Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: (television ? text.headlineSmall : text.titleLarge)
-                    ?.copyWith(
-                      fontWeight: FontWeight.w700,
-                      fontSize: television || form == FormFactor.phone
-                          ? null
-                          : 17,
-                    ),
-              ),
-              Text(
-                '${_total()} 个',
-                style: (television ? text.bodyMedium : text.bodySmall)
-                    ?.copyWith(color: colors.onSurfaceVariant),
-              ),
-            ],
+        Text(
+          title,
+          style: (television ? text.headlineSmall : text.titleLarge)?.copyWith(
+            fontWeight: FontWeight.w700,
+            fontSize: television || form == FormFactor.phone ? null : 17,
           ),
         ),
-        // 附加操作放在右上角（原来在面板底部，手机上正好压在系统返回手势 /
-        // 导航条上方，容易误触），手机只显示图标，其余形态带上文字。
-        // 可以并排多个：站源面板同时给「管理模块项」和「管理XBPQ」。
-        // 电视端用 ExcludeFocusTraversal 把按钮排除在方向键遍历之外：按钮在
-        // 面板顶部，网格在下方，几何遍历下「上」从网格第一行会直接跳到按钮，
-        // 光标容易从站源串到管理项。这些按钮是便捷入口，电视端可从「我的 ›
-        // 自定义模块」进入，不参与网格内的方向键导航。
-        for (final action in actions)
-          television
-              ? ExcludeFocusTraversal(
-                  child: _actionRing(context, action),
-                )
-              : _actionRing(context, action),
-        if (form == FormFactor.phone)
-          IconButton(
-            tooltip: '关闭',
-            onPressed: () => Navigator.pop(context),
-            icon: const Icon(Icons.close_rounded),
+        Text(
+          '${_total()} 个',
+          style: (television ? text.bodyMedium : text.bodySmall)?.copyWith(
+            color: colors.onSurfaceVariant,
           ),
+        ),
       ],
     );
+    // 附加操作：手机只显示图标，其余形态带上文字。
+    // 电视和桌面把按钮放到第二行，标题与数量独占第一行，避免挤在一起；
+    // 按钮从左到右参与遥控/键盘焦点遍历（第二行 → 下方网格），焦点不丢失。
+    final actionWidgets = [
+      for (final action in actions) _actionRing(context, action),
+    ];
+    final twoRowHeader =
+        form == FormFactor.television || form == FormFactor.window;
+    final Widget header = twoRowHeader
+        ? Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              titleBlock,
+              const SizedBox(height: 10),
+              Wrap(spacing: 8, runSpacing: 8, children: actionWidgets),
+            ],
+          )
+        : Row(
+            children: [
+              Expanded(child: titleBlock),
+              ...actionWidgets,
+              if (form == FormFactor.phone)
+                IconButton(
+                  tooltip: '关闭',
+                  onPressed: () => Navigator.pop(context),
+                  icon: const Icon(Icons.close_rounded),
+                ),
+            ],
+          );
     return Padding(
       padding: switch (form) {
         FormFactor.phone => const EdgeInsets.fromLTRB(16, 0, 4, 20),
