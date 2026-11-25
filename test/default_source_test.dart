@@ -5,9 +5,8 @@ import 'support/fakes.dart';
 
 /// 首页默认源：JS 沙箱的官方免费短剧（`js:hongguo`）。
 ///
-/// 它与模块红果是同一套内容，但脚本在端侧跑，不依赖商店模块是否安装。
-/// 这些断言锁住三件事：默认落在脚本源、老用户从模块红果一次性迁移、
-/// 用户自己选过的源不被覆盖。
+/// 模块红果（`hongguo`）与它内容同源，但对用户是两个独立站源：默认值只在
+/// 「还没选过」时生效，一旦选了其中任何一个就停在那个上，绝不互相顶替。
 void main() {
   const jsOfficial = 'js:hongguo';
 
@@ -40,37 +39,27 @@ void main() {
     expect(store.source, hongguoSourceId);
   });
 
-  test('老用户存的是模块红果时自动升到脚本版', () async {
+  test('选了模块红果就停在模块红果，不被改写成脚本源', () async {
     installJsOfficial();
     final store = await openStore();
-    await store.setSource(hongguoSourceId);
-    expect(store.source, jsOfficial);
+    expect(store.sources.map((site) => site.id), contains(hongguoSourceId));
 
-    // 读取时已自动升级；启动流程里的显式迁移把持久化值也改掉，且只写一次。
-    expect(await store.adoptJsDefaultSource(), isTrue);
-    expect(await store.adoptJsDefaultSource(), isFalse);
+    await store.setSource(hongguoSourceId);
+    expect(store.source, hongguoSourceId);
+
+    // 再选回脚本源也要停在脚本源，两边互不影响。
+    await store.setSource(jsOfficial);
     expect(store.source, jsOfficial);
   });
 
   test('用户自己选过别的源时保持原选择', () async {
     installJsOfficial();
     final store = await openStore();
-    // 排除模块红果：它属于「老默认值」，本就该被迁移，不算用户主动选择。
     final other = store.sources.firstWhere(
       (site) => site.id != jsOfficial && site.id != hongguoSourceId,
     );
     await store.setSource(other.id);
-
-    expect(await store.adoptJsDefaultSource(), isFalse);
     expect(store.source, other.id);
-  });
-
-  test('迁移只写一次：已经指向脚本源时不再写盘', () async {
-    installJsOfficial();
-    final store = await openStore();
-    await store.setSource(jsOfficial);
-    expect(await store.adoptJsDefaultSource(), isFalse);
-    expect(store.source, jsOfficial);
   });
 
   test('脚本源被关掉时默认源退回模块红果', () async {

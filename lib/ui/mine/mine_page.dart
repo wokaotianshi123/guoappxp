@@ -7,23 +7,18 @@ import '../../download_converter.dart';
 import '../../merge_queue.dart';
 import '../../download_overview.dart';
 import '../../local_store.dart';
-import '../../models.dart';
 import '../app_scope.dart';
 import '../../live/live_page.dart';
 import '../audiobook/audiobook_page.dart';
-import '../detail/detail_page.dart';
 import '../downloads/downloads_page.dart';
-import '../history/history_page.dart';
 import '../modules/modules_page.dart';
 import '../netdisk/netdisk_page.dart';
 import '../settings/js_sandbox_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../settings/settings_page.dart';
-import '../widgets/drama_tile.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/page_header.dart';
-import '../widgets/group_card.dart';
 
 class MinePage extends StatelessWidget {
   const MinePage({
@@ -56,9 +51,6 @@ class MinePage extends StatelessWidget {
       ),
     ),
   );
-
-  void _openHistory(BuildContext context) =>
-      openPage<void>(context, (_) => HistoryPage(store: store));
 
   void _openDownloads(BuildContext context) => openPage<void>(
     context,
@@ -157,87 +149,21 @@ class MinePage extends StatelessWidget {
     ),
   ];
 
-  Widget _poster(
-    BuildContext context,
-    WatchEntry entry,
-    double width, {
-    FocusNode? focusNode,
-  }) {
-    final drama = entry.drama;
-    final total = drama.episodes;
-    return ProgressPoster(
-      drama: drama,
-      width: width,
-      focusNode: focusNode,
-      progress: total > 0 ? entry.episode / total : 0,
-      caption: total > 0 && entry.episode >= total && entry.finished
-          ? '已看完'
-          : '看到第 ${entry.episode} 集',
-      tag: SourceSite.byId(drama.source).name,
-      onTap: () => openPage<void>(
-        context,
-        (_) => DetailPage(store: store, drama: drama),
+  Widget _phone(BuildContext context) => ListView(
+    padding: const EdgeInsets.only(bottom: 24),
+    children: [
+      const PageHeader(title: '我的'),
+      Padding(
+        padding: const EdgeInsets.fromLTRB(16, 8, 16, 0),
+        child: _entries(context),
       ),
-    );
-  }
-
-  Widget _phone(BuildContext context) {
-    const width = 100.0;
-    final history = store.history.take(20).toList();
-    return ListView(
-      padding: const EdgeInsets.only(bottom: 24),
-      children: [
-        const PageHeader(title: '我的'),
-        SectionHeader(
-          title: '最近观看',
-          action: '全部',
-          onAction: () => _openHistory(context),
-        ),
-        const SizedBox(height: 6),
-        if (history.isEmpty)
-          const Padding(
-            padding: EdgeInsets.symmetric(horizontal: 16),
-            child: _EmptyHistory(height: 150),
-          )
-        else
-          SizedBox(
-            height: ProgressPoster.extentFor(context, width),
-            child: ListView.separated(
-              scrollDirection: Axis.horizontal,
-              padding: const EdgeInsets.symmetric(horizontal: 16),
-              itemCount: history.length,
-              separatorBuilder: (_, _) => const SizedBox(width: 10),
-              itemBuilder: (context, index) =>
-                  _poster(context, history[index], width),
-            ),
-          ),
-        const SizedBox(height: 16),
-        Padding(
-          padding: const EdgeInsets.symmetric(horizontal: 16),
-          child: _entries(context),
-        ),
-      ],
-    );
-  }
+    ],
+  );
 
   Widget _wide(BuildContext context) {
-    final desktop = AppScope.formFactorOf(context) == FormFactor.window;
     return LayoutBuilder(
       builder: (context, constraints) {
         final width = constraints.maxWidth - 48;
-        final recent = Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            SectionHeader(
-              title: '最近观看',
-              action: '全部',
-              onAction: () => _openHistory(context),
-              padding: const EdgeInsets.only(left: 4),
-            ),
-            const SizedBox(height: 10),
-            _historyGrid(context, width, desktop: desktop),
-          ],
-        );
         return ListView(
           padding: const EdgeInsets.only(bottom: 32),
           children: [
@@ -248,9 +174,7 @@ class MinePage extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.stretch,
                 spacing: 16,
                 children: [
-                  recent,
-                  // 入口固定「最近观看 → 直播 → 听书 → …」的自上而下顺序；
-                  // 宽屏只是把同一份列表排成两列，读序仍是行优先。
+                  // 宽屏只是把同一份入口列表排成两列，读序仍是行优先。
                   _wideEntries(context, width),
                 ],
               ),
@@ -301,21 +225,14 @@ class MinePage extends StatelessWidget {
   }
 
   Widget _television(BuildContext context) {
-    const columns = 7;
-    const gap = 20.0;
     const padding = EdgeInsets.fromLTRB(
       televisionInset,
       14,
       televisionInset,
       27,
     );
-    final history = store.history;
-    final recent = history.take(columns - 1).toList();
     return LayoutBuilder(
       builder: (context, constraints) {
-        final tile =
-            (constraints.maxWidth - padding.horizontal - gap * (columns - 1)) /
-            columns;
         final page = SingleChildScrollView(
           padding: padding,
           child: ConstrainedBox(
@@ -327,45 +244,6 @@ class MinePage extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               spacing: 22,
               children: [
-                Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  spacing: 14,
-                  children: [
-                    Semantics(
-                      header: true,
-                      child: const Text(
-                        '最近观看',
-                        style: TextStyle(
-                          fontSize: 20,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                    ),
-                    if (recent.isEmpty)
-                      const _EmptyHistory(height: 200)
-                    else
-                      Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        spacing: gap,
-                        children: [
-                          for (final (index, entry) in recent.indexed)
-                            _poster(
-                              context,
-                              entry,
-                              tile,
-                              focusNode: index == 0 ? entryFocus : null,
-                            ),
-                          SizedBox(
-                            width: tile,
-                            child: _AllHistoryTile(
-                              count: history.length,
-                              onTap: () => _openHistory(context),
-                            ),
-                          ),
-                        ],
-                      ),
-                  ],
-                ),
                 Row(
                   spacing: 20,
                   children: [
@@ -373,7 +251,7 @@ class MinePage extends StatelessWidget {
                       child: _TelevisionEntry(
                         icon: Icons.live_tv_rounded,
                         primary: true,
-                        focusNode: recent.isEmpty ? entryFocus : null,
+                        focusNode: entryFocus,
                         title: '直播',
                         subtitle: '卫视与直播频道',
                         onTap: () => unawaited(openLive(context, store: store)),
@@ -462,40 +340,6 @@ class MinePage extends StatelessWidget {
     );
   }
 
-  Widget _historyGrid(
-    BuildContext context,
-    double width, {
-    required bool desktop,
-  }) {
-    final minimum = desktop ? 140.0 : 120.0;
-    final columnGap = desktop ? 18.0 : 16.0;
-    final rowGap = desktop ? 22.0 : 20.0;
-    final columns = ((width + columnGap) / (minimum + columnGap)).floor().clamp(
-      1,
-      99,
-    );
-    final tile = (width - columnGap * (columns - 1)) / columns;
-    final history = store.history.take(columns * 2).toList();
-    if (history.isEmpty) return const _EmptyHistory(height: 240);
-    return Column(
-      spacing: rowGap,
-      children: [
-        for (var start = 0; start < history.length; start += columns)
-          Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            spacing: columnGap,
-            children: [
-              for (var index = start; index < start + columns; index++)
-                Expanded(
-                  child: index < history.length
-                      ? _poster(context, history[index], tile)
-                      : const SizedBox.shrink(),
-                ),
-            ],
-          ),
-      ],
-    );
-  }
 }
 
 class _Entry extends StatelessWidget {
@@ -538,61 +382,6 @@ class _Entry extends StatelessWidget {
                   ),
                 ],
               ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _AllHistoryTile extends StatelessWidget {
-  const _AllHistoryTile({required this.count, required this.onTap});
-  final int count;
-  final VoidCallback onTap;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return FocusRing(
-      radius: 12,
-      child: Material(
-        color: colors.surfaceContainer,
-        borderRadius: BorderRadius.circular(12),
-        clipBehavior: Clip.antiAlias,
-        child: InkWell(
-          onTap: onTap,
-          child: AspectRatio(
-            aspectRatio: 2 / 3,
-            child: Column(
-              mainAxisAlignment: MainAxisAlignment.center,
-              children: [
-                Container(
-                  width: 44,
-                  height: 44,
-                  decoration: BoxDecoration(
-                    color: colors.secondaryContainer,
-                    shape: BoxShape.circle,
-                  ),
-                  child: Icon(
-                    Icons.chevron_right_rounded,
-                    color: colors.onSecondaryContainer,
-                  ),
-                ),
-                const SizedBox(height: 10),
-                const Text(
-                  '全部',
-                  style: TextStyle(fontSize: 15, fontWeight: FontWeight.w600),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  '$count 部',
-                  style: TextStyle(
-                    fontSize: 13,
-                    color: colors.onSurfaceVariant,
-                  ),
-                ),
-              ],
             ),
           ),
         ),
@@ -692,30 +481,3 @@ class _TelevisionEntry extends StatelessWidget {
   }
 }
 
-class _EmptyHistory extends StatelessWidget {
-  const _EmptyHistory({required this.height});
-  final double height;
-
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return Container(
-      height: height,
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: colors.outlineVariant),
-      ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        spacing: 8,
-        children: [
-          Icon(Icons.history_rounded, size: 32, color: colors.onSurfaceVariant),
-          Text(
-            '还没有观看记录',
-            style: TextStyle(fontSize: 14, color: colors.onSurfaceVariant),
-          ),
-        ],
-      ),
-    );
-  }
-}

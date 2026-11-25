@@ -7,7 +7,7 @@
 const meta = {
   id: "hongguo",
   name: "官方免费短剧",
-  version: "1.1.0-dev.23",
+  version: "1.1.0-dev.24",
   description: "官方首发短剧源，包含海量都市爽文、战神回归、现代甜宠等优质短剧",
   author: "社区开发者",
   type: "video",
@@ -2508,7 +2508,13 @@ spider.danmaku = function (id, startMs, durationMs) {
     if (!cell || !discoveryGenres.every(id => choices.some(item => item.selector_item_id === id && text(item.show_name)))) {
       throw failure('官方找剧分类暂不可用，请重试', 'INVALID_RESPONSE');
     }
-    cachedDiscoveryTab = { cell, choices };
+    // 翻页游标在 tab 上，不在 cell 里：不带 session_id 再翻，接口会把第一屏
+    // 原样返回，表现为「只有十几部、翻不出第二页」。
+    cachedDiscoveryTab = {
+      cell, choices,
+      sessionId: text(tab?.session_id),
+      nextOffset: Math.max(number(tab?.next_offset), videos([cell]).length)
+    };
     cachedDiscoveryTabTime = Date.now();
     return cachedDiscoveryTab;
   }
@@ -2531,7 +2537,7 @@ spider.danmaku = function (id, startMs, durationMs) {
       throw failure('分类已更新，请重新选择分类', 'INVALID_CATEGORY');
     }
     return await paged('discover:' + genre, page, async () => {
-      const { cell, choices } = await discoveryTab();
+      const { cell, choices, sessionId, nextOffset } = await discoveryTab();
       const category = genre === 'all' ? '短剧' : text(choices.find(item => item.selector_item_id === genre).show_name);
       const params = {
         cell_id: text(cell.cell_id_str), tab_type: 8, selected_items: genre,
@@ -2540,7 +2546,11 @@ spider.danmaku = function (id, startMs, durationMs) {
       };
       const minimum = Math.min(24, Math.max(1, number(extend?.initialBatch)));
       if (genre === 'all' && choices.find(item => item.selector_item_id === genre).is_selected) {
-        return { cell, params, category, minimum };
+        return {
+          cell,
+          data: { next_offset: nextOffset, session_id: sessionId, has_more: true },
+          params, category, minimum
+        };
       }
       const response = await api('/reading/bookapi/bookmall/cell/change/v', {
         ...params, unlimited_selector_change_type: 2, change_type: 1, offset: 0, limit: 40

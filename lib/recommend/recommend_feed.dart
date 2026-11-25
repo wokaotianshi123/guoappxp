@@ -3,14 +3,16 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 
 import '../core_bridge.dart';
+import '../js_source/js_source_models.dart';
 import '../local_store.dart';
 import '../models.dart';
 
 /// 推荐流的数据源：上下滑动换一部剧。
 ///
 /// 与「发现」页的分类列表不同，这里一次只放一部剧在屏幕上，靠翻页换剧。
-/// 取流固定走站源的「全部」分类：官方源那边「推荐」是 `tab_type 38` 的信息流，
-/// 而「全部」（`tab_type 8`）才是可无限翻页的主列表，翻到底能一直补页。
+/// 官方 JS 源固定走「全部」分类：脚本里的「推荐」是 `tab_type 38` 的一段信息流，
+/// 「全部」（`tab_type 8`）才是能一直翻下去的主列表。模块 / 内核源保持各自的
+/// 推荐接口，它们的翻页口径是按源单独调好的，换掉反而会取不到流。
 class RecommendFeed extends ChangeNotifier {
   RecommendFeed(this.repository, this.store) {
     store.addListener(_storeChanged);
@@ -156,9 +158,15 @@ class RecommendFeed extends ChangeNotifier {
     }
   }
 
-  /// 推荐流固定取站源「全部」分类，空分类 id 在每种源上都代表「全部」。
-  Future<CatalogPage> _load(String source, int page) =>
-      repository.catalog(source, category: '', page: page);
+  Future<CatalogPage> _load(String source, int page) {
+    if (!isJsSourceId(source) && SourceSite.byId(source).recommends) {
+      return repository.recommendations(source, _genre, more: page > 1);
+    }
+    return repository.catalog(source, category: '', page: page);
+  }
+
+  /// 非 JS 源的推荐接口题材参数：沿用「发现」页推荐 tab 的口径。
+  static const _genre = 'find_drama';
 
   List<Drama> _unique(Iterable<Drama> values) {
     final seen = <String>{};
@@ -172,6 +180,8 @@ class RecommendFeed extends ChangeNotifier {
     if (_disposed || value < 0 || value >= _items.length) return;
     if (value == _index) return;
     _index = value;
+    // 上一轮失败（比如起播时把请求连带取消了）不该挡住这次重新拉取。
+    _detailErrors.remove(_items[value].id);
     _notify();
     // 当前这部与下一部都提前把详情拉好，滑过去就能直接起播。
     unawaited(loadDetail(_items[value]));

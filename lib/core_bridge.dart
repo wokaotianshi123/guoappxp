@@ -1676,7 +1676,7 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<void> cancelPlayback() async {
-    jsSandbox?.cancelAll();
+    jsSandbox?.cancelPlayback();
     await _call({'action': 'cancelPlayback', 'sequence': ++_playbackSequence});
   }
 

@@ -9,8 +9,9 @@ import 'package:flutter_test/flutter_test.dart';
 import 'support/fakes.dart';
 
 /// 「我的」页的入口顺序与管理员标识是这次改动的核心诉求：
-/// 自上而下必须是 最近观看 → 直播 → 听书 → 自定义模块 → 自定义XBPQ →
+/// 自上而下必须是 直播 → 听书 → 自定义模块 → 自定义XBPQ →
 /// JS 沙箱 → 网盘与订阅 → 下载 → 设置，且不再出现「管理员」字样。
+/// 最近观看已经并进追剧页，这里不再有海报区。
 void main() {
   Future<void> pumpMine(WidgetTester tester, {required FormFactor form}) async {
     final store = await openStore();
@@ -46,7 +47,6 @@ void main() {
   }
 
   const expected = [
-    '最近观看',
     '直播',
     '听书',
     '自定义模块',
@@ -63,7 +63,7 @@ void main() {
     for (final label in expected) {
       expect(find.text(label), findsWidgets, reason: '缺少入口：$label');
     }
-    // 「最近观看」是上方海报区的小标题，其余是入口卡片；用纵坐标验证真实顺序。
+    // 用纵坐标验证入口卡片的真实顺序。
     double topOf(String label) {
       final box =
           find.text(label).evaluate().first.renderObject as RenderBox;
@@ -76,7 +76,7 @@ void main() {
 
   // 回归：宽屏（Windows / 平板）曾经因为 Row 用了 CrossAxisAlignment.stretch
   // 而整块入口消失——那个方向是无界高度，stretch 会要求 infinity 并触发布局
-  // 断言，界面只剩「最近观看」。这里逐个断言入口真的渲染出来了。
+  // 断言，整页入口全空。这里逐个断言入口真的渲染出来了。
   for (final form in [FormFactor.window, FormFactor.pad]) {
     testWidgets('${form.name} 宽屏下所有入口都在', (tester) async {
       tester.view.physicalSize = const Size(1600, 1000);

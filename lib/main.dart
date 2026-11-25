@@ -145,9 +145,6 @@ class _AppBootstrapState extends State<AppBootstrap>
         final jsService = JsSourceService();
         await JsSourceGateway.instance.attach(jsService);
         JsSourceService.current ??= jsService;
-        // 官方免费短剧是内置主源，首页默认用它。老用户之前存的是模块红果，
-        // 这里一次性升到脚本版；用户自己选过别的源则保持不变。
-        await local.adoptJsDefaultSource();
       } catch (error) {
         DiaryService.add('[JS] 沙箱初始化失败：$error');
       }

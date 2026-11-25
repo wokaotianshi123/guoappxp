@@ -136,6 +136,10 @@ class JsSourceGateway {
     _pool.cancelPending(sourceId: jsSourceScriptId(source), scope: scope);
   }
 
+  /// 只掐播放线路的请求。以前取消播放会把目录 / 详情一起取消，推荐流里
+  /// 一边起播一边拉详情就会互相踩，表现为「播放请求已取消」。
+  void cancelPlayback() => _pool.cancelPending(scope: 'playback');
+
   void cancelAll() => _pool.cancelPending();
 
   // ---------------------------------------------------------------- 目录
