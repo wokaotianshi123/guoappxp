@@ -36,36 +36,57 @@ App Store Connect 上，而 App Store Connect 要求有效付费会员。
 | 14.0 beta 2 – 16.6.1 | TrollStore（永久） |
 | 16.7 RC（build 20H18） | TrollStore（永久） |
 | 17.0 | TrollStore（永久） |
-| 16.7.x（非 RC）、17.0.1 及以上 | 只能用 Sideloadly（7 天） |
+| 16.7.x（非 RC）、17.0.1 及以上 | 只能用自签工具（7 天续签） |
 
 TrollStore 的支持范围由官方 README 定死：16.7.x（除 RC）与 17.0.1 以上
 **永远不会支持**，因为依赖的 CoreTrust 漏洞已被 Apple 修补，不存在替代方案。
+网上流传的「iOS 18 / iOS 26 版 TrollStore」都是引流帖，不要安装。
 
-### 2.2 TrollStore（推荐，永久有效）
+### 2.2 iOS 17.0.1 及以上：SideStore（推荐）
 
-1. 先按 ios.cfw.guide 的对应机型教程装好 TrollStore；
-2. 把 `*-ios-unsigned.ipa` 传到手机「文件」；
-3. 在「文件」里点该 IPA → 分享 → 用 TrollStore 打开，或直接在
-   TrollStore 里点 `+` 选择文件；
-4. 安装完成，重启设备也不会掉。
+以 iPhone 12 Pro + iOS 18.7.7 为例，这个组合**用不了 TrollStore**，
+推荐 **SideStore**——它是 AltStore 的分支，最大优势是
+**装好之后在手机上自己续签，不用每次连电脑**。
 
-注意：装好后**不要升级 iOS**，跨大版本升级会让 TrollStore 失效。
+1. 电脑装 **iloader**（Windows / macOS / Linux 均可），手机 USB 连电脑并信任；
+2. 在 iloader 里登录自己的 Apple ID，选「Install SideStore」；
+3. 手机上：设置 → 通用 → VPN 与设备管理 → 信任该开发者证书；
+4. 手机上：设置 → 隐私与安全性 → **开发者模式** → 打开并重启；
+5. 打开 App Store 装 **LocalDevVPN**，连上它；
+6. 打开 SideStore 登录 Apple ID，把 `guoapp-*-ios-unsigned.ipa` 导入安装；
+7. 之后每隔 7 天，在 SideStore 里点一下「7 DAYS」计数器即可续签。
 
-### 2.3 Sideloadly（通用，7 天有效）
+免费 Apple ID 的硬限制（任何自签工具都一样）：
 
-1. 电脑装 Sideloadly（Windows / macOS）；
-2. 手机连电脑，把 IPA 拖进 Sideloadly；
-3. 填自己的 Apple ID，点 Start 自签安装；
-4. 7 天后应用打不开，重连电脑再点一次 Start 续签。
+- 应用 **7 天**过期，需续签；
+- 同时最多 **3 个**自签应用（SideStore 自己占 1 个）；
+- 每 7 天最多注册 **10 个 App ID**。
 
-免费 Apple ID 的限制：最多同时 3 个自签应用、7 天到期、需要
-在设置 → 隐私与安全性 里信任开发者证书。
+### 2.3 备用：Sideloadly（最直接）
 
-### 2.4 一个省事的技巧
+如果不想折腾 SideStore 的配对文件与 VPN：
 
-如果频繁续签嫌麻烦，可以用 **LiveContainer**：它让 IPA 跑在自己的容器里，
-只占一个应用位，可以塞进多个应用，缓解免费账号 3 个应用的限制。
-要求 iOS 15 以上，配合 AltStore / SideStore 使用。
+1. 电脑装 Sideloadly；
+2. 手机连电脑，把 IPA 拖进去，填 Apple ID，点 Start；
+3. 7 天后重连电脑再点一次 Start。
+
+勾选 auto-refresh 后，Sideloadly 的守护进程会在检测到设备时自动续签——
+但要求电脑开着且手机可达（同 Wi-Fi 或 USB）。
+
+Sideloadly 官方声明支持 iOS 7 到 iOS 27+，是兼容性最广的选择。
+
+### 2.4 想装多个应用时：LiveContainer
+
+免费账号只能装 3 个应用。**LiveContainer** 是一个「应用容器」，
+里面的应用不占 App ID 名额，可以塞多个。
+
+- 用 **LiveContainer + SideStore** 合体版最省事：两者共占 1 个名额；
+- 要求 iOS 15 以上（多任务需 iOS 16+）；
+- 注意：容器内的应用**不支持小组件、扩展与远程推送**，
+  且不同应用的数据隔离较弱；
+- LiveContainer 官方明确**不支持用 Sideloadly 安装**，要用 iloader / Impactor / SideStore。
+
+对只装小果影视一个应用来说，直接用 SideStore 就够，不需要 LiveContainer。
 
 
 ## 三、付费方案：TestFlight 内部测试
