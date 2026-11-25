@@ -1,5 +1,4 @@
 import 'dart:async';
-import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -9,6 +8,8 @@ import '../../models.dart';
 import '../../recommend/recommend_feed.dart';
 import '../app_scope.dart';
 import '../detail/detail_page.dart';
+import '../player/playback_handle.dart';
+import '../player/playback_page.dart';
 import '../shell/app_shell.dart';
 import '../theme/motion.dart';
 import '../widgets/cover_backdrop.dart';
@@ -18,11 +19,15 @@ import '../widgets/status_view.dart';
 
 const _shade = Color(0xFF161214);
 
-/// 推荐：整屏一部剧，上下滑动换下一部。
+/// 推荐：整屏播放一部剧，上下滑动换下一部。
 ///
-/// 移植自 THLRedGuo 首页的推荐项（竖向 [PageView]），落在「发现」右侧的
-/// 独立标签里。与原版只放官方短剧不同，这里跟着当前站源走：站源支持推荐
-/// 接口就用推荐流，否则退化成该源的「全部」目录。
+/// 与 THLRedGuo 的推荐流（`VideoFeedScreen`）结构一致：
+/// * 每屏给**完整的播放器**（`PlaybackPage`），带进度条、暂停、选集、
+///   倍速、清晰度等全部控件，不是简化版；
+/// * 只有「当前页」真正挂播放器，相邻页只显示封面占位——与 THLRedGuo
+///   的 `_page()` 判断 `index == feed.index` 是同一套做法，避免多个
+///   播放器实例同时抢解码器与画中画状态；
+/// * 滑到倒数第二部就自动补页，推荐条数不设上限。
 class RecommendPage extends StatefulWidget {
   const RecommendPage({super.key, required this.store});
   final LocalStore store;
@@ -36,6 +41,10 @@ class _RecommendPageState extends State<RecommendPage> {
   final _pager = PageController();
   int _pagerIndex = 0;
 
+  /// 当前页的播放句柄。切页时释放旧的、建新的——同一时刻只有一个播放器。
+  PlaybackHandle? _handle;
+  String _handleDrama = '';
+
   @override
   void didChangeDependencies() {
     super.didChangeDependencies();
@@ -43,7 +52,6 @@ class _RecommendPageState extends State<RecommendPage> {
       AppScope.of(context).repository,
       widget.store,
     );
-    // 首帧之后才拉数据：这一页按需挂载，进页面就该开始加载。
     if (!feed.loading && feed.items.isEmpty && feed.error.isEmpty) {
       unawaited(feed.refresh());
     }
@@ -51,9 +59,16 @@ class _RecommendPageState extends State<RecommendPage> {
 
   @override
   void dispose() {
+    _disposeHandle();
     _feed?.dispose();
     _pager.dispose();
     super.dispose();
+  }
+
+  void _disposeHandle() {
+    _handle?.dispose();
+    _handle = null;
+    _handleDrama = '';
   }
 
   void _openDetail(Drama drama) => openPage<void>(
@@ -67,9 +82,9 @@ class _RecommendPageState extends State<RecommendPage> {
     if (target >= feed.items.length) {
       if (!feed.hasMore) return;
       await feed.loadMore();
-      if (!mounted) return;
+      if (!mounted || target >= feed.items.length) return;
     }
-    if (!_pager.hasClients || target >= feed.items.length) return;
+    if (!_pager.hasClients) return;
     await _pager.animateToPage(
       target,
       duration: Motion.of(context, Motion.medium),
@@ -78,6 +93,7 @@ class _RecommendPageState extends State<RecommendPage> {
   }
 
   void _refresh(RecommendFeed feed) {
+    _disposeHandle();
     if (_pager.hasClients) _pager.jumpToPage(0);
     unawaited(feed.refresh());
   }
@@ -91,7 +107,6 @@ class _RecommendPageState extends State<RecommendPage> {
     return ListenableBuilder(
       listenable: feed,
       builder: (context, _) {
-        final television = AppScope.of(context).television;
         final source = widget.store.source;
         final body = switch (feed) {
           _ when source.isEmpty => StatusView(
@@ -109,81 +124,17 @@ class _RecommendPageState extends State<RecommendPage> {
             action: '刷新',
             onAction: () => _refresh(feed),
           ),
-          _ => _pagerView(feed, television),
+          _ => _pagerView(feed),
         };
         return Scaffold(
-          backgroundColor: Colors.transparent,
-          body: SafeArea(
-            bottom: false,
-            child: Stack(
-              children: [
-                Positioned.fill(child: body),
-                if (feed.items.isNotEmpty)
-                  Positioned(
-                    left: 0,
-                    right: 0,
-                    top: 0,
-                    child: _header(feed),
-                  ),
-              ],
-            ),
-          ),
+          backgroundColor: Colors.black,
+          body: SafeArea(bottom: false, child: body),
         );
       },
     );
   }
 
-  Widget _header(RecommendFeed feed) => Padding(
-    padding: const EdgeInsets.fromLTRB(16, 6, 8, 0),
-    child: Row(
-      spacing: 8,
-      children: [
-        const Text(
-          '推荐',
-          style: TextStyle(fontSize: 20, fontWeight: FontWeight.w800),
-        ),
-        Expanded(
-          child: Text(
-            '上滑换剧 · ${feed.index + 1}/${feed.items.length}',
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: TextStyle(
-              fontSize: 12,
-              color: Theme.of(context).colorScheme.onSurfaceVariant,
-            ),
-          ),
-        ),
-        FocusRing(
-          radius: 999,
-          child: IconButton(
-            tooltip: '刷新推荐',
-            onPressed: feed.loading ? null : () => _refresh(feed),
-            icon: const Icon(Icons.refresh_rounded),
-          ),
-        ),
-        FocusRing(
-          radius: 999,
-          child: IconButton(
-            tooltip: '上一部',
-            onPressed: feed.index > 0 ? () => unawaited(_move(feed, -1)) : null,
-            icon: const Icon(Icons.keyboard_arrow_up_rounded),
-          ),
-        ),
-        FocusRing(
-          radius: 999,
-          child: IconButton(
-            tooltip: '下一部',
-            onPressed: feed.hasMore || feed.index < feed.items.length - 1
-                ? () => unawaited(_move(feed, 1))
-                : null,
-            icon: const Icon(Icons.keyboard_arrow_down_rounded),
-          ),
-        ),
-      ],
-    ),
-  );
-
-  Widget _pagerView(RecommendFeed feed, bool television) {
+  Widget _pagerView(RecommendFeed feed) {
     final pages = feed.items;
     if (_pagerIndex != feed.index && _pager.hasClients) {
       _pagerIndex = feed.index;
@@ -201,7 +152,7 @@ class _RecommendPageState extends State<RecommendPage> {
             unawaited(_move(feed, -1)),
       },
       child: Focus(
-        autofocus: television,
+        autofocus: true,
         child: PageView.builder(
           key: ValueKey('recommend-pager-${widget.store.source}'),
           controller: _pager,
@@ -210,174 +161,296 @@ class _RecommendPageState extends State<RecommendPage> {
           onPageChanged: (index) {
             _pagerIndex = index;
             feed.select(index);
+            _disposeHandle();
             if (pages.length - index <= 2) unawaited(feed.loadMore());
           },
-          itemBuilder: (context, index) => _RecommendCard(
-            drama: pages[index],
-            onPlay: () => _openDetail(pages[index]),
-            onDetail: () => _openDetail(pages[index]),
-          ),
+          itemBuilder: (context, index) => _slide(feed, index),
         ),
       ),
     );
   }
-}
 
-/// 单部剧的整屏卡片：模糊封面打底 + 海报 + 标题与简介 + 播放按钮。
-class _RecommendCard extends StatelessWidget {
-  const _RecommendCard({
-    required this.drama,
-    required this.onPlay,
-    required this.onDetail,
-  });
-  final Drama drama;
-  final VoidCallback onPlay;
-  final VoidCallback onDetail;
+  Widget _slide(RecommendFeed feed, int index) {
+    final drama = feed.items[index];
+    final current = index == feed.index;
 
-  @override
-  Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    final meta = [
-      if (drama.category.isNotEmpty) drama.category,
-      if (drama.episodes > 0) '共 ${drama.episodes} 集',
-      if (drama.score.isNotEmpty) '评分 ${drama.score}',
-    ].join(' · ');
-    return LayoutBuilder(
-      builder: (context, constraints) {
-        final phone = AppScope.formFactorOf(context) == FormFactor.phone;
-        final posterHeight = math.min(
-          constraints.maxHeight * (phone ? 0.42 : 0.5),
-          460.0,
-        );
-        final posterWidth = posterHeight * 2 / 3;
-        return Stack(
-          fit: StackFit.expand,
-          children: [
-            ColoredBox(color: _shade),
-            CoverBackdrop(
-              drama: drama,
-              sigma: 44,
-              opacity: 0.7,
-              overlay: LinearGradient(
-                begin: Alignment.topCenter,
-                end: Alignment.bottomCenter,
-                colors: [
-                  _shade.withValues(alpha: 0.85),
-                  _shade.withValues(alpha: 0.62),
-                  _shade.withValues(alpha: 0.95),
-                ],
-              ),
-            ),
-            Padding(
-              padding: EdgeInsets.fromLTRB(20, 64, 20, phone ? 24 : 32),
-              child: Column(
-                mainAxisAlignment: MainAxisAlignment.end,
-                crossAxisAlignment: CrossAxisAlignment.center,
-                children: [
-                  DecoratedBox(
-                    decoration: BoxDecoration(
-                      borderRadius: BorderRadius.circular(16),
-                      boxShadow: const [
-                        BoxShadow(
-                          color: Color(0x73000000),
-                          blurRadius: 28,
-                          offset: Offset(0, 12),
-                        ),
+    // 非当前页：只显示剧名与封面，不建播放器。与 THLRedGuo 一致。
+    if (!current) {
+      return _CoverPlaceholder(drama: drama);
+    }
+
+    final detail = feed.detailOf(drama.id);
+    if (detail == null) {
+      // 详情还没到：先出封面 + 加载态，同时触发拉取。
+      //
+      // 这里必须延到帧后：`loadDetail` 会同步 notifyListeners，
+      // 而当前正在 build（PageView 的 itemBuilder 内），直接调用会触发
+      // 「setState() called during build」。
+      if (!feed.detailLoading(drama.id)) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (!mounted) return;
+          unawaited(feed.loadDetail(drama));
+        });
+      }
+      return _CoverPlaceholder(
+        drama: drama,
+        loading: true,
+        error: feed.detailError(drama.id),
+        onRetry: () => unawaited(feed.loadDetail(drama, force: true)),
+      );
+    }
+
+    // 当前页：完整的播放器。切剧时换一个新句柄。
+    if (_handleDrama != drama.id) {
+      // 建播放器同样不能在 build 里做（会初始化解码器并可能触发通知），
+      // 延到帧后；这一帧先显示封面。
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        if (!mounted) return;
+        if (_handleDrama == drama.id) return;
+        setState(() {
+          _disposeHandle();
+          _handle = PlaybackHandle(
+            repository: AppScope.of(context).repository,
+            store: widget.store,
+            detail: detail,
+            index: _startIndex(feed, drama, detail),
+            position: _startPosition(feed, drama),
+            autoplay: true,
+            preopen: false,
+          );
+          _handleDrama = drama.id;
+        });
+      });
+      return _CoverPlaceholder(drama: drama, loading: true);
+    }
+    final handle = _handle!;
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        PlaybackPage(store: widget.store, handle: handle),
+        // 顶部标题条 + 底部剧名，浮在播放器之上但不挡控件。
+        Positioned(
+          left: 14,
+          right: 14,
+          top: 8,
+          child: IgnorePointer(
+            child: Row(
+              children: [
+                Text(
+                  '推荐',
+                  style: TextStyle(
+                    fontSize: 19,
+                    fontWeight: FontWeight.w800,
+                    color: Colors.white.withValues(alpha: 0.94),
+                    shadows: const [Shadow(blurRadius: 8, color: Colors.black54)],
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: Text(
+                    '上滑换剧 · ${index + 1}/${feed.items.length}',
+                    style: TextStyle(
+                      fontSize: 12,
+                      color: Colors.white.withValues(alpha: 0.72),
+                      shadows: const [
+                        Shadow(blurRadius: 8, color: Colors.black54),
                       ],
                     ),
-                    child: SizedBox(
-                      width: posterWidth,
-                      height: posterHeight,
-                      child: DramaCover(
-                        drama: drama,
-                        radius: 16,
-                        details: false,
-                        exploreBlur: true,
-                      ),
-                    ),
                   ),
-                  const SizedBox(height: 20),
-                  Text(
-                    drama.title,
-                    maxLines: 2,
-                    textAlign: TextAlign.center,
-                    overflow: TextOverflow.ellipsis,
-                    style: const TextStyle(
-                      fontSize: 24,
-                      fontWeight: FontWeight.w800,
-                      color: Colors.white,
-                      height: 1.25,
-                    ),
-                  ),
-                  if (meta.isNotEmpty) ...[
-                    const SizedBox(height: 6),
-                    Text(
-                      meta,
-                      maxLines: 1,
-                      overflow: TextOverflow.ellipsis,
-                      style: TextStyle(
-                        fontSize: 13,
-                        color: Colors.white.withValues(alpha: 0.78),
-                      ),
-                    ),
-                  ],
-                  if (drama.description.isNotEmpty) ...[
-                    const SizedBox(height: 10),
-                    ConstrainedBox(
-                      constraints: const BoxConstraints(maxWidth: 620),
+                ),
+              ],
+            ),
+          ),
+        ),
+        // 右下角：详情与换一批（其余控件播放器自带）。
+        Positioned(
+          right: 10,
+          bottom: 96,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            spacing: 8,
+            children: [
+              _SideButton(
+                icon: Icons.info_outline_rounded,
+                tooltip: '详情与选集',
+                onPressed: () => _openDetail(drama),
+              ),
+              _SideButton(
+                icon: Icons.refresh_rounded,
+                tooltip: '换一批推荐',
+                onPressed: () => _refresh(feed),
+              ),
+              _SideButton(
+                icon: Icons.keyboard_arrow_up_rounded,
+                tooltip: '上一部',
+                onPressed: feed.index > 0
+                    ? () => unawaited(_move(feed, -1))
+                    : null,
+              ),
+              _SideButton(
+                icon: Icons.keyboard_arrow_down_rounded,
+                tooltip: '下一部',
+                onPressed: () => unawaited(_move(feed, 1)),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+
+  /// 从上次看到的位置继续；没有记录就从推荐流给的开头集开始。
+  int _startIndex(RecommendFeed feed, Drama drama, DramaDetail detail) {
+    final watched = widget.store.watched(drama.id);
+    if (watched != null) {
+      final index = detail.episodes.indexWhere(
+        (episode) => episode.number == watched.episode,
+      );
+      if (index >= 0) return index;
+    }
+    return 0;
+  }
+
+  double _startPosition(RecommendFeed feed, Drama drama) {
+    final watched = widget.store.watched(drama.id);
+    return watched?.position.toDouble() ?? 0;
+  }
+}
+
+/// 非当前页 / 详情未就绪时的封面占位。
+class _CoverPlaceholder extends StatelessWidget {
+  const _CoverPlaceholder({
+    required this.drama,
+    this.loading = false,
+    this.error,
+    this.onRetry,
+  });
+  final Drama drama;
+  final bool loading;
+  final String? error;
+  final VoidCallback? onRetry;
+
+  @override
+  Widget build(BuildContext context) => ColoredBox(
+    color: Colors.black,
+    child: Stack(
+      fit: StackFit.expand,
+      children: [
+        CoverBackdrop(
+          drama: drama,
+          sigma: 42,
+          opacity: 0.5,
+          overlay: LinearGradient(
+            begin: Alignment.topCenter,
+            end: Alignment.bottomCenter,
+            colors: [
+              _shade.withValues(alpha: 0.72),
+              Colors.transparent,
+              _shade.withValues(alpha: 0.86),
+            ],
+          ),
+        ),
+        Center(
+          child: SizedBox(
+            height: 230,
+            child: AspectRatio(
+              aspectRatio: 2 / 3,
+              child: DramaCover(
+                drama: drama,
+                radius: 14,
+                details: false,
+                exploreBlur: true,
+              ),
+            ),
+          ),
+        ),
+        Positioned(
+          left: 20,
+          right: 20,
+          bottom: 28,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            spacing: 6,
+            children: [
+              Text(
+                drama.title,
+                maxLines: 2,
+                overflow: TextOverflow.ellipsis,
+                style: const TextStyle(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w800,
+                  color: Colors.white,
+                  height: 1.25,
+                ),
+              ),
+              if (error != null)
+                Row(
+                  spacing: 10,
+                  children: [
+                    Expanded(
                       child: Text(
-                        drama.description,
+                        '这部暂时无法播放：$error',
                         maxLines: 2,
-                        textAlign: TextAlign.center,
                         overflow: TextOverflow.ellipsis,
                         style: TextStyle(
-                          fontSize: 13,
-                          height: 1.5,
+                          fontSize: 12,
                           color: Colors.white.withValues(alpha: 0.72),
                         ),
                       ),
                     ),
+                    TextButton(onPressed: onRetry, child: const Text('重试')),
                   ],
-                  const SizedBox(height: 20),
-                  Row(
-                    mainAxisAlignment: MainAxisAlignment.center,
-                    spacing: 12,
-                    children: [
-                      FocusRing(
-                        radius: 999,
-                        child: FilledButton.icon(
-                          onPressed: onPlay,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: colors.primaryFixedDim,
-                            foregroundColor: colors.onPrimaryFixed,
-                            minimumSize: const Size(0, 44),
-                            padding: const EdgeInsets.fromLTRB(18, 0, 24, 0),
-                          ),
-                          icon: const Icon(Icons.play_arrow_rounded),
-                          label: const Text('立即观看'),
-                        ),
+                )
+              else if (loading)
+                Row(
+                  spacing: 8,
+                  children: [
+                    const SizedBox(
+                      width: 13,
+                      height: 13,
+                      child: CircularProgressIndicator(strokeWidth: 2),
+                    ),
+                    Text(
+                      '正在准备播放',
+                      style: TextStyle(
+                        fontSize: 12,
+                        color: Colors.white.withValues(alpha: 0.7),
                       ),
-                      FocusRing(
-                        radius: 999,
-                        child: FilledButton(
-                          onPressed: onDetail,
-                          style: FilledButton.styleFrom(
-                            backgroundColor: Colors.white.withValues(alpha: 0.16),
-                            foregroundColor: Colors.white,
-                            minimumSize: const Size(0, 44),
-                            padding: const EdgeInsets.symmetric(horizontal: 24),
-                          ),
-                          child: const Text('详情'),
-                        ),
-                      ),
-                    ],
-                  ),
-                ],
-              ),
-            ),
-          ],
-        );
-      },
-    );
-  }
+                    ),
+                  ],
+                ),
+            ],
+          ),
+        ),
+      ],
+    ),
+  );
+}
+
+class _SideButton extends StatelessWidget {
+  const _SideButton({
+    required this.icon,
+    required this.tooltip,
+    required this.onPressed,
+  });
+  final IconData icon;
+  final String tooltip;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) => Tooltip(
+    message: tooltip,
+    child: FocusRing(
+      radius: 999,
+      child: IconButton(
+        onPressed: onPressed,
+        icon: Icon(icon),
+        color: Colors.white,
+        disabledColor: Colors.white.withValues(alpha: 0.3),
+        style: IconButton.styleFrom(
+          backgroundColor: Colors.black.withValues(alpha: 0.38),
+        ),
+      ),
+    ),
+  );
 }

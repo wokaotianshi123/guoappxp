@@ -30,6 +30,11 @@ class RecommendFeed extends ChangeNotifier {
   bool _disposed = false;
   String _source = '';
 
+  /// 已拉到的剧集详情，供全屏播放建播放句柄用。
+  final _details = <String, DramaDetail>{};
+  final _loadingDetails = <String>{};
+  final _detailErrors = <String, String>{};
+
   List<Drama> get items => _items;
   int get index => _index;
   bool get loading => _loading;
@@ -39,6 +44,47 @@ class RecommendFeed extends ChangeNotifier {
   Drama? get current => _index >= 0 && _index < _items.length
       ? _items[_index]
       : null;
+
+  /// 已缓存的详情；没有就返回 null，由 [loadDetail] 去拉。
+  DramaDetail? detailOf(String dramaId) => _details[dramaId];
+
+  bool detailLoading(String dramaId) => _loadingDetails.contains(dramaId);
+
+  /// 某部剧详情加载失败的原因；没失败就是 null。
+  String? detailError(String dramaId) => _detailErrors[dramaId];
+
+  /// 拉取某部剧的详情（含分集）。成功后缓存，播放页据此建播放句柄。
+  ///
+  /// [force] 为真时忽略缓存与「正在加载」标记，用于用户点重试。
+  Future<void> loadDetail(Drama drama, {bool force = false}) async {
+    if (_disposed || drama.id.isEmpty) return;
+    if (!force) {
+      if (_details.containsKey(drama.id)) return;
+      if (!_loadingDetails.add(drama.id)) return;
+    } else {
+      _loadingDetails.add(drama.id);
+    }
+    _detailErrors.remove(drama.id);
+    _notify();
+    try {
+      final detail = await repository.detail(drama);
+      if (_disposed) return;
+      if (detail.episodes.isNotEmpty) {
+        _details[drama.id] = detail;
+        // 只留最近 8 条，避免长列表把详情全攒在内存里。
+        while (_details.length > 8) {
+          _details.remove(_details.keys.first);
+        }
+      } else {
+        _detailErrors[drama.id] = '没有返回可播放的分集';
+      }
+    } catch (error) {
+      if (!_disposed) _detailErrors[drama.id] = '$error';
+    } finally {
+      _loadingDetails.remove(drama.id);
+      _notify();
+    }
+  }
 
   /// 推荐接口只有部分站源支持；其余站源用「全部」目录顶上。
   bool get _usesRecommendations =>
@@ -59,6 +105,9 @@ class RecommendFeed extends ChangeNotifier {
     _page = 0;
     _hasMore = true;
     _error = '';
+    _details.clear();
+    _loadingDetails.clear();
+    _detailErrors.clear();
     _loading = source.isNotEmpty;
     _notify();
     if (source.isEmpty) return;
@@ -69,6 +118,9 @@ class RecommendFeed extends ChangeNotifier {
       _page = page.page;
       _hasMore = page.hasMore;
       _error = page.warning;
+      // 首屏先把第一部的详情拉好，进来就能直接起播。
+      // 这里刻意 await：否则进页面会先闪一下封面再出画面。
+      if (_items.isNotEmpty) await loadDetail(_items.first);
     } catch (error) {
       if (!_disposed && generation == _generation) _error = '$error';
     } finally {
@@ -130,6 +182,10 @@ class RecommendFeed extends ChangeNotifier {
     if (value == _index) return;
     _index = value;
     _notify();
+    // 当前这部与下一部都提前把详情拉好，滑过去就能直接起播。
+    unawaited(loadDetail(_items[value]));
+    final next = value + 1;
+    if (next < _items.length) unawaited(loadDetail(_items[next]));
     // 快滑到底部时提前补一页，避免最后一部之后突然空掉。
     if (_items.length - _index <= 2) unawaited(loadMore());
   }
