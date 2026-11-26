@@ -46,6 +46,13 @@ class _RecommendPageState extends State<RecommendPage> {
   String _handleDrama = '';
   bool _wasVisible = false;
 
+  /// 详情页压在上面时不让推荐页重建播放器。
+  ///
+  /// 详情页的「继续播放」会新建一套播放会话；如果推荐页在这一层继续出声，
+  /// 两路音频会叠在一起。这里只停播放器，页面本身、当前第几部、翻页位置
+  /// 都保留，返回后按观看进度把这一部接回来。
+  bool _detailOpen = false;
+
   /// 推荐页是否在前台。单独挂在 [AppShell] 之外的测试场景按可见处理。
   static bool _visible(BuildContext context) {
     final tab = ShellVisibleTab.maybeOf(context);
@@ -89,13 +96,24 @@ class _RecommendPageState extends State<RecommendPage> {
     handle?.dispose();
   }
 
-  void _openDetail(RecommendFeed feed) {
+  Future<void> _openDetail(RecommendFeed feed) async {
     final drama = feed.current;
-    if (drama == null) return;
-    openPage<void>(
-      context,
-      (_) => DetailPage(store: widget.store, drama: drama),
-    );
+    if (drama == null || _detailOpen) return;
+    // 先停掉推荐页这一路：详情页的「继续播放」会再起一路，不停就是双路音频。
+    // 只释放播放器，feed / 当前索引 / 翻页位置都不动，返回后原样接上。
+    _detailOpen = true;
+    _dropHandle();
+    if (mounted) setState(() {});
+    try {
+      await openPage<void>(
+        context,
+        (_) => DetailPage(store: widget.store, drama: drama),
+      );
+    } finally {
+      _detailOpen = false;
+      // 返回时按详情页看过 / 播放保存的进度重建这一部的播放器。
+      if (mounted) setState(() {});
+    }
   }
 
   bool _busy(RecommendFeed feed) =>
@@ -370,9 +388,10 @@ class _RecommendPageState extends State<RecommendPage> {
     final drama = feed.items[index];
     final current = index == feed.index;
 
-    // 非当前页 / 页面不在前台：只显示封面，不建播放器。与 THLRedGuo 的
-    // `index == feed.index && feed.active` 是同一套判断，切走标签就停止播放。
-    if (!current || !_visible(context)) {
+    // 非当前页 / 页面不在前台 / 详情页压在上面：只显示封面，不建播放器。
+    // 与 THLRedGuo 的 `index == feed.index && feed.active` 是同一套判断，
+    // 切走标签或进详情就停止播放。
+    if (!current || !_visible(context) || _detailOpen) {
       return _CoverPlaceholder(drama: drama);
     }
 
@@ -417,7 +436,7 @@ class _RecommendPageState extends State<RecommendPage> {
       store: widget.store,
       handle: _handle!,
       feed: true,
-      onOpenDetail: () => _openDetail(feed),
+      onOpenDetail: () => unawaited(_openDetail(feed)),
     );
   }
 
