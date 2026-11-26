@@ -343,29 +343,67 @@ class JsSourceService extends ChangeNotifier {
 
   // ------------------------------------------------------------ 打包 / 订阅
 
-  /// 把选中的脚本源打成一个 zip（每源一个 `.js`）。
+  /// 订阅包里的配置文件名；导入时优先识别它。
+  static const subscriptionFileName = 'xiaoguo.json';
+
+  /// 把选中的脚本源打成一个订阅包：`xiaoguo.json` + 每个脚本本体。
   ///
-  /// [ids] 为空表示导出全部。与模块导出同一套用法：zip 里直接是脚本文件，
-  /// 重新导入时按每个文件的 meta 还原，不需要额外的清单。
+  /// [ids] 为空表示导出全部。包内布局：
+  /// ```
+  /// xiaoguo.json
+  /// hongguo.js
+  /// volcanoexpo-com.js
+  /// ```
+  /// 配置里的 url 写成 `.\hongguo.js`，按 JSON 自身所在目录解析。
+  /// 解压后整个目录可以直接给 App / 本地服务版读取，zip 也能原样导入。
   Uint8List exportZip({List<String> ids = const []}) {
     final wanted = ids.isEmpty ? null : ids.toSet();
-    final archive = Archive();
+    final entries = <({String name, String fileName, String script})>[];
     for (final source in _sources) {
       if (wanted != null && !wanted.contains(source.id)) continue;
       final script = _scripts[source.id];
       if (script == null) continue;
-      final name = source.fileName.isNotEmpty
-          ? source.fileName
+      final fileName = source.fileName.isNotEmpty
+          ? p.basename(source.fileName)
           : '${source.id}.js';
-      archive.add(ArchiveFile.string(name, script));
+      entries.add((name: source.name, fileName: fileName, script: script));
     }
-    if (archive.isEmpty) throw StateError('没有可导出的脚本源');
+    if (entries.isEmpty) throw StateError('没有可导出的脚本源');
+    return buildSubscriptionArchive(entries);
+  }
+
+  /// 把「显示名 + 文件名 + 脚本正文」打成订阅包。
+  ///
+  /// 与 [exportZip] 分开是为了能在纯 Dart 测试里验证包的结构：配置固定叫
+  /// `xiaoguo.json`，每条地址写成 `.\文件名`，与配置文件放在同一层。
+  @visibleForTesting
+  static Uint8List buildSubscriptionArchive(
+    List<({String name, String fileName, String script})> entries,
+  ) {
+    final archive = Archive();
+    final rows = <Map<String, String>>[];
+    final used = <String>{};
+    for (final entry in entries) {
+      var name = entry.fileName;
+      if (!name.toLowerCase().endsWith('.js')) name = '${entry.name}.js';
+      var unique = name;
+      for (var index = 2; !used.add(unique.toLowerCase()); index++) {
+        unique = '${p.basenameWithoutExtension(name)}-$index.js';
+      }
+      archive.add(ArchiveFile.string(unique, entry.script));
+      rows.add({'name': entry.name, 'url': '.\\$unique'});
+    }
+    // 用 JsonEncoder 输出，反斜杠会被正确转义成 `\\`，其它客户端也能读。
+    final config = const JsonEncoder.withIndent('  ').convert({'sources': rows});
+    archive.add(ArchiveFile.string(subscriptionFileName, config));
     return ZipEncoder().encodeBytes(archive);
   }
 
-  /// 从 zip 导入脚本源：包内每个 `.js` 按 meta 安装，非 js 条目忽略。
+  /// 从 zip 导入脚本源。
   ///
-  /// 返回成功导入的源名与失败原因，界面据此汇总提示。
+  /// 优先识别包里的订阅配置（`xiaoguo.json` 或任一能解析的 `.json`）：
+  /// 配置里写相对地址的脚本直接从包内取文件安装，写绝对地址的才下载。
+  /// 配置没提到的 `.js` 仍按 meta 逐个安装，兼容原来只放脚本的 zip。
   Future<JsZipImportResult> importZip(Uint8List bytes) async {
     final Archive archive;
     try {
@@ -373,27 +411,135 @@ class JsSourceService extends ChangeNotifier {
     } catch (error) {
       return JsZipImportResult.failed('不是有效的 zip：$error');
     }
-    final imported = <JsSourceMeta>[];
-    final failed = <String>[];
+    final files = <String, ArchiveFile>{};
     for (final file in archive) {
       if (!file.isFile) continue;
-      final name = p.basename(file.name);
-      if (!name.toLowerCase().endsWith('.js')) continue;
-      String script;
+      files[_archiveKey(file.name)] = file;
+    }
+    final imported = <JsSourceMeta>[];
+    final failed = <String>[];
+    final consumed = <String>{};
+
+    final config = _findSubscriptionConfig(files);
+    if (config != null) {
+      final configDir = p.posix.dirname(config.key);
+      for (final entry in parseLocalSubscription(config.text)) {
+        final label = entry.name.isEmpty ? entry.url : entry.name;
+        final uri = Uri.tryParse(entry.url);
+        if (uri != null && (uri.scheme == 'http' || uri.scheme == 'https')) {
+          final result = await importFromUrl(entry.url);
+          if (result.success) {
+            imported.add(result.meta!);
+          } else {
+            failed.add('$label（${result.error}）');
+          }
+          continue;
+        }
+        final target = _lookupArchiveScript(
+          files,
+          configDir == '.' ? entry.url : p.posix.join(configDir, entry.url),
+        );
+        if (target == null) {
+          failed.add('$label（压缩包里缺少 ${entry.url}）');
+          continue;
+        }
+        consumed.add(target.key);
+        try {
+          final script = normalizeJsScript(
+            utf8.decode(target.file.content, allowMalformed: true),
+          );
+          final result = await import(script, p.posix.basename(target.key));
+          if (result.success) {
+            imported.add(result.meta!);
+          } else {
+            failed.add('$label（${result.error}）');
+          }
+        } catch (error) {
+          failed.add('$label（无法读取：$error）');
+        }
+      }
+    }
+
+    for (final entry in files.entries) {
+      if (consumed.contains(entry.key) || !entry.key.endsWith('.js')) continue;
+      final name = p.posix.basename(entry.value.name);
       try {
-        script = normalizeJsScript(utf8.decode(file.content));
+        final script = normalizeJsScript(
+          utf8.decode(entry.value.content, allowMalformed: true),
+        );
+        final result = await import(script, name);
+        if (result.success) {
+          imported.add(result.meta!);
+        } else {
+          failed.add('$name（${result.error}）');
+        }
       } catch (_) {
         failed.add('$name（无法读取）');
-        continue;
-      }
-      final result = await import(script, name);
-      if (result.success) {
-        imported.add(result.meta!);
-      } else {
-        failed.add('$name（${result.error}）');
       }
     }
     return JsZipImportResult(imported: imported, failed: failed);
+  }
+
+  static String _archiveKey(String name) {
+    var key = name.replaceAll(r'\', '/');
+    while (key.startsWith('./')) {
+      key = key.substring(2);
+    }
+    return key.toLowerCase();
+  }
+
+  /// 在 zip 里找订阅配置：优先 `xiaoguo.json`，其次任一能解析出条目的 JSON。
+  static ({String key, String text})? _findSubscriptionConfig(
+    Map<String, ArchiveFile> files,
+  ) {
+    final keys = [
+      for (final key in files.keys)
+        if (key.endsWith('.json')) key,
+    ]..sort((a, b) {
+        final aPreferred = p.posix.basename(a) == subscriptionFileName;
+        final bPreferred = p.posix.basename(b) == subscriptionFileName;
+        if (aPreferred != bPreferred) return aPreferred ? -1 : 1;
+        return a.compareTo(b);
+      });
+    for (final key in keys) {
+      String text;
+      try {
+        text = utf8.decode(files[key]!.content, allowMalformed: true);
+      } catch (_) {
+        continue;
+      }
+      if (parseLocalSubscription(text).isEmpty) continue;
+      return (key: key, text: text);
+    }
+    return null;
+  }
+
+  /// 按相对路径在 zip 里找脚本；找不到再退回同名文件。
+  static ({String key, ArchiveFile file})? _lookupArchiveScript(
+    Map<String, ArchiveFile> files,
+    String target,
+  ) {
+    var path = target;
+    final cut = path.indexOf(RegExp(r'[?#]'));
+    if (cut >= 0) path = path.substring(0, cut);
+    var key = _archiveKey(path);
+    try {
+      key = _archiveKey(Uri.decodeComponent(key));
+    } catch (_) {
+      // 保留原路径继续匹配。
+    }
+    final direct = files[key];
+    if (direct != null && key.endsWith('.js')) {
+      return (key: key, file: direct);
+    }
+    final base = p.posix.basename(key);
+    for (final entry in files.entries) {
+      if (entry.key.endsWith('.js') &&
+          p.posix.basename(entry.key) == base) {
+        return (key: entry.key, file: entry.value);
+      }
+    }
+    return null;
   }
 
   /// 从订阅地址导入。
@@ -401,8 +547,9 @@ class JsSourceService extends ChangeNotifier {
   /// 订阅就是一个远程 JSON，里面列出若干脚本源的名称与地址，形如
   /// `{"sources":[{"name":"…","url":"…"}]}`；也接受裸数组、以及
   /// `{"url":"…"}` 这种单个脚本的写法。`url` 可以是绝对地址，也可以相对
-  /// 订阅 JSON 自身的位置写（`./xxx/xxx.js`、`.\xxx\xxx.js`）。解析后逐个
-  /// 下载安装。
+  /// 订阅 JSON 自身的位置写（`./xxx/xxx.js`、`.\xxx\xxx.js`）。相对地址
+  /// 一律按订阅 JSON 所在目录解析，和配置文件放在一起的脚本解压后即可
+  /// 直接使用；单个反斜杠写法的 JSON 也会自动修复。解析后逐个下载安装。
   Future<JsSubscriptionResult> importSubscription(String url) async {
     final ({Uint8List bytes, Uri uri}) downloaded;
     try {
@@ -432,7 +579,84 @@ class JsSourceService extends ChangeNotifier {
       if (result.success) {
         imported.add(result.meta!);
       } else {
-        failed.add('${entry.name}（${result.error}）');
+        failed.add(
+          '${entry.name.isEmpty ? entry.url : entry.name}（${result.error}）',
+        );
+      }
+    }
+    return JsSubscriptionResult(imported: imported, failed: failed);
+  }
+
+  /// 导入本机的订阅配置（例如导出包里的 `xiaoguo.json`）。
+  ///
+  /// 配置里写绝对地址的直接下载。写相对地址时，如果 [configPath] 给了
+  /// 配置文件在本机的位置，就从它所在目录读同名脚本（解压导出包后直接
+  /// 选 `xiaoguo.json` 即可）；读不到才提示改用 zip 包。
+  Future<JsSubscriptionResult> importLocalSubscription(
+    String text, {
+    String? configPath,
+  }) async {
+    final entries = parseLocalSubscription(text);
+    if (entries.isEmpty) {
+      return JsSubscriptionResult.failed('不是可识别的订阅配置（需要 sources 或 url）');
+    }
+    final directory = configPath == null || configPath.isEmpty
+        ? null
+        : p.dirname(configPath);
+    final imported = <JsSourceMeta>[];
+    final failed = <String>[];
+    for (final entry in entries) {
+      final uri = Uri.tryParse(entry.url);
+      final label = entry.name.isEmpty ? entry.url : entry.name;
+      if (uri != null &&
+          (uri.scheme == 'http' || uri.scheme == 'https') &&
+          uri.host.isNotEmpty) {
+        final result = await importFromUrl(entry.url);
+        if (result.success) {
+          imported.add(result.meta!);
+        } else {
+          failed.add('$label（${result.error}）');
+        }
+        continue;
+      }
+      if (directory == null) {
+        failed.add('$label（相对地址 ${entry.url} 需要和脚本一起打包成 zip 导入）');
+        continue;
+      }
+      // 只允许读配置所在目录内的文件，避免 `../` 越界读本机任意文件。
+      var relative = entry.url;
+      try {
+        relative = Uri.decodeComponent(relative);
+      } catch (_) {
+        // 保留原样，按文件名去找。
+      }
+      final resolved = p.normalize(p.join(directory, relative));
+      if (!p.isWithin(directory, resolved) && !p.equals(directory, resolved)) {
+        failed.add('$label（地址 ${entry.url} 超出配置目录）');
+        continue;
+      }
+      final file = File(resolved);
+      if (!await file.exists()) {
+        failed.add('$label（同目录下找不到 ${entry.url}）');
+        continue;
+      }
+      try {
+        final bytes = await file.readAsBytes();
+        if (bytes.length > 4 * 1024 * 1024) {
+          failed.add('$label（脚本超过 4MB）');
+          continue;
+        }
+        final script = normalizeJsScript(
+          utf8.decode(bytes, allowMalformed: true),
+        );
+        final result = await import(script, p.basename(resolved));
+        if (result.success) {
+          imported.add(result.meta!);
+        } else {
+          failed.add('$label（${result.error}）');
+        }
+      } catch (error) {
+        failed.add('$label（无法读取：$error）');
       }
     }
     return JsSubscriptionResult(imported: imported, failed: failed);
@@ -450,14 +674,51 @@ class JsSourceService extends ChangeNotifier {
     String text, {
     Uri? base,
   }) {
+    final entries = <JsSubscriptionEntry>[];
+    for (final row in _subscriptionRows(text)) {
+      final raw = row is String ? row : _subscriptionUrlOf(row as Map);
+      final url = resolveJsSubscriptionUrl(raw, base);
+      if (url.isEmpty) continue;
+      entries.add(
+        JsSubscriptionEntry(
+          row is String
+              ? ''
+              : (row['name'] ?? row['title'] ?? '').toString().trim(),
+          url,
+        ),
+      );
+    }
+    return entries;
+  }
+
+  /// 解析本地的订阅配置（导出包里的 `xiaoguo.json`）。
+  ///
+  /// 与 [parseJsSubscription] 的区别是**保留相对地址**：包里的脚本就在
+  /// 同一个 zip 内，调用方按相对路径去包里取文件，不需要联网。
+  static List<JsSubscriptionEntry> parseLocalSubscription(String text) {
+    final entries = <JsSubscriptionEntry>[];
+    for (final row in _subscriptionRows(text)) {
+      final raw = row is String ? row : _subscriptionUrlOf(row as Map);
+      final url = _normalizeSubscriptionPath(raw);
+      if (url.isEmpty) continue;
+      entries.add(
+        JsSubscriptionEntry(
+          row is String
+              ? ''
+              : (row['name'] ?? row['title'] ?? '').toString().trim(),
+          url,
+        ),
+      );
+    }
+    return entries;
+  }
+
+  /// 把订阅 JSON 摊平成行：数组、`sources` 列表、单对象或映射写法。
+  static List<Object?> _subscriptionRows(String text) {
     // 记事本 / 部分 Windows 编辑器会在 UTF-8 前加 BOM，直接 jsonDecode 会失败。
     final body = text.startsWith('\uFEFF') ? text.substring(1) : text;
-    Object? decoded;
-    try {
-      decoded = jsonDecode(body);
-    } catch (_) {
-      return const [];
-    }
+    final decoded = _decodeSubscription(body);
+    if (decoded == null) return const [];
     final rows = <Object?>[];
     if (decoded is List) {
       rows.addAll(decoded);
@@ -483,20 +744,7 @@ class JsSourceService extends ChangeNotifier {
         }
       }
     }
-    final entries = <JsSubscriptionEntry>[];
-    for (final row in rows) {
-      if (row is String) {
-        final url = resolveJsSubscriptionUrl(row, base);
-        if (url.isNotEmpty) entries.add(JsSubscriptionEntry('', url));
-        continue;
-      }
-      if (row is! Map) continue;
-      final url = resolveJsSubscriptionUrl(_subscriptionUrlOf(row), base);
-      if (url.isEmpty) continue;
-      final name = (row['name'] ?? row['title'] ?? '').toString().trim();
-      entries.add(JsSubscriptionEntry(name, url));
-    }
-    return entries;
+    return rows;
   }
 
   static String _subscriptionUrlOf(Map row) =>
@@ -504,10 +752,77 @@ class JsSourceService extends ChangeNotifier {
           .toString()
           .trim();
 
+  /// 包内相对地址统一成 `a/b.js` 形式，供 zip 查找用。
+  static String _normalizeSubscriptionPath(String raw) {
+    var value = raw.trim().replaceAll(r'\', '/');
+    while (value.startsWith('./')) {
+      value = value.substring(2);
+    }
+    return value;
+  }
+
+  /// 解析订阅 JSON；严格解析失败时尝试修复 Windows 反斜杠路径。
+  ///
+  /// 订阅作者常直接把 `.\hongguo.js` 写进 JSON，但单个 `\` 在 JSON 里是
+  /// 非法转义（`\h` 不是合法序列），严格解析会整份失败。这里只修「像
+  /// 脚本地址的字符串」，把路径里的反斜杠按字面量补成 `\\` 再解析一次，
+  /// 避免因为一个反斜杠丢掉整份订阅。已经是合法写法的 JSON 不受影响。
+  static Object? _decodeSubscription(String body) {
+    try {
+      return jsonDecode(body);
+    } on FormatException {
+      final patched = _repairScriptPaths(body);
+      if (patched == body) return null;
+      try {
+        return jsonDecode(patched);
+      } on FormatException {
+        return null;
+      }
+    }
+  }
+
+  static final _jsonString = RegExp(r'"((?:[^"\\]|\\.)*)"');
+  static final _scriptSuffix = RegExp(r'\.js(?:[?#].*)?$', caseSensitive: false);
+
+  /// 把 `.js` 字符串里的单个反斜杠补成 `\\`；成对的 `\\` 与 `\"`、`\/`
+  /// 原样保留，保证修复后的 JSON 仍能按原意解开。
+  static String _repairScriptPaths(String text) {
+    return text.replaceAllMapped(_jsonString, (match) {
+      final value = match.group(1)!;
+      if (!value.contains(r'\') || !_scriptSuffix.hasMatch(value)) {
+        return match.group(0)!;
+      }
+      final buffer = StringBuffer();
+      for (var index = 0; index < value.length; index++) {
+        final char = value[index];
+        if (char != r'\') {
+          buffer.write(char);
+          continue;
+        }
+        if (index + 1 < value.length) {
+          final next = value[index + 1];
+          if (next == r'\') {
+            buffer.write(r'\\');
+            index++;
+            continue;
+          }
+          if (next == '"' || next == '/') {
+            buffer.write(r'\');
+            buffer.write(next);
+            index++;
+            continue;
+          }
+        }
+        buffer.write(r'\\');
+      }
+      return '"${buffer.toString()}"';
+    });
+  }
+
   /// 把订阅里的一条地址解析成可下载的绝对地址。
   ///
-  /// 只接受 http / https：绝对地址直用；相对地址按 [base] 解析。订阅里偶尔
-  /// 会混进 `file:///…` 之类，直接拒绝，避免借订阅读到本机文件。
+  /// 只接受 http / https：绝对地址直用，相对地址一律按 [base]（订阅 JSON
+  /// 自身的地址）解析。Windows 反斜杠 `.\hongguo.js` 先统一成 `/`。
   static String resolveJsSubscriptionUrl(String raw, Uri? base) {
     var value = raw.trim();
     if (value.isEmpty) return '';
@@ -516,20 +831,15 @@ class JsSourceService extends ChangeNotifier {
     final absolute = Uri.tryParse(value);
     if (absolute == null) return '';
     if (absolute.hasScheme) {
-      if (!{'http', 'https'}.contains(absolute.scheme) ||
-          absolute.host.isEmpty) {
-        return '';
-      }
-      return absolute.toString();
+      return _isDownloadable(absolute) ? absolute.toString() : '';
     }
     if (base == null) return '';
     final resolved = base.resolve(value);
-    if (!{'http', 'https'}.contains(resolved.scheme) ||
-        resolved.host.isEmpty) {
-      return '';
-    }
-    return resolved.toString();
+    return _isDownloadable(resolved) ? resolved.toString() : '';
   }
+
+  static bool _isDownloadable(Uri uri) =>
+      (uri.scheme == 'http' || uri.scheme == 'https') && uri.host.isNotEmpty;
 
   /// 统一下载：限制大小，避免订阅里塞进一个超大文件。
   ///

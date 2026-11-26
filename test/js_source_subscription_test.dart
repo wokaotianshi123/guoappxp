@@ -106,6 +106,67 @@ void main() {
       );
       expect(entries.single.url, 'https://example.com/a.js');
     });
+
+    test(r'''url 写 ".\hongguo.js"（单个反斜杠）也能识别''', () {
+      final base = Uri.parse(
+        'https://raw.githubusercontent.com/o/r/refs/heads/main/xiaoguojs/xiaoguojs.json',
+      );
+      // 这是常见的「人写」订阅：JSON 里只有一个反斜杠，严格解析是非法转义。
+      final entries = JsSourceService.parseJsSubscription(
+        r'{"sources":[{"name":"官方流红果","url":".\hongguo.js"}]}',
+        base: base,
+      );
+      expect(entries.single.name, '官方流红果');
+      expect(
+        entries.single.url,
+        'https://raw.githubusercontent.com/o/r/refs/heads/main/'
+        'xiaoguojs/hongguo.js',
+      );
+    });
+
+    test(r'''url 写 ".\hongguo.js"（合法转义 \\）同样识别''', () {
+      final base = Uri.parse(
+        'https://raw.githubusercontent.com/o/r/refs/heads/main/xiaoguojs/xiaoguojs.json',
+      );
+      final entries = JsSourceService.parseJsSubscription(
+        r'{"sources":[{"name":"官方流红果","url":".\\hongguo.js"}]}',
+        base: base,
+      );
+      expect(
+        entries.single.url,
+        'https://raw.githubusercontent.com/o/r/refs/heads/main/'
+        'xiaoguojs/hongguo.js',
+      );
+    });
+
+    test('绝对地址与根路径按标准解析', () {
+      final base = Uri.parse('https://example.com/subs/list.json');
+      final absolute = JsSourceService.parseJsSubscription(
+        '{"sources":[{"url":"https://cdn.example.com/a.js"}]}',
+        base: base,
+      );
+      expect(absolute.single.url, 'https://cdn.example.com/a.js');
+
+      final root = JsSourceService.parseJsSubscription(
+        '{"sources":[{"url":"/root/a.js"}]}',
+        base: base,
+      );
+      expect(root.single.url, 'https://example.com/root/a.js');
+    });
+
+    test('本地配置保留相对地址，供 zip 内查找', () {
+      final entries = JsSourceService.parseLocalSubscription(
+        r'{"sources":[{"name":"官方流红果","url":".\hongguo.js"},'
+        r'{"name":"子目录","url":"./sub/a.js"},'
+        r'{"name":"远程","url":"https://example.com/b.js"}]}',
+      );
+      expect([for (final entry in entries) entry.url], [
+        'hongguo.js',
+        'sub/a.js',
+        'https://example.com/b.js',
+      ]);
+      expect([for (final entry in entries) entry.name], ['官方流红果', '子目录', '远程']);
+    });
   });
 
   test('zip 往返：导出的包能按 meta 重新解析出脚本', () {
@@ -130,5 +191,37 @@ void main() {
     expect(scripts.length, 1);
     final meta = parseJsSourceMeta(normalizeJsScript(scripts.single), 'demo-source.js');
     expect(meta?.id, 'demo-source');
+  });
+
+  test('导出包是 xiaoguo.json + 脚本，地址按同目录相对写法', () {
+    final bytes = JsSourceService.buildSubscriptionArchive([
+      (name: '演示源', fileName: 'demo-source.js', script: _script),
+      (name: '重名脚本', fileName: 'demo-source.js', script: _script),
+    ]);
+    final files = <String, String>{};
+    for (final file in ZipDecoder().decodeBytes(bytes)) {
+      if (file.isFile) files[file.name] = utf8.decode(file.content);
+    }
+    expect(files.keys, containsAll(<String>[
+      'xiaoguo.json',
+      'demo-source.js',
+      'demo-source-2.js',
+    ]));
+
+    final config = jsonDecode(files['xiaoguo.json']!) as Map;
+    final sources = config['sources'] as List;
+    expect((sources[0] as Map)['name'], '演示源');
+    // JSON 文件里是两个字符 `\\`，解析出来是一个反斜杠。
+    expect((sources[0] as Map)['url'], r'.\demo-source.js');
+    expect((sources[1] as Map)['url'], r'.\demo-source-2.js');
+
+    // 导入时按包内相对地址查找：解析后应去掉 `.\` 前缀。
+    final entries = JsSourceService.parseLocalSubscription(
+      files['xiaoguo.json']!,
+    );
+    expect([for (final entry in entries) entry.url], [
+      'demo-source.js',
+      'demo-source-2.js',
+    ]);
   });
 }

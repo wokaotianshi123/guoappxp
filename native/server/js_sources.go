@@ -1,6 +1,7 @@
 package main
 
 import (
+	"archive/zip"
 	"bufio"
 	"bytes"
 	"encoding/base64"
@@ -12,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -35,6 +37,8 @@ const (
 	jsSourceDirName  = "js_sources"
 	jsSourceMaxBytes = 4 << 20
 	jsFetchMaxBytes  = 8 << 20
+	// 订阅包（配置 + 若干脚本）比单个脚本大一些，与 App 端 16MB 上限一致。
+	jsSubscriptionZipMaxBytes = 16 << 20
 )
 
 var (
@@ -334,10 +338,50 @@ func ensureJsPreset(site func(string) ([]byte, error)) {
 	}
 }
 
+// writeJsSubscriptionExport 导出「配置 + 脚本」的订阅包，与 App 端一致。
+// ids 为空表示全部；用 GET /api/js/sources?export=1[&ids=a,b] 触发。
+func writeJsSubscriptionExport(writer http.ResponseWriter, request *http.Request) {
+	wanted := map[string]bool{}
+	for _, id := range strings.Split(request.URL.Query().Get("ids"), ",") {
+		if trimmed := strings.TrimSpace(id); trimmed != "" {
+			wanted[trimmed] = true
+		}
+	}
+	items := []jsSourceMeta{}
+	for _, item := range scanJsSources() {
+		if len(wanted) == 0 || wanted[item.ID] {
+			items = append(items, item)
+		}
+	}
+	if len(items) == 0 {
+		http.Error(writer, "没有可导出的脚本源", http.StatusNotFound)
+		return
+	}
+	raw, err := buildJsSubscriptionZip(items)
+	if err != nil {
+		http.Error(writer, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	name := fmt.Sprintf(
+		"guoapp-js-%d-%s.zip",
+		len(items),
+		time.Now().Format("2006-01-02"),
+	)
+	writer.Header().Set("Content-Type", "application/zip")
+	writer.Header().Set("Content-Disposition", `attachment; filename="`+name+`"`)
+	writer.Header().Set("Content-Length", strconv.Itoa(len(raw)))
+	writer.Header().Set("Cache-Control", "no-store")
+	_, _ = writer.Write(raw)
+}
+
 // handleJsSources 管理脚本源：列表 / 导入（文本或网址）/ 启用 / 删除。
 func handleJsSources(writer http.ResponseWriter, request *http.Request) {
 	switch request.Method {
 	case http.MethodGet:
+		if request.URL.Query().Get("export") != "" {
+			writeJsSubscriptionExport(writer, request)
+			return
+		}
 		items := scanJsSources()
 		active := readJsActiveID()
 		if active == "" && len(items) > 0 {
@@ -348,6 +392,31 @@ func handleJsSources(writer http.ResponseWriter, request *http.Request) {
 		}
 		writeJSON(writer, map[string]any{"items": items, "active": active})
 	case http.MethodPost:
+		if strings.HasPrefix(
+			strings.ToLower(request.Header.Get("Content-Type")),
+			"application/zip",
+		) {
+			raw, err := io.ReadAll(io.LimitReader(request.Body, jsSubscriptionZipMaxBytes+1))
+			if err != nil {
+				http.Error(writer, "读取请求失败", http.StatusBadRequest)
+				return
+			}
+			if len(raw) > jsSubscriptionZipMaxBytes {
+				http.Error(writer, "压缩包超过 16MB", http.StatusRequestEntityTooLarge)
+				return
+			}
+			imported, failed, err := importJsSubscriptionZip(raw)
+			if err != nil {
+				http.Error(writer, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(writer, map[string]any{
+				"ok":       true,
+				"imported": imported,
+				"failed":   failed,
+			})
+			return
+		}
 		body, err := io.ReadAll(io.LimitReader(request.Body, jsSourceMaxBytes+4096))
 		if err != nil {
 			http.Error(writer, "读取请求失败", http.StatusBadRequest)
@@ -358,9 +427,57 @@ func handleJsSources(writer http.ResponseWriter, request *http.Request) {
 			Script   string `json:"script"`
 			URL      string `json:"url"`
 			Preset   string `json:"preset"`
+			Config   string `json:"config"`
 		}
 		if json.Unmarshal(body, &payload) != nil {
 			http.Error(writer, "请求不是合法 JSON", http.StatusBadRequest)
+			return
+		}
+		if strings.TrimSpace(payload.Config) != "" {
+			// 本地订阅配置：绝对地址直接下载；相对地址需要随包提供脚本。
+			entries := parseLocalJsSubscription([]byte(payload.Config))
+			if len(entries) == 0 {
+				http.Error(writer, "不是可识别的订阅配置", http.StatusBadRequest)
+				return
+			}
+			imported := []jsSourceMeta{}
+			failed := []string{}
+			for _, entry := range entries {
+				label := entry.Name
+				if label == "" {
+					label = entry.URL
+				}
+				parsed, err := url.Parse(entry.URL)
+				if err != nil || !jsURLDownloadable(parsed) {
+					failed = append(
+						failed,
+						fmt.Sprintf("%s（相对地址 %s 需随 zip 包一起导入）", label, entry.URL),
+					)
+					continue
+				}
+				scriptRaw, effective, err := downloadJsResource(entry.URL, jsSourceMaxBytes)
+				if err != nil {
+					failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+					continue
+				}
+				meta, err := writeJsSource(
+					jsScriptFileName(effective),
+					normalizeJsScript(scriptRaw),
+				)
+				if err != nil {
+					failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+					continue
+				}
+				imported = append(imported, meta)
+			}
+			if len(imported) > 0 && readJsActiveID() == "" {
+				writeJsActiveID(imported[0].ID)
+			}
+			writeJSON(writer, map[string]any{
+				"ok":       true,
+				"imported": imported,
+				"failed":   failed,
+			})
 			return
 		}
 		if payload.Preset != "" {
@@ -384,13 +501,24 @@ func handleJsSources(writer http.ResponseWriter, request *http.Request) {
 		script := payload.Script
 		fileName := strings.TrimSpace(payload.FileName)
 		if strings.TrimSpace(payload.URL) != "" {
-			fetched, name, err := downloadJsScript(payload.URL)
+			raw, effective, err := downloadJsResource(payload.URL, jsSourceMaxBytes)
 			if err != nil {
 				http.Error(writer, err.Error(), http.StatusBadGateway)
 				return
 			}
-			script = fetched
-			fileName = name
+			// 填的是订阅 JSON 就按订阅批量安装；普通脚本仍按单脚本处理，
+			// 与 App 端「网址或订阅」合并成一个入口的口径一致。
+			if entries := parseJsSubscription(raw, effective); len(entries) > 0 {
+				imported, failed := importJsSubscription(entries)
+				writeJSON(writer, map[string]any{
+					"ok":       true,
+					"imported": imported,
+					"failed":   failed,
+				})
+				return
+			}
+			script = normalizeJsScript(raw)
+			fileName = jsScriptFileName(effective)
 		}
 		if strings.TrimSpace(script) == "" {
 			http.Error(writer, "脚本内容为空", http.StatusBadRequest)
@@ -587,31 +715,532 @@ func handleJsActive(writer http.ResponseWriter, request *http.Request) {
 }
 
 func downloadJsScript(address string) (string, string, error) {
+	raw, effective, err := downloadJsResource(address, jsSourceMaxBytes)
+	if err != nil {
+		return "", "", err
+	}
+	return normalizeJsScript(raw), jsScriptFileName(effective), nil
+}
+
+// downloadJsResource 拉取订阅或脚本，返回正文与重定向后的最终地址。
+// 相对地址要按最终地址解析，短链跳转后目录才能对上（与 App 端一致）。
+func downloadJsResource(address string, limit int64) ([]byte, *url.URL, error) {
 	parsed, err := url.Parse(strings.TrimSpace(address))
-	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
-		return "", "", errors.New("只支持 http / https 直链")
+	if err != nil || !jsURLDownloadable(parsed) {
+		return nil, nil, errors.New("只支持 http / https 直链")
 	}
 	client := &http.Client{Timeout: 20 * time.Second}
 	response, err := client.Get(parsed.String())
 	if err != nil {
-		return "", "", fmt.Errorf("网络拉取失败：%v", err)
+		return nil, nil, fmt.Errorf("网络拉取失败：%v", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode < 200 || response.StatusCode >= 300 {
-		return "", "", fmt.Errorf("下载失败（HTTP %d）", response.StatusCode)
+		return nil, nil, fmt.Errorf("下载失败（HTTP %d）", response.StatusCode)
 	}
-	raw, err := io.ReadAll(io.LimitReader(response.Body, jsSourceMaxBytes+1))
-	if err != nil || len(raw) > jsSourceMaxBytes {
-		return "", "", errors.New("脚本超过 4MB 或读取失败")
+	raw, err := io.ReadAll(io.LimitReader(response.Body, limit+1))
+	if err != nil {
+		return nil, nil, errors.New("读取失败")
 	}
-	name := filepath.Base(parsed.Path)
-	if name == "" || name == "." || name == "/" {
-		name = "remote_source.js"
+	if int64(len(raw)) > limit {
+		return nil, nil, errors.New("内容超过 4MB，无法导入")
+	}
+	effective := parsed
+	if response.Request != nil && response.Request.URL != nil {
+		effective = response.Request.URL
+	}
+	return raw, effective, nil
+}
+
+// jsScriptFileName 从最终地址取脚本文件名；没有 .js 后缀时补上。
+func jsScriptFileName(parsed *url.URL) string {
+	name := "remote_source.js"
+	if parsed != nil {
+		if base := path.Base(parsed.Path); base != "" && base != "." && base != "/" {
+			name = base
+		}
 	}
 	if !strings.HasSuffix(strings.ToLower(name), ".js") {
 		name += ".js"
 	}
-	return normalizeJsScript(raw), name, nil
+	return name
+}
+
+// ---------------------------------------------------------------- JS 订阅
+
+// jsSubscriptionEntry 是订阅 JSON 里的一条脚本：显示名 + 解析后的地址。
+type jsSubscriptionEntry struct {
+	Name string
+	URL  string
+}
+
+var (
+	jsJSONString   = regexp.MustCompile(`"(?:[^"\\]|\\.)*"`)
+	jsScriptSuffix = regexp.MustCompile(`(?i)\.js(?:[?#].*)?$`)
+)
+
+// parseJsSubscription 解析订阅 JSON，口径与 App 端
+// JsSourceService.parseJsSubscription 一致：`{"sources":[…]}`、裸数组、
+// 「源名 → 地址」映射、单个 `{"name":…,"url":…}` 都认。
+func parseJsSubscription(raw []byte, base *url.URL) []jsSubscriptionEntry {
+	entries := []jsSubscriptionEntry{}
+	for _, row := range jsSubscriptionRows(raw) {
+		address := ""
+		name := ""
+		switch value := row.(type) {
+		case string:
+			address = resolveJsSubscriptionURL(value, base)
+		case map[string]any:
+			address = resolveJsSubscriptionURL(subscriptionURLOf(value), base)
+			name = jsSubscriptionName(value)
+		}
+		if address == "" {
+			continue
+		}
+		entries = append(entries, jsSubscriptionEntry{Name: name, URL: address})
+	}
+	return entries
+}
+
+// parseLocalJsSubscription 解析订阅配置，保留包内相对地址。
+func parseLocalJsSubscription(raw []byte) []jsSubscriptionEntry {
+	entries := []jsSubscriptionEntry{}
+	for _, row := range jsSubscriptionRows(raw) {
+		address := ""
+		name := ""
+		switch value := row.(type) {
+		case string:
+			address = normalizeJsSubscriptionPath(value)
+		case map[string]any:
+			address = normalizeJsSubscriptionPath(subscriptionURLOf(value))
+			name = jsSubscriptionName(value)
+		}
+		if address == "" {
+			continue
+		}
+		entries = append(entries, jsSubscriptionEntry{Name: name, URL: address})
+	}
+	return entries
+}
+
+// jsSubscriptionRows 把订阅 JSON 摊平成行。
+func jsSubscriptionRows(raw []byte) []any {
+	text := strings.TrimPrefix(string(raw), "\ufeff")
+	decoded, ok := decodeJsSubscription(text)
+	if !ok {
+		return nil
+	}
+	rows := []any{}
+	switch value := decoded.(type) {
+	case []any:
+		rows = append(rows, value...)
+	case map[string]any:
+		for _, key := range []string{"sources", "js", "scripts", "list", "data"} {
+			if items, ok := value[key].([]any); ok {
+				rows = append(rows, items...)
+				break
+			}
+		}
+		if len(rows) == 0 {
+			if subscriptionURLOf(value) != "" {
+				rows = append(rows, value)
+			} else {
+				names := make([]string, 0, len(value))
+				for name := range value {
+					names = append(names, name)
+				}
+				sort.Strings(names)
+				for _, name := range names {
+					if address, ok := value[name].(string); ok {
+						rows = append(rows, map[string]any{"name": name, "url": address})
+					}
+				}
+			}
+		}
+	}
+	return rows
+}
+
+func jsSubscriptionName(row map[string]any) string {
+	name := strings.TrimSpace(stringValue(row["name"]))
+	if name == "" {
+		name = strings.TrimSpace(stringValue(row["title"]))
+	}
+	return name
+}
+
+// normalizeJsSubscriptionPath 把包内相对地址统一成 `a/b.js`。
+func normalizeJsSubscriptionPath(raw string) string {
+	value := strings.ReplaceAll(strings.TrimSpace(raw), `\`, "/")
+	for strings.HasPrefix(value, "./") {
+		value = value[2:]
+	}
+	return value
+}
+
+func stringValue(value any) string {
+	if text, ok := value.(string); ok {
+		return text
+	}
+	return ""
+}
+
+func subscriptionURLOf(row map[string]any) string {
+	for _, key := range []string{"url", "address", "src", "path"} {
+		if text := strings.TrimSpace(stringValue(row[key])); text != "" {
+			return text
+		}
+	}
+	return ""
+}
+
+// decodeJsSubscription 解析订阅 JSON；严格解析失败时修复 Windows 反斜杠。
+//
+// 订阅作者常直接写 `".\hongguo.js"`，单个 `\h` 在 JSON 里是非法转义，
+// 严格解析会整份失败。这里只修「像脚本地址的字符串」再解析一次。
+func decodeJsSubscription(text string) (any, bool) {
+	var decoded any
+	if json.Unmarshal([]byte(text), &decoded) == nil {
+		return decoded, true
+	}
+	patched := jsJSONString.ReplaceAllStringFunc(text, repairJsScriptPath)
+	if patched == text {
+		return nil, false
+	}
+	if json.Unmarshal([]byte(patched), &decoded) == nil {
+		return decoded, true
+	}
+	return nil, false
+}
+
+// repairJsScriptPath 把 `.js` 字符串里的单个反斜杠补成 `\\`；成对的
+// `\\` 与 `\"`、`\/` 原样保留，保证修复后的 JSON 仍按原意解开。
+func repairJsScriptPath(literal string) string {
+	if len(literal) < 2 {
+		return literal
+	}
+	inner := literal[1 : len(literal)-1]
+	if !strings.Contains(inner, `\`) || !jsScriptSuffix.MatchString(inner) {
+		return literal
+	}
+	var builder strings.Builder
+	builder.WriteByte('"')
+	for index := 0; index < len(inner); index++ {
+		char := inner[index]
+		if char != '\\' {
+			builder.WriteByte(char)
+			continue
+		}
+		if index+1 < len(inner) {
+			next := inner[index+1]
+			if next == '\\' {
+				builder.WriteString(`\\`)
+				index++
+				continue
+			}
+			if next == '"' || next == '/' {
+				builder.WriteByte('\\')
+				builder.WriteByte(next)
+				index++
+				continue
+			}
+		}
+		builder.WriteString(`\\`)
+	}
+	builder.WriteByte('"')
+	return builder.String()
+}
+
+// resolveJsSubscriptionURL 把订阅里的一条地址解析成可下载的绝对地址。
+//
+// 与 App 端同口径：绝对地址直用；相对地址一律按订阅 JSON 自身所在目录
+// 解析。`.\hongguo.js` 先统一成 `hongguo.js`，与 JSON 同级的脚本就能对上。
+// `/` 开头的地址按站点根解析，`//host/...` 按协议相对地址解析。
+func resolveJsSubscriptionURL(raw string, base *url.URL) string {
+	value := strings.TrimSpace(raw)
+	if value == "" {
+		return ""
+	}
+	value = strings.ReplaceAll(value, `\`, "/")
+	parsed, err := url.Parse(value)
+	if err != nil {
+		return ""
+	}
+	if parsed.Scheme != "" {
+		if jsURLDownloadable(parsed) {
+			return parsed.String()
+		}
+		return ""
+	}
+	if base == nil {
+		return ""
+	}
+	resolved := base.ResolveReference(parsed)
+	if !jsURLDownloadable(resolved) {
+		return ""
+	}
+	return resolved.String()
+}
+
+func jsURLDownloadable(candidate *url.URL) bool {
+	return candidate != nil &&
+		(candidate.Scheme == "http" || candidate.Scheme == "https") &&
+		candidate.Host != ""
+}
+
+// importJsSubscription 依次安装订阅条目；没有任何启用项时启用首个装上的源。
+func importJsSubscription(entries []jsSubscriptionEntry) ([]jsSourceMeta, []string) {
+	imported := []jsSourceMeta{}
+	failed := []string{}
+	for _, entry := range entries {
+		label := entry.Name
+		if label == "" {
+			label = entry.URL
+		}
+		raw, effective, err := downloadJsResource(entry.URL, jsSourceMaxBytes)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+			continue
+		}
+		meta, err := writeJsSource(jsScriptFileName(effective), normalizeJsScript(raw))
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+			continue
+		}
+		imported = append(imported, meta)
+	}
+	if len(imported) > 0 && readJsActiveID() == "" {
+		writeJsActiveID(imported[0].ID)
+	}
+	return imported, failed
+}
+
+// jsSubscriptionConfigName 是导出包里的配置文件名，与 App 端一致。
+const jsSubscriptionConfigName = "xiaoguo.json"
+
+// buildJsSubscriptionZip 打一个「配置 + 脚本」的订阅包：包内是一层脚本
+// 文件与 xiaoguo.json，配置里的地址写成 `.\a.js`，解压后即可直接读取。
+func buildJsSubscriptionZip(items []jsSourceMeta) ([]byte, error) {
+	buffer := &bytes.Buffer{}
+	writer := zip.NewWriter(buffer)
+	rows := make([]map[string]string, 0, len(items))
+	used := map[string]bool{}
+	for _, item := range items {
+		script, ok := jsSourceScript(item.ID)
+		if !ok {
+			continue
+		}
+		name := path.Base(strings.TrimSpace(item.FileName))
+		if name == "" || name == "." || name == "/" {
+			name = item.ID + ".js"
+		}
+		if !strings.HasSuffix(strings.ToLower(name), ".js") {
+			name += ".js"
+		}
+		unique := name
+		for index := 2; used[strings.ToLower(unique)]; index++ {
+			unique = fmt.Sprintf(
+				"%s-%d.js",
+				strings.TrimSuffix(name, path.Ext(name)),
+				index,
+			)
+		}
+		used[strings.ToLower(unique)] = true
+		file, err := writer.Create(unique)
+		if err != nil {
+			_ = writer.Close()
+			return nil, err
+		}
+		if _, err := io.WriteString(file, script); err != nil {
+			_ = writer.Close()
+			return nil, err
+		}
+		rows = append(rows, map[string]string{"name": item.Name, "url": `.\` + unique})
+	}
+	if len(rows) == 0 {
+		_ = writer.Close()
+		return nil, errors.New("没有可导出的脚本源")
+	}
+	config, err := json.MarshalIndent(map[string]any{"sources": rows}, "", "  ")
+	if err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	config = append(config, '\n')
+	file, err := writer.Create(jsSubscriptionConfigName)
+	if err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if _, err := file.Write(config); err != nil {
+		_ = writer.Close()
+		return nil, err
+	}
+	if err := writer.Close(); err != nil {
+		return nil, err
+	}
+	return buffer.Bytes(), nil
+}
+
+// importJsSubscriptionZip 导入订阅包：优先按包内配置安装，配置里写相对
+// 地址的脚本直接从包里取；配置没提到的 .js 仍按 meta 逐个安装。
+func importJsSubscriptionZip(raw []byte) ([]jsSourceMeta, []string, error) {
+	reader, err := zip.NewReader(bytes.NewReader(raw), int64(len(raw)))
+	if err != nil {
+		return nil, nil, errors.New("不是有效的 zip 压缩包")
+	}
+	files := map[string]*zip.File{}
+	keys := make([]string, 0, len(reader.File))
+	for _, file := range reader.File {
+		if file.FileInfo().IsDir() {
+			continue
+		}
+		key := strings.ToLower(normalizeJsSubscriptionPath(file.Name))
+		if key == "" {
+			continue
+		}
+		files[key] = file
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	total := 0
+	readFile := func(file *zip.File) ([]byte, error) {
+		handle, err := file.Open()
+		if err != nil {
+			return nil, err
+		}
+		defer handle.Close()
+		data, err := io.ReadAll(io.LimitReader(handle, jsSourceMaxBytes+1))
+		if err != nil {
+			return nil, err
+		}
+		if len(data) > jsSourceMaxBytes {
+			return nil, errors.New("文件超过 4MB")
+		}
+		total += len(data)
+		if total > 4*jsSubscriptionZipMaxBytes {
+			return nil, errors.New("压缩包解压后过大")
+		}
+		return data, nil
+	}
+
+	imported := []jsSourceMeta{}
+	failed := []string{}
+	consumed := map[string]bool{}
+
+	configKey := ""
+	for _, key := range keys {
+		if !strings.HasSuffix(key, ".json") {
+			continue
+		}
+		data, err := readFile(files[key])
+		if err != nil || len(parseLocalJsSubscription(data)) == 0 {
+			continue
+		}
+		if path.Base(key) == jsSubscriptionConfigName {
+			configKey = key
+			break
+		}
+		if configKey == "" {
+			configKey = key
+		}
+	}
+	if configKey != "" {
+		data, err := readFile(files[configKey])
+		if err != nil {
+			return nil, nil, errors.New("读取订阅配置失败")
+		}
+		dir := path.Dir(configKey)
+		for _, entry := range parseLocalJsSubscription(data) {
+			label := entry.Name
+			if label == "" {
+				label = entry.URL
+			}
+			if parsed, err := url.Parse(entry.URL); err == nil && jsURLDownloadable(parsed) {
+				scriptRaw, effective, err := downloadJsResource(entry.URL, jsSourceMaxBytes)
+				if err != nil {
+					failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+					continue
+				}
+				meta, err := writeJsSource(
+					jsScriptFileName(effective),
+					normalizeJsScript(scriptRaw),
+				)
+				if err != nil {
+					failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+					continue
+				}
+				imported = append(imported, meta)
+				continue
+			}
+			target := entry.URL
+			if dir != "." && dir != "" {
+				target = path.Join(dir, target)
+			}
+			key, file := lookupJsArchiveFile(files, keys, target)
+			if file == nil {
+				failed = append(failed, fmt.Sprintf("%s（压缩包里缺少 %s）", label, entry.URL))
+				continue
+			}
+			content, err := readFile(file)
+			if err != nil {
+				failed = append(failed, fmt.Sprintf("%s（读取失败）", label))
+				continue
+			}
+			consumed[key] = true
+			meta, err := writeJsSource(
+				path.Base(normalizeJsSubscriptionPath(file.Name)),
+				normalizeJsScript(content),
+			)
+			if err != nil {
+				failed = append(failed, fmt.Sprintf("%s（%v）", label, err))
+				continue
+			}
+			imported = append(imported, meta)
+		}
+	}
+
+	for _, key := range keys {
+		if consumed[key] || !strings.HasSuffix(key, ".js") {
+			continue
+		}
+		file := files[key]
+		name := path.Base(normalizeJsSubscriptionPath(file.Name))
+		content, err := readFile(file)
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s（读取失败）", name))
+			continue
+		}
+		meta, err := writeJsSource(name, normalizeJsScript(content))
+		if err != nil {
+			failed = append(failed, fmt.Sprintf("%s（%v）", name, err))
+			continue
+		}
+		imported = append(imported, meta)
+	}
+	if len(imported) > 0 && readJsActiveID() == "" {
+		writeJsActiveID(imported[0].ID)
+	}
+	return imported, failed, nil
+}
+
+// lookupJsArchiveFile 按相对路径找包内文件；找不到再退回同名文件。
+func lookupJsArchiveFile(
+	files map[string]*zip.File,
+	keys []string,
+	target string,
+) (string, *zip.File) {
+	key := strings.ToLower(normalizeJsSubscriptionPath(target))
+	if file := files[key]; file != nil && strings.HasSuffix(key, ".js") {
+		return key, file
+	}
+	base := path.Base(key)
+	for _, candidate := range keys {
+		if strings.HasSuffix(candidate, ".js") && path.Base(candidate) == base {
+			return candidate, files[candidate]
+		}
+	}
+	return "", nil
 }
 
 // ---------------------------------------------------------------- 代发请求

@@ -148,9 +148,9 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
     _toast('已导入 ${result.meta!.name}');
   });
 
-  /// 导入入口统一到一处：一个弹层里选「本地文件」还是「从网址导入」，
-  /// 网址既可以是脚本直链，也可以是订阅 JSON（含若干脚本名 + 地址）。
-  /// 这样右上角只需要一个圆形按钮，和「自定义XBPQ」的导入体验对齐。
+  /// 导入入口统一到一处：一个弹层里选「本地文件」还是「从网址导入」。
+  /// 本地文件既可以是单个 .js 脚本，也可以是导出的订阅包（zip，含配置
+  /// 与脚本）或订阅 JSON；网址既可以是脚本直链，也可以是订阅 JSON。
   Future<void> _import() async {
     final action = await showDialog<String>(
       context: context,
@@ -160,14 +160,13 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
     switch (action) {
       case 'file':
         await _fileImport();
-      case 'zip':
-        await _zipImport();
       case 'url':
         await _urlImport();
     }
   }
 
-  /// 导出：先勾选要打包的脚本源，再存成一个 zip（与模块导出同一套流程）。
+  /// 导出：先勾选要打包的脚本源，再存成一个订阅包
+  /// （`xiaoguo.json` + 脚本），与模块导出同一套流程。
   Future<void> _export() async {
     final sources = _service.sources;
     if (sources.isEmpty) {
@@ -190,33 +189,70 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
         bytes: bytes,
         mimeType: 'application/zip',
       );
-      if (saved != null) _toast('已导出 ${ids.length} 个脚本源');
+      if (saved != null) _toast('已导出 ${ids.length} 个脚本源的订阅包');
     });
   }
 
-  Future<void> _zipImport() => _run(() async {
+  Future<void> _fileImport() => _run(() async {
     final file = await FilePicker.pickFile(
       type: FileType.custom,
-      allowedExtensions: ['zip'],
+      allowedExtensions: ['js', 'json', 'zip'],
     );
     if (file == null) return;
     final size = await file.length();
-    if (size == null || size > 16 * 1024 * 1024) {
-      _toast('压缩包过大或无法读取（上限 16MB）');
+    final lower = file.name.toLowerCase();
+    if (lower.endsWith('.zip')) {
+      if (size == null || size > 16 * 1024 * 1024) {
+        _toast('压缩包过大或无法读取（上限 16MB）');
+        return;
+      }
+      final result = await _service.importZip(await file.readAsBytes());
+      if (!result.success) {
+        _toast(
+          result.error.isNotEmpty
+              ? '导入失败：${result.error}'
+              : '压缩包里没有可导入的脚本：${result.failed.join('；')}',
+        );
+        return;
+      }
+      JsSourceGateway.instance.refreshSources();
+      widget.store.sourcesChanged();
+      _toast(_importSummary('已导入', result.imported.length, result.failed));
       return;
     }
-    final result = await _service.importZip(await file.readAsBytes());
-    if (!result.success) {
-      _toast(
-        result.error.isNotEmpty
-            ? '导入失败：${result.error}'
-            : '压缩包里没有可导入的脚本：${result.failed.join('；')}',
+    if (size == null || size > 4 * 1024 * 1024) {
+      _toast('文件过大或无法读取（上限 4MB）');
+      return;
+    }
+    final bytes = await file.readAsBytes();
+    if (lower.endsWith('.json')) {
+      final result = await _service.importLocalSubscription(
+        utf8.decode(bytes, allowMalformed: true),
+        configPath: file.path,
       );
+      if (!result.success) {
+        _toast(
+          result.error.isNotEmpty
+              ? '导入失败：${result.error}'
+              : '没有导入任何脚本：${result.failed.join('；')}',
+        );
+        return;
+      }
+      JsSourceGateway.instance.refreshSources();
+      widget.store.sourcesChanged();
+      _toast(_importSummary('已导入', result.imported.length, result.failed));
+      return;
+    }
+    final script = utf8.decode(bytes, allowMalformed: true);
+    final name = lower.endsWith('.js') ? file.name : '${file.name}.js';
+    final result = await _service.import(script, name);
+    if (!result.success) {
+      _toast('导入失败：${result.error}');
       return;
     }
     JsSourceGateway.instance.refreshSources();
     widget.store.sourcesChanged();
-    _toast(_importSummary('已导入', result.imported.length, result.failed));
+    _toast('已导入 ${result.meta!.name}');
   });
 
   String _importSummary(String prefix, int count, List<String> failed) => [
@@ -357,34 +393,10 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
     });
   }
 
-  Future<void> _fileImport() => _run(() async {
-    final file = await FilePicker.pickFile(
-      type: FileType.custom,
-      allowedExtensions: ['js'],
-    );
-    if (file == null) return;
-    final size = await file.length();
-    if (size == null || size > 4 * 1024 * 1024) {
-      _toast('脚本过大或无法读取（上限 4MB）');
-      return;
-    }
-    final script = utf8.decode(await file.readAsBytes(), allowMalformed: true);
-    final name = file.name.toLowerCase().endsWith('.js')
-        ? file.name
-        : '${file.name}.js';
-    final result = await _service.import(script, name);
-    if (!result.success) {
-      _toast('导入失败：${result.error}');
-      return;
-    }
-    JsSourceGateway.instance.refreshSources();
-    widget.store.sourcesChanged();
-    _toast('已导入 ${result.meta!.name}');
-  });
-
   /// 官方脚本的 App 接口要签名参数；这里让用户粘贴同一份 JSON。
   /// 没有配置时脚本会明确报 SOURCE_CONFIGURATION_MISSING，不会静默失败。
-  Future<void> _editSigning() async {    final controller = TextEditingController(
+  Future<void> _editSigning() async {
+    final controller = TextEditingController(
       text: _service.signing == null
           ? ''
           : jsonEncode({
@@ -531,7 +543,7 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
             icon: const Icon(Icons.add_circle_outline_rounded),
           ),
           IconButton(
-            tooltip: '导出 zip',
+            tooltip: '导出订阅包（配置 + 脚本）',
             onPressed: _export,
             icon: const Icon(Icons.ios_share_rounded),
           ),
@@ -650,16 +662,9 @@ class _ImportDialog extends StatelessWidget {
           children: [
             _ImportChoice(
               icon: Icons.file_open_outlined,
-              title: '选择 .js 文件',
-              subtitle: '从本机挑一个 CatPawOpen / CatVodOpen 脚本',
+              title: '选择本地文件',
+              subtitle: '.js 脚本、订阅 JSON，或含配置与脚本的订阅包（zip）',
               onTap: () => Navigator.pop(context, 'file'),
-            ),
-            const SizedBox(height: 8),
-            _ImportChoice(
-              icon: Icons.folder_zip_outlined,
-              title: '选择 zip 压缩包',
-              subtitle: '导入之前导出的脚本包，一次装回多个源',
-              onTap: () => Navigator.pop(context, 'zip'),
             ),
             const SizedBox(height: 8),
             _ImportChoice(
@@ -670,9 +675,11 @@ class _ImportDialog extends StatelessWidget {
             ),
             const SizedBox(height: 14),
             Text(
-              '订阅是一个远程 JSON：{"sources":[{"name":"…","url":"…"}]}，'
-              '也接受裸数组。url 可以写相对地址（./sub/a.js、.\\sub\\a.js），'
-              '按订阅所在目录解析。填错成脚本直链时会自动按单个脚本导入。',
+              '订阅是一个 JSON：{"sources":[{"name":"…","url":"…"}]}，'
+              '也接受裸数组。url 可以写相对地址（./a.js、.\\a.js），按订阅'
+              '所在目录解析。导出包里的 xiaoguo.json 与脚本放在同一目录：'
+              '选 zip，或解压后直接选 xiaoguo.json，都会读同目录脚本，不需要'
+              '联网。填错成脚本直链时会自动按单个脚本导入。',
               style: TextStyle(fontSize: 12, height: 1.5, color: colors.onSurfaceVariant),
             ),
           ],
@@ -829,7 +836,8 @@ class _ExportPickerState extends State<_ExportPicker> {
           ),
           const SizedBox(height: 8),
           const Text(
-            '导出的 zip 可以直接在「导入 › 选择 zip 压缩包」里重新导入。',
+            '包内含 xiaoguo.json 与脚本：可直接在「导入 › 选择本地文件」里重新导入，'
+            '解压后也能给本地服务版读取。',
             style: TextStyle(fontSize: 12),
           ),
         ],

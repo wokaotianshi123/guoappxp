@@ -110,9 +110,47 @@ var JsSandbox = (function () {
       .then(function (response) {
         return response.json();
       })
-      .then(function () {
-        return refresh();
+      .then(function (data) {
+        return refresh().then(function () {
+          return data;
+        });
       });
+  }
+
+  function importZip(file) {
+    return file.arrayBuffer()
+      .then(function (buffer) {
+        return request('/api/js/sources', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/zip' },
+          body: buffer,
+        });
+      })
+      .then(function (response) {
+        return response.json();
+      })
+      .then(function (data) {
+        return refresh().then(function () {
+          return data;
+        });
+      });
+  }
+
+  // 批量导入后的提示：导入几个、失败几条（含原因）。
+  function importSummary(data, fallback) {
+    var imported = (data && data.imported) || [];
+    var failed = (data && data.failed) || [];
+    var lines = [];
+    if (imported.length) {
+      lines.push('已导入 ' + imported.length + ' 个脚本源：' +
+        imported.map(function (item) {
+          return (item && item.name) || (item && item.id) || '未命名';
+        }).join('、'));
+    }
+    if (failed.length) {
+      lines.push('失败 ' + failed.length + ' 个：' + failed.join('；'));
+    }
+    return lines.length ? lines.join('\n') : (fallback || '导入完成');
   }
 
   function removeSource(id) {
@@ -889,11 +927,12 @@ var JsSandbox = (function () {
         '<div class="lib-tabs">' +
         '<span class="lib-tab active">JS 沙箱（' + items.length + '）</span>' +
         '<span class="spacer"></span>' +
-        '<input type="file" id="js-import-file" accept=".js,text/javascript" style="display:none" />' +
+        '<input type="file" id="js-import-file" accept=".js,.json,.zip,application/zip,application/json,text/javascript" style="display:none" />' +
         '<button type="button" class="btn" id="js-import-preset">导入内置源</button>' +
         '<button type="button" class="btn" id="js-import-file-btn">导入文件</button>' +
         '<button type="button" class="btn" id="js-import-url">导入网络地址</button>' +
         '<button type="button" class="btn" id="js-import-code">粘贴源码</button>' +
+        '<button type="button" class="btn" id="js-export-btn">导出订阅包</button>' +
         (signing.embedded
           ? '<span class="js-badge">签名参数已内置</span>'
           : '<button type="button" class="btn" id="js-signing">签名参数' +
@@ -902,8 +941,9 @@ var JsSandbox = (function () {
         '<div class="js-hint">' +
         '脚本源在浏览器 Worker 里执行：目录、搜索、详情、取流都由脚本自己完成，' +
         '网络请求经本服务代发（绕开跨域限制）。切换脚本即切换整套解析逻辑，不影响内置站源。' +
+        '导入支持单个 .js、订阅 JSON，以及带 xiaoguo.json 的订阅包（zip）。' +
         '</div>' +
-        (rows || '<div class="empty">还没有脚本源。可以导入内置的官方源，或选择 .js 文件 / 粘贴源码。</div>') +
+        (rows || '<div class="empty">还没有脚本源。可以导入内置的官方源，或选择 .js / 订阅 JSON / 订阅包（zip）。</div>') +
         '</div>';
       bind(container);
     });
@@ -928,16 +968,40 @@ var JsSandbox = (function () {
     var fileInput = document.getElementById('js-import-file');
     if (fileButton && fileInput) {
       fileButton.addEventListener('click', function () {
+        fileInput.value = '';
         fileInput.click();
       });
       fileInput.addEventListener('change', function () {
         var file = fileInput.files && fileInput.files[0];
         if (!file) return;
+        var lower = (file.name || '').toLowerCase();
+        if (lower.endsWith('.zip')) {
+          if (file.size > 16 * 1024 * 1024) {
+            window.alert('压缩包超过 16MB');
+            return;
+          }
+          importZip(file)
+            .then(function (data) {
+              return render(container).then(function () {
+                window.alert(importSummary(data, '导入完成'));
+              });
+            })
+            .catch(function (error) {
+              window.alert(error.message || '导入压缩包失败');
+            });
+          return;
+        }
         var reader = new FileReader();
         reader.onload = function () {
-          importSource({ fileName: file.name, script: String(reader.result || '') })
-            .then(function () {
-              render(container);
+          var text = String(reader.result || '');
+          var task = lower.endsWith('.json')
+            ? importSource({ config: text })
+            : importSource({ fileName: file.name, script: text });
+          task
+            .then(function (data) {
+              return render(container).then(function () {
+                window.alert(importSummary(data, '导入完成'));
+              });
             })
             .catch(function (error) {
               window.alert(error.message || '导入失败');
@@ -946,14 +1010,45 @@ var JsSandbox = (function () {
         reader.readAsText(file);
       });
     }
+    var exportButton = document.getElementById('js-export-btn');
+    if (exportButton) {
+      exportButton.addEventListener('click', function () {
+        exportButton.disabled = true;
+        request('/api/js/sources?export=1')
+          .then(function (response) {
+            return response.blob();
+          })
+          .then(function (blob) {
+            var url = URL.createObjectURL(blob);
+            var link = document.createElement('a');
+            var stamp = new Date().toISOString().slice(0, 10);
+            link.href = url;
+            link.download = 'guoapp-js-' + stamp + '.zip';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+          })
+          .catch(function (error) {
+            window.alert(error.message || '导出订阅包失败');
+          })
+          .then(function () {
+            exportButton.disabled = false;
+          });
+      });
+    }
     var urlButton = document.getElementById('js-import-url');
     if (urlButton) {
       urlButton.addEventListener('click', function () {
-        var address = window.prompt('脚本直链地址（.js）');
+        var address = window.prompt(
+          '脚本直链，或订阅 JSON 地址（里面列着若干脚本名与地址）'
+        );
         if (!address) return;
         importSource({ url: address })
-          .then(function () {
-            render(container);
+          .then(function (data) {
+            return render(container).then(function () {
+              window.alert(importSummary(data, '导入完成'));
+            });
           })
           .catch(function (error) {
             window.alert(error.message || '导入失败');
