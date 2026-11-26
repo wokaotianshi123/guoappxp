@@ -37,6 +37,13 @@ class RecommendFeed extends ChangeNotifier {
   final _loadingDetails = <String>{};
   final _detailErrors = <String, String>{};
 
+  /// 这个源上已经展示过的剧集，供「换一批」跳过重复内容。
+  ///
+  /// 脚本与内核都会缓存第一页（hongguo.js 缓存 60 秒），重新请求第一页只会
+  /// 原样返回，所以换一批只能靠往后翻页 + 去重。记录上限避免长会话占内存。
+  final _seen = <String>{};
+  static const _seenLimit = 400;
+
   List<Drama> get items => _items;
   int get index => _index;
   bool get loading => _loading;
@@ -95,13 +102,17 @@ class RecommendFeed extends ChangeNotifier {
     unawaited(refresh());
   }
 
-  Future<void> refresh() async {
+  Future<void> refresh({bool advance = false}) async {
     if (_disposed) return;
     final source = _source = store.source;
     final generation = ++_generation;
+    if (!advance) {
+      // 换源 / 首次加载：去重记录属于上一个源，一起清掉。
+      _seen.clear();
+      _page = 0;
+    }
     _items = const [];
     _index = 0;
-    _page = 0;
     _hasMore = true;
     _error = '';
     _details.clear();
@@ -111,12 +122,15 @@ class RecommendFeed extends ChangeNotifier {
     _notify();
     if (source.isEmpty) return;
     try {
-      final page = await _firstPage(source, generation);
+      final page = advance
+          ? await _nextBatch(source, generation)
+          : await _fetch(source, 1, generation);
       if (_disposed || generation != _generation) return;
       _items = _unique(page.items);
       _page = page.page;
       _hasMore = page.hasMore;
       _error = page.warning;
+      _remember(_items);
       // 首屏先把第一部的详情拉好，进来就能直接起播。
       // 这里刻意 await：否则进页面会先闪一下封面再出画面。
       if (_items.isNotEmpty) await loadDetail(_items.first);
@@ -134,6 +148,44 @@ class RecommendFeed extends ChangeNotifier {
     }
   }
 
+  /// 「换一批」：从当前页往后翻，跳过已经展示过的剧集。
+  ///
+  /// 第一页在脚本 / 内核里都有缓存，重新拉第一页只会拿回同一批，所以刷新
+  /// 按钮必须往后翻页；翻到底后回到第一页重新开始，避免换出一张空页。
+  Future<CatalogPage> _nextBatch(String source, int generation) async {
+    var page = _page + 1;
+    for (var attempt = 0; attempt < 4; attempt++) {
+      final result = await _fetch(source, page, generation);
+      if (_disposed || generation != _generation) return result;
+      final fresh = [
+        for (final drama in result.items)
+          if (drama.id.isNotEmpty && !_seen.contains(drama.id)) drama,
+      ];
+      if (fresh.isNotEmpty) {
+        return CatalogPage(
+          fresh,
+          page: result.page,
+          hasMore: result.hasMore,
+          warning: result.warning,
+        );
+      }
+      if (!result.hasMore) break;
+      page = (result.page > page ? result.page : page) + 1;
+    }
+    // 翻到底 / 连续几页都是老内容：清空去重记录，从头再来一轮。
+    _seen.clear();
+    return _fetch(source, 1, generation);
+  }
+
+  void _remember(Iterable<Drama> items) {
+    for (final drama in items) {
+      if (drama.id.isNotEmpty) _seen.add(drama.id);
+    }
+    while (_seen.length > _seenLimit) {
+      _seen.remove(_seen.first);
+    }
+  }
+
   Future<void> loadMore() async {
     if (_disposed || _loading || _loadingMore || !_hasMore) return;
     final source = _source;
@@ -145,13 +197,14 @@ class RecommendFeed extends ChangeNotifier {
       final page = await _load(source, _page + 1);
       if (_disposed || generation != _generation) return;
       final known = {for (final item in _items) item.id};
-      _items = [
-        ..._items,
+      final added = [
         for (final item in _unique(page.items))
           if (known.add(item.id)) item,
       ];
+      _items = [..._items, ...added];
       _page = page.page;
       _hasMore = page.hasMore;
+      _remember(added);
     } catch (error) {
       if (!_disposed && generation == _generation) _error = '$error';
     } finally {
@@ -199,16 +252,17 @@ class RecommendFeed extends ChangeNotifier {
         text.contains('取消');
   }
 
-  Future<CatalogPage> _firstPage(String source, int generation) async {
+  /// 取一页，遇到「被取消」自动重试一次。
+  Future<CatalogPage> _fetch(String source, int page, int generation) async {
     try {
-      return await _load(source, 1);
+      return await _load(source, page);
     } catch (error) {
       if (!_cancelled(error) || _disposed || generation != _generation) {
         rethrow;
       }
       await Future<void>.delayed(const Duration(milliseconds: 300));
       if (_disposed || generation != _generation) rethrow;
-      return _load(source, 1);
+      return _load(source, page);
     }
   }
 

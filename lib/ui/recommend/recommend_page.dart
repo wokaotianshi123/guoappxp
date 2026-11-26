@@ -80,8 +80,13 @@ class _RecommendPageState extends State<RecommendPage> {
   }
 
   void _dropHandle() {
+    final handle = _handle;
     _handle = null;
     _handleDrama = '';
+    // 显式释放：同一个 key 的播放页可能被原地复用（句柄被换成新的），
+    // 旧句柄不在这里关掉就再没人 dispose，播放器会在后台一直出声。
+    // PlaybackPage 自己的 dispose 也会调一次，那边做了幂等保护。
+    handle?.dispose();
   }
 
   void _openDetail(RecommendFeed feed) {
@@ -123,10 +128,13 @@ class _RecommendPageState extends State<RecommendPage> {
     }
   }
 
-  void _refresh(RecommendFeed feed) {
+  /// [advance] 为真时是「换一批」：往后翻一页拿新的一组，而不是把当前这组
+  /// 重新加载一遍（脚本 / 内核会缓存第一页，重取只会原样返回）。
+  void _refresh(RecommendFeed feed, {bool advance = false}) {
     _dropHandle();
+    _pagerIndex = 0;
     if (_pager.hasClients) _pager.jumpToPage(0);
-    unawaited(feed.refresh());
+    unawaited(feed.refresh(advance: advance));
   }
 
   /// 桌面端滚轮：一格翻一屏，与竖屏播放器的滚轮切集手感一致。
@@ -277,9 +285,9 @@ class _RecommendPageState extends State<RecommendPage> {
                 ),
                 _barButton(
                   'feed-refresh',
-                  '刷新推荐',
+                  '换一批',
                   Icons.refresh_rounded,
-                  feed.loading ? null : () => _refresh(feed),
+                  feed.loading ? null : () => _refresh(feed, advance: true),
                 ),
                 _barButton(
                   'feed-previous',

@@ -1,7 +1,8 @@
+import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/models.dart';
-import 'package:duanju_app/recommend/recommend_feed.dart';
 import 'package:duanju_app/ui/app_scope.dart';
 import 'package:duanju_app/ui/recommend/recommend_page.dart';
+import 'package:duanju_app/ui/shell/app_shell.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 
@@ -67,6 +68,59 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('切回推荐标签时会重新加载（页面能感知标签切换）', (tester) async {
+    // 推荐页被切走时停在报错状态、切回来要能自愈。这条依赖 ShellVisibleTab：
+    // 页面必须真的收到「我又可见了」，否则切走停播、回来自愈都不会发生。
+    tester.view.physicalSize = const Size(390, 844);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    SourceSite.installJs([
+      const SourceSite(
+        'js:hongguo',
+        '官方免费短剧',
+        '',
+        available: true,
+        recommends: true,
+      ),
+    ]);
+    addTearDown(() => SourceSite.installJs(const []));
+
+    final store = await openStore();
+    await store.setSource('js:hongguo');
+    final repository = _FailingRepository();
+    var tab = AppTab.explore;
+    late StateSetter rebuild;
+
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppScope(
+          repository: repository,
+          formFactor: FormFactor.phone,
+          child: StatefulBuilder(
+            builder: (context, setState) {
+              rebuild = setState;
+              return ShellVisibleTab(
+                tab: tab,
+                child: RecommendPage(store: store),
+              );
+            },
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(repository.calls, 1);
+    expect(find.text('暂时没有推荐'), findsOneWidget);
+
+    // 切回推荐：页面应重新取一次，而不是停在报错页。
+    rebuild(() => tab = AppTab.recommend);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 300));
+    expect(repository.calls, 2);
+  });
+
   // 「有站源 + 详情就绪 → 进播放器」这条分支不在这里测：
   // * 构造 media_kit Player 需要原生解码器，widget 测试环境没有；
   // * 封面占位会发起真实网络请求（SocketException）。
@@ -91,4 +145,22 @@ class _FeedRepository extends FakeRepository {
     page: 1,
     hasMore: false,
   );
+}
+
+/// 每次都报错的假仓库：用来验证切回标签时页面会重新取流。
+class _FailingRepository extends FakeRepository {
+  int calls = 0;
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
+    bool force = false,
+  }) async {
+    calls++;
+    throw AppFailure('站源接口暂时不可用');
+  }
 }

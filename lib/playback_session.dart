@@ -1677,6 +1677,14 @@ class PlaybackSession extends ChangeNotifier {
 
   @override
   void dispose() {
+    if (_closed) return;
+    // 先把声音停掉：真正的 player.dispose() 排在串行操作之后，遇到在途的
+    // 网络请求会拖十几秒，这段时间页面已经没了、声音还在放。
+    unawaited(player.pause().catchError((Object _) {}));
+    final standbyPlayer = _standby;
+    if (standbyPlayer != null) {
+      unawaited(standbyPlayer.pause().catchError((Object _) {}));
+    }
     unawaited(saveProgress());
     _closed = true;
     _generation++;

@@ -130,6 +130,92 @@ void main() {
     expect(repository.lanes.toSet(), {'feed'});
   });
 
+  test('刷新按钮换一批：往后翻一页拿新内容，而不是重载当前页', () async {
+    installJsOfficial();
+    final store = await openStore();
+    await store.setSource(jsOfficial);
+
+    final repository = _PagedRepository(pageSize: 4, pages: 3);
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    final firstBatch = [for (final item in feed.items) item.title];
+    expect(repository.requestedPages, [1]);
+
+    await feed.refresh(advance: true);
+    expect(repository.requestedPages, [1, 2], reason: '换一批必须请求下一页');
+    expect([for (final item in feed.items) item.title], isNot(firstBatch));
+    expect(feed.items.first.title, '推荐 2-0');
+    expect(feed.index, 0, reason: '新的一批从第一部开始');
+    expect(feed.detailOf(feed.items.first.id), isNotNull, reason: '新的第一部要能直接起播');
+  });
+
+  test('换一批跳过当前组里已经出现过的剧集', () async {
+    installJsOfficial();
+    final store = await openStore();
+    await store.setSource(jsOfficial);
+
+    final repository = _OverlapRepository();
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    expect([for (final item in feed.items) item.title], ['a', 'b']);
+
+    // 第二页与第一页有重叠（a 已经看过），只保留真正的新剧。
+    await feed.refresh(advance: true);
+    expect([for (final item in feed.items) item.title], ['c', 'd']);
+    expect(repository.requestedPages, [1, 2]);
+  });
+
+  test('翻到底之后换一批回到第一页重新开始，不出现空列表', () async {
+    installJsOfficial();
+    final store = await openStore();
+    await store.setSource(jsOfficial);
+
+    final repository = _ExhaustedRepository();
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    expect(feed.items, isNotEmpty);
+
+    await feed.refresh(advance: true);
+    expect(repository.requestedPages, [1, 2, 1], reason: '到底后应回到第一页');
+    expect(feed.items, isNotEmpty);
+    expect(feed.error, isEmpty);
+  });
+
+  test('内核推荐源换一批：再取流要带 more 标记', () async {
+    SourceSite.install([
+      const SourceSite(
+        'modtest',
+        '模块推荐源',
+        '',
+        available: true,
+        recommends: true,
+      ),
+    ]);
+    addTearDown(() => SourceSite.install(const []));
+    final store = await openStore();
+    await store.setSource('modtest');
+
+    final repository = FakeRepository();
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    expect(repository.recommendRequests.map((r) => r.more), [false]);
+
+    await feed.refresh(advance: true);
+    expect(
+      repository.recommendRequests.map((r) => r.more),
+      contains(true),
+      reason: '换一批必须向内核要下一段信息流',
+    );
+  });
+
   test('hongguo.js 的推荐走信息流而不是固定 10 条的榜单', () {
     final script = File('assets/sources/hongguo.js').readAsStringSync();
     final start = script.indexOf('spider.recommendations');
@@ -158,6 +244,9 @@ class _PagedRepository extends FakeRepository {
   /// 记录每次取流用的读取会话标记（应与发现页隔离）。
   final lanes = <String>[];
 
+  /// 记录请求过的页码，用来断言「换一批」确实往后翻了页。
+  final requestedPages = <int>[];
+
   /// 记录详情请求过的剧 id（基类只有计数，这里需要具体 id）。
   final requested = <String>[];
 
@@ -172,6 +261,7 @@ class _PagedRepository extends FakeRepository {
   }) async {
     expect(category, isEmpty, reason: '推荐流固定从「全部」分类取流');
     lanes.add(lane);
+    requestedPages.add(page);
     final items = [
       for (var i = 0; i < pageSize; i++)
         drama('r$page-$i', source: source, title: '推荐 $page-$i'),
@@ -186,6 +276,61 @@ class _PagedRepository extends FakeRepository {
       Episode({'id': '1', 'title': '第 1 集', 'currentEpisode': 1}, 1),
     ]);
   }
+}
+
+/// 第一页与第二页有重叠，用来验证「换一批」会跳过看过的剧。
+class _OverlapRepository extends FakeRepository {
+  final requestedPages = <int>[];
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
+    bool force = false,
+  }) async {
+    requestedPages.add(page);
+    final keys = page <= 1 ? ['a', 'b'] : ['a', 'c', 'd'];
+    return CatalogPage(
+      [for (final key in keys) drama(key, source: source, title: key)],
+      page: page,
+      hasMore: page < 2,
+    );
+  }
+
+  @override
+  Future<DramaDetail> detail(Drama target) async => DramaDetail(target, [
+    Episode({'id': '1', 'title': '第 1 集', 'currentEpisode': 1}, 1),
+  ]);
+}
+
+/// 只有一页：翻到底之后应回到第一页，而不是给一张空页。
+class _ExhaustedRepository extends FakeRepository {
+  final requestedPages = <int>[];
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
+    bool force = false,
+  }) async {
+    requestedPages.add(page);
+    if (page > 1) return CatalogPage(const [], page: page, hasMore: false);
+    return CatalogPage([
+      drama('a', source: source, title: 'a'),
+      drama('b', source: source, title: 'b'),
+    ], page: 1, hasMore: false);
+  }
+
+  @override
+  Future<DramaDetail> detail(Drama target) async => DramaDetail(target, [
+    Episode({'id': '1', 'title': '第 1 集', 'currentEpisode': 1}, 1),
+  ]);
 }
 
 /// 第一次取流像换源竞态那样被内核取消，第二次正常返回。
