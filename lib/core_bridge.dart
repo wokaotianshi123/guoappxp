@@ -114,11 +114,18 @@ abstract class AppRepository {
   Future<Drama?> supplementMetadata(Drama drama) async => null;
   Future<List<DramaSeason>> seasons(Drama drama) async => const [];
   Future<Drama> followCheck(Drama drama) async => (await detail(drama)).drama;
+  /// [lane] 只用来隔离读取会话，不会发给内核。
+  ///
+  /// 内核按 `会话名` 串行化同类请求：同一会话来了更新的请求，就会把前一个
+  /// 取消。推荐页与发现页会同时向同一个站源取流，如果共用会话名，就会互相
+  /// 取消，界面上表现为莫名其妙的「context canceled」。各页面用不同 lane
+  /// 即可各取各的。
   Future<CatalogPage> recommendations(
     String source,
     String genre, {
     bool more = false,
     bool force = false,
+    String lane = '',
   }) async => throw AppFailure('当前环境不支持推荐');
   Future<List<RankingBoard>> rankingBoards() async => const [];
   Future<RankingPage> rankings(
@@ -620,6 +627,7 @@ class NativeRepository extends AppRepository {
     String genre, {
     bool more = false,
     bool force = false,
+    String lane = '',
   }) async {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(source)) {
@@ -627,7 +635,7 @@ class NativeRepository extends AppRepository {
     }
     _authorize(source);
     return CatalogPage.fromJson(
-      await _read('recommendations-$source-$genre', {
+      await _read('recommendations-$source-$genre${lane.isEmpty ? '' : '-$lane'}', {
         'action': 'recommendations',
         'source': source,
         'category': genre,

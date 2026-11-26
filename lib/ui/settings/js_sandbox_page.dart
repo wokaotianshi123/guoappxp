@@ -304,7 +304,8 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
             children: [
               const Text(
                 '可以填脚本直链（GitHub Raw / Gist / 自建 CDN），也可以填订阅地址：'
-                '订阅是一个 JSON，里面列出若干脚本源的名称与地址。',
+                '订阅是一个 JSON，里面列出若干脚本源的名称与地址。地址支持相对写法'
+                '（如 ./sub/a.js 或 .\\sub\\a.js），会按订阅所在目录解析。',
                 style: TextStyle(fontSize: 12, height: 1.5),
               ),
               const SizedBox(height: 12),
@@ -670,7 +671,8 @@ class _ImportDialog extends StatelessWidget {
             const SizedBox(height: 14),
             Text(
               '订阅是一个远程 JSON：{"sources":[{"name":"…","url":"…"}]}，'
-              '也接受裸数组。填错成脚本直链时会自动按单个脚本导入。',
+              '也接受裸数组。url 可以写相对地址（./sub/a.js、.\\sub\\a.js），'
+              '按订阅所在目录解析。填错成脚本直链时会自动按单个脚本导入。',
               style: TextStyle(fontSize: 12, height: 1.5, color: colors.onSurfaceVariant),
             ),
           ],

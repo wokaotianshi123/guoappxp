@@ -44,6 +44,13 @@ class _RecommendPageState extends State<RecommendPage> {
 
   PlaybackHandle? _handle;
   String _handleDrama = '';
+  bool _wasVisible = false;
+
+  /// 推荐页是否在前台。单独挂在 [AppShell] 之外的测试场景按可见处理。
+  static bool _visible(BuildContext context) {
+    final tab = ShellVisibleTab.maybeOf(context);
+    return tab == null || tab == AppTab.recommend;
+  }
 
   @override
   void didChangeDependencies() {
@@ -52,7 +59,14 @@ class _RecommendPageState extends State<RecommendPage> {
       AppScope.of(context).repository,
       widget.store,
     );
-    if (!feed.loading && feed.items.isEmpty && feed.error.isEmpty) {
+    final visible = _visible(context);
+    final becameVisible = visible && !_wasVisible;
+    _wasVisible = visible;
+    if (feed.loading) return;
+    // 换源时推荐页即使不在前台也会跟着刷新，万一那次请求被「发现」页的在途
+    // 请求误伤，页面就会停在报错状态。用户点开推荐时再取一次，别让他自己
+    // 去找刷新按钮。
+    if (feed.items.isEmpty && (feed.error.isEmpty || becameVisible)) {
       unawaited(feed.refresh());
     }
   }
@@ -135,9 +149,11 @@ class _RecommendPageState extends State<RecommendPage> {
       listenable: feed,
       builder: (context, _) {
         final source = widget.store.source;
-        // 换源或刷新时列表会被清空，旧的播放句柄由被摘下来的播放页释放，
-        // 这里只丢掉引用，避免拿着已释放的会话再建一屏。
-        if (feed.loading || feed.items.isEmpty) _dropHandle();
+        // 换源 / 刷新 / 切走标签时都停掉播放器：旧的播放页会被下面的占位
+        // 顶掉，由它自己释放会话。THLRedGuo 也是只有当前标签才挂播放器。
+        if (!_visible(context) || feed.loading || feed.items.isEmpty) {
+          _dropHandle();
+        }
         final body = switch (feed) {
           _ when source.isEmpty => StatusView(
             title: '还没有选择站源',
@@ -346,7 +362,11 @@ class _RecommendPageState extends State<RecommendPage> {
     final drama = feed.items[index];
     final current = index == feed.index;
 
-    if (!current) return _CoverPlaceholder(drama: drama);
+    // 非当前页 / 页面不在前台：只显示封面，不建播放器。与 THLRedGuo 的
+    // `index == feed.index && feed.active` 是同一套判断，切走标签就停止播放。
+    if (!current || !_visible(context)) {
+      return _CoverPlaceholder(drama: drama);
+    }
 
     final detail = feed.detailOf(drama.id);
     if (detail == null) {
@@ -366,7 +386,7 @@ class _RecommendPageState extends State<RecommendPage> {
 
     if (_handleDrama != drama.id || _handle == null) {
       WidgetsBinding.instance.addPostFrameCallback((_) {
-        if (!mounted) return;
+        if (!mounted || !_visible(context)) return;
         if (_handleDrama == drama.id || _handle != null) return;
         setState(() {
           _handle = PlaybackHandle(

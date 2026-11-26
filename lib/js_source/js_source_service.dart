@@ -400,16 +400,21 @@ class JsSourceService extends ChangeNotifier {
   ///
   /// 订阅就是一个远程 JSON，里面列出若干脚本源的名称与地址，形如
   /// `{"sources":[{"name":"…","url":"…"}]}`；也接受裸数组、以及
-  /// `{"url":"…"}` 这种单个脚本的写法。解析后逐个下载安装。
+  /// `{"url":"…"}` 这种单个脚本的写法。`url` 可以是绝对地址，也可以相对
+  /// 订阅 JSON 自身的位置写（`./xxx/xxx.js`、`.\xxx\xxx.js`）。解析后逐个
+  /// 下载安装。
   Future<JsSubscriptionResult> importSubscription(String url) async {
-    final Uint8List bytes;
+    final ({Uint8List bytes, Uri uri}) downloaded;
     try {
-      bytes = await _download(url.trim(), 2 * 1024 * 1024);
+      downloaded = await _download(url.trim(), 2 * 1024 * 1024);
     } on Exception catch (error) {
       return JsSubscriptionResult.failed('订阅拉取失败：$error');
     }
-    final text = utf8.decode(bytes, allowMalformed: true);
-    final entries = parseJsSubscription(text);
+    final text = utf8.decode(downloaded.bytes, allowMalformed: true);
+    // 相对地址要按订阅 JSON 自己的位置解析：订阅放在 /subs/list.json 时，
+    // `./a.js` 指 /subs/a.js，而不是 App 的当前目录。用重定向后的最终地址，
+    // 免得短链跳转后目录对不上。
+    final entries = parseJsSubscription(text, base: downloaded.uri);
     if (entries.isEmpty) {
       // 不是订阅，而是一个脚本直链：按普通网址导入处理。
       final single = await importFromUrl(url);
@@ -435,11 +440,21 @@ class JsSourceService extends ChangeNotifier {
 
   /// 解析订阅 JSON，取出「名称 + 脚本地址」列表。
   ///
-  /// 兼容几种常见写法：`{"sources":[…]}`、裸数组、以及脚本名作 key 的映射。
-  static List<JsSubscriptionEntry> parseJsSubscription(String text) {
+  /// 兼容几种常见写法：`{"sources":[…]}`、裸数组、脚本名作 key 的映射，以及
+  /// 单个 `{"name":"…","url":"…"}`。
+  ///
+  /// [base] 是订阅 JSON 自身的地址。给了它，`./xxx/xxx.js`、`xxx/xxx.js`
+  /// 这类相对地址会按订阅所在目录解析；也容忍 Windows 反斜杠写法
+  /// `.\xxx\xxx.js`。没给 base 时相对地址无法下载，按旧行为忽略。
+  static List<JsSubscriptionEntry> parseJsSubscription(
+    String text, {
+    Uri? base,
+  }) {
+    // 记事本 / 部分 Windows 编辑器会在 UTF-8 前加 BOM，直接 jsonDecode 会失败。
+    final body = text.startsWith('\uFEFF') ? text.substring(1) : text;
     Object? decoded;
     try {
-      decoded = jsonDecode(text);
+      decoded = jsonDecode(body);
     } catch (_) {
       return const [];
     }
@@ -455,34 +470,72 @@ class JsSourceService extends ChangeNotifier {
         }
       }
       if (rows.isEmpty) {
-        // 映射写法：{ "源名": "https://…/a.js" }
-        for (final entry in decoded.entries) {
-          if (entry.value is String) {
-            rows.add({'name': '${entry.key}', 'url': entry.value});
+        if (_subscriptionUrlOf(decoded).isNotEmpty) {
+          // 单个脚本写法：{"name":"…","url":"…"}。
+          rows.add(decoded);
+        } else {
+          // 映射写法：{ "源名": "https://…/a.js" }
+          for (final entry in decoded.entries) {
+            if (entry.value is String) {
+              rows.add({'name': '${entry.key}', 'url': entry.value});
+            }
           }
         }
       }
     }
     final entries = <JsSubscriptionEntry>[];
     for (final row in rows) {
-      if (row is String && row.trim().startsWith('http')) {
-        entries.add(JsSubscriptionEntry('', row.trim()));
+      if (row is String) {
+        final url = resolveJsSubscriptionUrl(row, base);
+        if (url.isNotEmpty) entries.add(JsSubscriptionEntry('', url));
         continue;
       }
       if (row is! Map) continue;
-      final url =
-          (row['url'] ?? row['address'] ?? row['src'] ?? row['path'] ?? '')
-              .toString()
-              .trim();
-      if (!url.startsWith('http')) continue;
+      final url = resolveJsSubscriptionUrl(_subscriptionUrlOf(row), base);
+      if (url.isEmpty) continue;
       final name = (row['name'] ?? row['title'] ?? '').toString().trim();
       entries.add(JsSubscriptionEntry(name, url));
     }
     return entries;
   }
 
+  static String _subscriptionUrlOf(Map row) =>
+      (row['url'] ?? row['address'] ?? row['src'] ?? row['path'] ?? '')
+          .toString()
+          .trim();
+
+  /// 把订阅里的一条地址解析成可下载的绝对地址。
+  ///
+  /// 只接受 http / https：绝对地址直用；相对地址按 [base] 解析。订阅里偶尔
+  /// 会混进 `file:///…` 之类，直接拒绝，避免借订阅读到本机文件。
+  static String resolveJsSubscriptionUrl(String raw, Uri? base) {
+    var value = raw.trim();
+    if (value.isEmpty) return '';
+    // URL 只认 `/`；订阅作者在 Windows 上常写成 `.\xxx\xxx.js`。
+    value = value.replaceAll(r'\', '/');
+    final absolute = Uri.tryParse(value);
+    if (absolute == null) return '';
+    if (absolute.hasScheme) {
+      if (!{'http', 'https'}.contains(absolute.scheme) ||
+          absolute.host.isEmpty) {
+        return '';
+      }
+      return absolute.toString();
+    }
+    if (base == null) return '';
+    final resolved = base.resolve(value);
+    if (!{'http', 'https'}.contains(resolved.scheme) ||
+        resolved.host.isEmpty) {
+      return '';
+    }
+    return resolved.toString();
+  }
+
   /// 统一下载：限制大小，避免订阅里塞进一个超大文件。
-  Future<Uint8List> _download(String url, int limit) async {
+  ///
+  /// 返回值带上**重定向后的最终地址**：订阅里的相对地址要按它解析，短链
+  /// （`…/sub` → `…/config/list.json`）跳转后目录才对得上。
+  Future<({Uint8List bytes, Uri uri})> _download(String url, int limit) async {
     final uri = Uri.parse(url);
     if (!{'http', 'https'}.contains(uri.scheme) ||
         uri.host.isEmpty ||
@@ -499,6 +552,10 @@ class JsSourceService extends ChangeNotifier {
       if (response.statusCode < 200 || response.statusCode >= 300) {
         throw HttpException('HTTP ${response.statusCode}', uri: uri);
       }
+      var effective = uri;
+      for (final redirect in response.redirects) {
+        effective = effective.resolveUri(redirect.location);
+      }
       final bytes = BytesBuilder(copy: false);
       await for (final chunk in response.timeout(const Duration(seconds: 15))) {
         if (bytes.length + chunk.length > limit) {
@@ -506,7 +563,7 @@ class JsSourceService extends ChangeNotifier {
         }
         bytes.add(chunk);
       }
-      return bytes.takeBytes();
+      return (bytes: bytes.takeBytes(), uri: effective);
     } finally {
       client.close(force: true);
     }

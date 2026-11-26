@@ -1,11 +1,12 @@
 import 'dart:io';
 
+import 'package:duanju_app/core_bridge.dart';
 import 'package:duanju_app/models.dart';
 import 'package:duanju_app/recommend/recommend_feed.dart';
-import 'package:duanju_app/source_catalog.dart';
 import 'package:flutter_test/flutter_test.dart';
 
 import 'support/fakes.dart';
+import 'support/source_fixture.dart';
 
 /// 推荐流的两条核心约定：
 /// 1. 取流固定走「全部」分类，且不限制个数——滑到底要能继续补页；
@@ -38,6 +39,9 @@ void main() {
     await feed.refresh();
     expect(feed.items.length, 10);
     expect(feed.hasMore, isTrue);
+    // 推荐流的读取会话必须与发现页隔离，否则两个页面会互相取消。
+    expect(repository.lanes, isNotEmpty);
+    expect(repository.lanes.toSet(), {'feed'});
 
     for (var page = 2; page <= 5; page++) {
       await feed.loadMore();
@@ -73,6 +77,59 @@ void main() {
     expect(repository.requested.length, before);
   });
 
+  test('首屏请求被取消时自动重试，不把内部取消当成报错', () async {
+    installJsOfficial();
+    final store = await openStore();
+    await store.setSource(jsOfficial);
+
+    final repository = _CancelledOnceRepository();
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    expect(repository.calls, 2, reason: '被取消后应自动再取一次');
+    expect(feed.error, isEmpty);
+    expect(feed.items, isNotEmpty);
+  });
+
+  test('取消最终还是失败时，不给用户看内部错误', () async {
+    installJsOfficial();
+    final store = await openStore();
+    await store.setSource(jsOfficial);
+
+    final repository = _CancelledRepository();
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    expect(repository.calls, 2, reason: '只自动重试一次，避免无限重试');
+    expect(feed.error, isNot(contains('context canceled')));
+    expect(feed.error, contains('刷新'));
+  });
+
+  test('换源后推荐自动清掉旧源内容并加载新源', () async {
+    installSourceFixture();
+    addTearDown(() => SourceSite.install(const []));
+    final store = await openStore();
+    await store.setSource('hanxiaoquan');
+
+    final repository = _SourceRepository();
+    final feed = RecommendFeed(repository, store);
+    addTearDown(feed.dispose);
+
+    await feed.refresh();
+    expect(feed.items, isNotEmpty);
+    expect(feed.items.first.source, 'hanxiaoquan');
+
+    // 换源只改一次 store，推荐流应自己跟着换掉，不需要用户再点刷新。
+    await store.setSource('guipian');
+    await _waitUntil(
+      () => feed.items.isNotEmpty && feed.items.first.source == 'guipian',
+    );
+    expect(feed.items.any((item) => item.source == 'hanxiaoquan'), isFalse);
+    expect(repository.lanes.toSet(), {'feed'});
+  });
+
   test('hongguo.js 的推荐走信息流而不是固定 10 条的榜单', () {
     final script = File('assets/sources/hongguo.js').readAsStringSync();
     final start = script.indexOf('spider.recommendations');
@@ -98,6 +155,9 @@ class _PagedRepository extends FakeRepository {
   final int pageSize;
   final int pages;
 
+  /// 记录每次取流用的读取会话标记（应与发现页隔离）。
+  final lanes = <String>[];
+
   /// 记录详情请求过的剧 id（基类只有计数，这里需要具体 id）。
   final requested = <String>[];
 
@@ -111,6 +171,7 @@ class _PagedRepository extends FakeRepository {
     bool force = false,
   }) async {
     expect(category, isEmpty, reason: '推荐流固定从「全部」分类取流');
+    lanes.add(lane);
     final items = [
       for (var i = 0; i < pageSize; i++)
         drama('r$page-$i', source: source, title: '推荐 $page-$i'),
@@ -125,4 +186,87 @@ class _PagedRepository extends FakeRepository {
       Episode({'id': '1', 'title': '第 1 集', 'currentEpisode': 1}, 1),
     ]);
   }
+}
+
+/// 第一次取流像换源竞态那样被内核取消，第二次正常返回。
+class _CancelledOnceRepository extends _PagedRepository {
+  _CancelledOnceRepository() : super(pageSize: 2, pages: 1);
+
+  int calls = 0;
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
+    bool force = false,
+  }) async {
+    calls++;
+    if (calls == 1) throw AppFailure('context canceled');
+    return super.catalog(
+      source,
+      page: page,
+      query: query,
+      category: category,
+      lane: lane,
+      force: force,
+    );
+  }
+}
+
+/// 每次都像被取消的假仓库：验证重试有上限，且错误文案不透出内部措辞。
+class _CancelledRepository extends _PagedRepository {
+  _CancelledRepository() : super(pageSize: 2, pages: 1);
+
+  int calls = 0;
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
+    bool force = false,
+  }) async {
+    calls++;
+    throw AppFailure('context canceled');
+  }
+}
+
+/// 按当前站源返回内容的假仓库，用来验证换源后列表跟着换。
+class _SourceRepository extends FakeRepository {
+  final lanes = <String>[];
+
+  @override
+  Future<CatalogPage> catalog(
+    String source, {
+    int page = 1,
+    String query = '',
+    String category = '',
+    String lane = '',
+    bool force = false,
+  }) async {
+    lanes.add(lane);
+    return CatalogPage([
+      drama('$source-1', source: source, title: '$source 第一集'),
+      drama('$source-2', source: source, title: '$source 第二集'),
+    ], page: page, hasMore: false);
+  }
+
+  @override
+  Future<DramaDetail> detail(Drama target) async => DramaDetail(target, [
+    Episode({'id': '1', 'title': '第 1 集', 'currentEpisode': 1}, 1),
+  ]);
+}
+
+/// 等异步刷新落地；推荐流的换源刷新由 store 通知触发，没有可 await 的句柄。
+Future<void> _waitUntil(bool Function() condition) async {
+  for (var attempt = 0; attempt < 200; attempt++) {
+    if (condition()) return;
+    await Future<void>.delayed(const Duration(milliseconds: 10));
+  }
+  fail('等待推荐流刷新超时');
 }

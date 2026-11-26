@@ -85,6 +85,26 @@ class ShellBars extends InheritedNotifier<ValueNotifier<bool>> {
       true;
 }
 
+/// 当前显示的是哪个标签。
+///
+/// 标签页一旦挂进 [IndexedStack] 就会一直留在树里，页面自己看不出「我又被
+/// 切回来了」。需要「重新可见时自愈」的页面（比如推荐页换源后停在报错）依赖
+/// 这个 InheritedWidget 拿到当前标签。
+class ShellVisibleTab extends InheritedWidget {
+  const ShellVisibleTab({super.key, required this.tab, required super.child});
+
+  final AppTab tab;
+
+  /// 当前标签；不在 [AppShell] 里（比如单独测某个页面）时返回 null。
+  static AppTab? maybeOf(BuildContext context) =>
+      context.dependOnInheritedWidgetOfExactType<ShellVisibleTab>()?.tab;
+
+  static AppTab of(BuildContext context) => maybeOf(context) ?? AppTab.explore;
+
+  @override
+  bool updateShouldNotify(ShellVisibleTab oldWidget) => tab != oldWidget.tab;
+}
+
 class HideOnScroll extends StatelessWidget {
   const HideOnScroll({
     super.key,
@@ -394,7 +414,7 @@ class _AppShellState extends State<AppShell> {
     );
     final pages = ShellForeground(
       foreground: ModalRoute.of(context)?.isCurrent ?? true,
-      child: stack,
+      child: ShellVisibleTab(tab: _tab, child: stack),
     );
     final television = AppScope.of(context).television;
     final tabs = _tabs;

@@ -57,6 +57,55 @@ void main() {
       );
       expect(entries, isEmpty);
     });
+
+    test('相对地址按订阅地址解析成绝对地址', () {
+      final base = Uri.parse('https://example.com/subs/list.json');
+      final entries = JsSourceService.parseJsSubscription(
+        jsonEncode({
+          'sources': [
+            {'name': '同级', 'url': './a.js'},
+            {'name': '子目录', 'url': 'js/b.js'},
+            {'name': '根目录', 'url': '/root/c.js'},
+            {'name': '上级', 'url': '../lib/d.js'},
+            {'name': '反斜杠', 'url': r'.\win\e.js'},
+            {'name': '协议相对', 'url': '//cdn.example.com/f.js'},
+          ],
+        }),
+        base: base,
+      );
+      expect([for (final entry in entries) entry.url], [
+        'https://example.com/subs/a.js',
+        'https://example.com/subs/js/b.js',
+        'https://example.com/root/c.js',
+        'https://example.com/lib/d.js',
+        'https://example.com/subs/win/e.js',
+        'https://cdn.example.com/f.js',
+      ]);
+    });
+
+    test('没有订阅地址时相对地址仍然忽略', () {
+      final entries = JsSourceService.parseJsSubscription(
+        '{"sources":[{"name":"X","url":"./a.js"}]}',
+      );
+      expect(entries, isEmpty);
+    });
+
+    test('单个对象写法也认，相对地址同样解析', () {
+      final entries = JsSourceService.parseJsSubscription(
+        jsonEncode({'name': '单源', 'url': './a.js'}),
+        base: Uri.parse('https://example.com/subs/list.json'),
+      );
+      expect(entries.single.name, '单源');
+      expect(entries.single.url, 'https://example.com/subs/a.js');
+    });
+
+    test('带 BOM 的订阅 JSON 也能识别', () {
+      final entries = JsSourceService.parseJsSubscription(
+        '\uFEFF{"sources":[{"name":"A","url":"./a.js"}]}',
+        base: Uri.parse('https://example.com/list.json'),
+      );
+      expect(entries.single.url, 'https://example.com/a.js');
+    });
   });
 
   test('zip 往返：导出的包能按 meta 重新解析出脚本', () {

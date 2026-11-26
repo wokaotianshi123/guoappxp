@@ -233,6 +233,7 @@ class FakeRepository extends AppRepository {
     String genre, {
     bool more = false,
     bool force = false,
+    String lane = '',
   }) async {
     recommendRequests.add((more: more, force: force));
     return CatalogPage(recommended);

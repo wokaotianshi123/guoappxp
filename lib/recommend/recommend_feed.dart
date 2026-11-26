@@ -111,7 +111,7 @@ class RecommendFeed extends ChangeNotifier {
     _notify();
     if (source.isEmpty) return;
     try {
-      final page = await _load(source, 1);
+      final page = await _firstPage(source, generation);
       if (_disposed || generation != _generation) return;
       _items = _unique(page.items);
       _page = page.page;
@@ -121,7 +121,11 @@ class RecommendFeed extends ChangeNotifier {
       // 这里刻意 await：否则进页面会先闪一下封面再出画面。
       if (_items.isNotEmpty) await loadDetail(_items.first);
     } catch (error) {
-      if (!_disposed && generation == _generation) _error = '$error';
+      if (!_disposed && generation == _generation) {
+        // 换源竞态里的取消是内核 / 沙箱的内部措辞，直接显示「context canceled」
+        // 只会让人以为站源坏了。
+        _error = _cancelled(error) ? '站源刚刚切换，点「刷新」重试' : '$error';
+      }
     } finally {
       if (!_disposed && generation == _generation) {
         _loading = false;
@@ -160,13 +164,53 @@ class RecommendFeed extends ChangeNotifier {
 
   Future<CatalogPage> _load(String source, int page) {
     if (!isJsSourceId(source) && SourceSite.byId(source).recommends) {
-      return repository.recommendations(source, _genre, more: page > 1);
+      return repository.recommendations(
+        source,
+        _genre,
+        more: page > 1,
+        lane: _lane,
+      );
     }
-    return repository.catalog(source, category: '', page: page);
+    return repository.catalog(
+      source,
+      category: '',
+      page: page,
+      lane: _lane,
+    );
   }
+
+  /// 推荐流在内核里的读取会话标记。
+  ///
+  /// 内核按会话名串行化同类请求：同一会话来了更新的请求就会取消前一个。
+  /// 发现页也在同一站源上取流，两边若共用会话名就会互相取消，表现为换源后
+  /// 推荐页停在「context canceled」。带上独立标记各取各的。
+  static const _lane = 'feed';
 
   /// 非 JS 源的推荐接口题材参数：沿用「发现」页推荐 tab 的口径。
   static const _genre = 'find_drama';
+
+  /// 换源瞬间「发现」页会取消在途的目录 / 推荐读取，首屏请求被误伤很常见。
+  /// 这种取消是内部实现的产物，不该变成用户可见的报错，稍等重取一次即可。
+  static bool _cancelled(Object error) {
+    final text = '$error'.toLowerCase();
+    return text.contains('context canceled') ||
+        text.contains('cancelled') ||
+        text.contains('canceled') ||
+        text.contains('取消');
+  }
+
+  Future<CatalogPage> _firstPage(String source, int generation) async {
+    try {
+      return await _load(source, 1);
+    } catch (error) {
+      if (!_cancelled(error) || _disposed || generation != _generation) {
+        rethrow;
+      }
+      await Future<void>.delayed(const Duration(milliseconds: 300));
+      if (_disposed || generation != _generation) rethrow;
+      return _load(source, 1);
+    }
+  }
 
   List<Drama> _unique(Iterable<Drama> values) {
     final seen = <String>{};
