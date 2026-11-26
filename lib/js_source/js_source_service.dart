@@ -676,17 +676,14 @@ class JsSourceService extends ChangeNotifier {
   }) {
     final entries = <JsSubscriptionEntry>[];
     for (final row in _subscriptionRows(text)) {
-      final raw = row is String ? row : _subscriptionUrlOf(row as Map);
+      final raw = row is String
+          ? row
+          : row is Map
+          ? _subscriptionUrlOf(row)
+          : '';
       final url = resolveJsSubscriptionUrl(raw, base);
       if (url.isEmpty) continue;
-      entries.add(
-        JsSubscriptionEntry(
-          row is String
-              ? ''
-              : (row['name'] ?? row['title'] ?? '').toString().trim(),
-          url,
-        ),
-      );
+      entries.add(JsSubscriptionEntry(_subscriptionNameOf(row), url));
     }
     return entries;
   }
@@ -698,19 +695,22 @@ class JsSourceService extends ChangeNotifier {
   static List<JsSubscriptionEntry> parseLocalSubscription(String text) {
     final entries = <JsSubscriptionEntry>[];
     for (final row in _subscriptionRows(text)) {
-      final raw = row is String ? row : _subscriptionUrlOf(row as Map);
+      final raw = row is String
+          ? row
+          : row is Map
+          ? _subscriptionUrlOf(row)
+          : '';
       final url = _normalizeSubscriptionPath(raw);
       if (url.isEmpty) continue;
-      entries.add(
-        JsSubscriptionEntry(
-          row is String
-              ? ''
-              : (row['name'] ?? row['title'] ?? '').toString().trim(),
-          url,
-        ),
-      );
+      entries.add(JsSubscriptionEntry(_subscriptionNameOf(row), url));
     }
     return entries;
+  }
+
+  /// 订阅条目的显示名；裸地址（字符串行）没有名字，交给调用方用文件名兜底。
+  static String _subscriptionNameOf(Object? row) {
+    if (row is! Map) return '';
+    return (row['name'] ?? row['title'] ?? '').toString().trim();
   }
 
   /// 把订阅 JSON 摊平成行：数组、`sources` 列表、单对象或映射写法。
