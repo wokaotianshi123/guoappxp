@@ -29,8 +29,13 @@ import 'windows_data_migration.dart';
 Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   if (Platform.isAndroid) {
-    await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
-    SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
+    // 电视 / 车机的窗口装饰不一定支持 edgeToEdge，设置失败也不该挡住启动。
+    try {
+      await SystemChrome.setEnabledSystemUIMode(SystemUiMode.edgeToEdge);
+      SystemChrome.setSystemUIOverlayStyle(AppTheme.systemBars(Brightness.dark));
+    } catch (error) {
+      DiaryService.add('[App] 设置系统栏失败：$error');
+    }
   }
   if (Platform.isWindows) {
     enablePortableData();
@@ -58,7 +63,15 @@ Future<void> main() async {
     await restoreWindowOnTop();
     await restoreBossKey();
   }
-  MediaKit.ensureInitialized();
+  // 部分电视盒子 / 32 位设备加载 libmpv 会失败。以前这里抛异常会停在 runApp
+  // 之前（黑屏，用户看到的就是「打开就闪退」）；现在只记录，界面照常打开，
+  // 真正起播时再把失败原因显示在播放页。
+  try {
+    MediaKit.ensureInitialized();
+  } catch (error, stack) {
+    DiaryService.add('[Media] 播放内核初始化失败：$error');
+    debugPrint('MediaKit 初始化失败: $error\n$stack');
+  }
   final device = await AppDevice.detect();
   final rendering = Platform.isAndroid
       ? ', 渲染: ${await AppDevice.compatibleRendering() ? 'skia' : 'impeller'}'

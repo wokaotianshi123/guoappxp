@@ -66,6 +66,8 @@ class DiaryService {
             final name = event['event'] as String? ?? '';
             if (name.startsWith('stream.')) {
               lines.add(_nativeLine(event, name.substring('stream.'.length)));
+            } else if (name.startsWith('android.')) {
+              lines.add(_androidLine(event, name.substring('android.'.length)));
             }
           } catch (_) {}
         }
@@ -91,6 +93,26 @@ class DiaryService {
       event['responseType'],
       event['message'],
     ].whereType<String>().where((part) => part.isNotEmpty).join(' ');
+  }
+
+  /// Android 侧（MainActivity）在启动 / 崩溃时写进同一份 `app.log` 的事件。
+  static String _androidLine(Map<String, dynamic> event, String name) {
+    final stamp = event['time'];
+    final time = stamp is String ? DateTime.tryParse(stamp)?.toLocal() : null;
+    final label = switch (name) {
+      'crash' => 'Android 崩溃',
+      'startup' => 'Android 启动',
+      _ => 'Android $name',
+    };
+    // 日记按行拆成 entries，崩溃堆栈先压成一行，避免一条崩溃被拆散。
+    final message = (event['message'] as String? ?? '')
+        .trim()
+        .replaceAll('\n', ' | ');
+    return [
+      if (time != null) '[${_clock(time)}]',
+      '[$label]',
+      message,
+    ].where((part) => part.isNotEmpty).join(' ');
   }
 
   static String _clock(DateTime time) =>

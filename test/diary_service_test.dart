@@ -26,6 +26,16 @@ void main() {
           'event': 'cover_failed',
           'message': 'ignored',
         },
+        {
+          'time': time.toUtc().toIso8601String(),
+          'event': 'android.startup',
+          'message': '首帧显示：Skia',
+        },
+        {
+          'time': time.toUtc().toIso8601String(),
+          'event': 'android.crash',
+          'message': 'main:\njava.lang.RuntimeException: boom',
+        },
       ].map(jsonEncode).join('\n'),
     );
     DiaryService.nativeLogPath = path;
@@ -36,6 +46,8 @@ void main() {
     expect(DiaryService.entries, [
       '[09:05:07.3] [Stream] upstream_status cdn.test HTTP 403 '
           'session=abc asset=segment path=/a.ts',
+      '[09:05:07.3] [Android 启动] 首帧显示：Skia',
+      '[09:05:07.3] [Android 崩溃] main: | java.lang.RuntimeException: boom',
     ]);
 
     await DiaryService.clear();

@@ -225,99 +225,85 @@ class MinePage extends StatelessWidget {
   }
 
   Widget _television(BuildContext context) {
-    const padding = EdgeInsets.fromLTRB(
-      televisionInset,
-      14,
-      televisionInset,
-      27,
-    );
+    // 电视模式可以手动开到手机 / 平板（外观 › 显示模式）。这些设备横过来
+    // 也可能只有 640~800dp 宽，把 8 个入口固定塞进一行会把图标压成一团、
+    // 标题完全看不见。这里按可用宽度算列数：电视上仍然是一整行，窄屏则
+    // 自动折成 2~4 列，左右留白也一起收窄。
+    final entries = <_TelevisionEntry>[
+      _TelevisionEntry(
+        icon: Icons.live_tv_rounded,
+        primary: true,
+        focusNode: entryFocus,
+        title: '直播',
+        subtitle: '卫视与直播频道',
+        onTap: () => unawaited(openLive(context, store: store)),
+      ),
+      _TelevisionEntry(
+        icon: Icons.headphones_rounded,
+        title: '听书',
+        subtitle: '找书、书架与收听历史',
+        onTap: () => _openAudiobook(context),
+      ),
+      _TelevisionEntry(
+        icon: Icons.extension_outlined,
+        title: '自定义模块',
+        subtitle: '安装、更新与在线仓库',
+        onTap: () => _openModules(context),
+      ),
+      _TelevisionEntry(
+        icon: Icons.dns_outlined,
+        title: '自定义XBPQ',
+        subtitle: '内置站源开关与自定义XBPQ',
+        onTap: () => _openSources(context),
+      ),
+      _TelevisionEntry(
+        icon: Icons.javascript_rounded,
+        title: 'JS 沙箱',
+        subtitle: '导入与启用 .js 脚本源',
+        onTap: () => _openJsSandbox(context),
+      ),
+      _TelevisionEntry(
+        icon: Icons.cloud_outlined,
+        title: '网盘与订阅',
+        subtitle: '夸克登录、分享直解与 TVBox 订阅',
+        onTap: () => _openNetdisk(context),
+      ),
+      if (store.canDownload)
+        _TelevisionEntry(
+          icon: Icons.download_rounded,
+          title: '下载',
+          subtitle: '缓存、导出与合并',
+          onTap: () => _openDownloads(context),
+        ),
+      _TelevisionEntry(
+        icon: Icons.settings_outlined,
+        title: '设置',
+        subtitle: '外观、播放、站源与网络',
+        onTap: () => _openSettings(context),
+      ),
+    ];
     return LayoutBuilder(
       builder: (context, constraints) {
+        final compact = constraints.maxWidth < 900;
+        final horizontal = compact ? 16.0 : televisionInset;
+        final contentWidth = constraints.maxWidth - horizontal * 2;
+        final safeWidth = contentWidth < 1 ? 1.0 : contentWidth;
+        const gap = 20.0;
+        final columns = (safeWidth / 210)
+            .floor()
+            .clamp(1, entries.length)
+            .toInt();
+        final itemWidth =
+            ((safeWidth - gap * (columns - 1)) / columns).floorToDouble();
         final page = SingleChildScrollView(
-          padding: padding,
-          child: ConstrainedBox(
-            constraints: BoxConstraints(
-              minHeight: constraints.maxHeight - padding.vertical,
-            ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              spacing: 22,
-              children: [
-                Row(
-                  spacing: 20,
-                  children: [
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.live_tv_rounded,
-                        primary: true,
-                        focusNode: entryFocus,
-                        title: '直播',
-                        subtitle: '卫视与直播频道',
-                        onTap: () => unawaited(openLive(context, store: store)),
-                      ),
-                    ),
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.headphones_rounded,
-                        title: '听书',
-                        subtitle: '找书、书架与收听历史',
-                        onTap: () => _openAudiobook(context),
-                      ),
-                    ),
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.extension_outlined,
-                        title: '自定义模块',
-                        subtitle: '安装、更新与在线仓库',
-                        onTap: () => _openModules(context),
-                      ),
-                    ),
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.dns_outlined,
-                        title: '自定义XBPQ',
-                        subtitle: '内置站源开关与自定义XBPQ',
-                        onTap: () => _openSources(context),
-                      ),
-                    ),
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.javascript_rounded,
-                        title: 'JS 沙箱',
-                        subtitle: '导入与启用 .js 脚本源',
-                        onTap: () => _openJsSandbox(context),
-                      ),
-                    ),
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.cloud_outlined,
-                        title: '网盘与订阅',
-                        subtitle: '夸克登录、分享直解与 TVBox 订阅',
-                        onTap: () => _openNetdisk(context),
-                      ),
-                    ),
-                    if (store.canDownload)
-                      Expanded(
-                        child: _TelevisionEntry(
-                          icon: Icons.download_rounded,
-                          title: '下载',
-                          subtitle: '缓存、导出与合并',
-                          onTap: () => _openDownloads(context),
-                        ),
-                      ),
-                    Expanded(
-                      child: _TelevisionEntry(
-                        icon: Icons.settings_outlined,
-                        title: '设置',
-                        subtitle: '外观、播放、站源与网络',
-                        onTap: () => _openSettings(context),
-                      ),
-                    ),
-                  ],
-                ),
-              ],
-            ),
+          padding: EdgeInsets.fromLTRB(horizontal, 14, horizontal, 27),
+          child: Wrap(
+            spacing: gap,
+            runSpacing: gap,
+            children: [
+              for (final entry in entries)
+                SizedBox(width: itemWidth, child: entry),
+            ],
           ),
         );
         return Focus(

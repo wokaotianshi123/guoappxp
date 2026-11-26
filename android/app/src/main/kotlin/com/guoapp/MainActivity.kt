@@ -41,13 +41,18 @@ import android.view.OrientationEventListener
 import android.view.SurfaceHolder
 import android.view.WindowManager
 import android.provider.Settings
+import android.util.Log
 import androidx.annotation.ChecksSdkIntAtLeast
 import androidx.annotation.RequiresApi
 import io.flutter.embedding.engine.FlutterEngine
 import io.flutter.embedding.engine.FlutterShellArgs
 import io.flutter.plugin.common.MethodChannel
+import org.json.JSONObject
 import java.io.File
 import java.io.IOException
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 import kotlin.math.roundToInt
 
 private const val SURFACE_RESIZE_REDRAW_WAIT_MS = 100L
@@ -59,6 +64,19 @@ private const val PICTURE_IN_PICTURE_ACTION = "com.guoapp.PICTURE_IN_PICTURE_ACT
 private const val LARGE_CANVAS_DP = 1000f
 private const val TARGET_CANVAS_DP = 720f
 
+// 渲染 / 启动安全模式都写在这份 SharedPreferences 里（设置页的「兼容渲染模式」
+// 读取的也是它，改键名会让老用户的选择丢失）。
+private const val RENDERING_PREFS = "duanju_rendering"
+private const val COMPATIBLE_RENDERING_KEY = "compatibleRendering"
+
+// 用户是否在设置里亲手选过渲染方式。电视默认走 Skia，但用户显式关掉之后
+// 必须真的回到 Impeller，不能被「电视默认」一直盖住。
+private const val RENDERING_CHOICE_KEY = "renderingChoiceMade"
+private const val STARTUP_ATTEMPTS_KEY = "startupAttempts"
+private const val SAFE_MODE_KEY = "safeMode"
+private const val STARTUP_SETTLE_MS = 8000L
+private const val STARTUP_LOG_LIMIT = 256 * 1024L
+
 private data class PlayerPictureInPicture(
     val width: Int,
     val height: Int,
@@ -69,6 +87,7 @@ private data class PlayerPictureInPicture(
 )
 
 class MainActivity : FlutterActivity() {
+    private val mainHandler = Handler(Looper.getMainLooper())
     private var pictureInPicture: PlayerPictureInPicture? = null
     private var pictureInPictureReceiver: BroadcastReceiver? = null
     private var documentResult: MethodChannel.Result? = null
@@ -84,20 +103,132 @@ class MainActivity : FlutterActivity() {
     private var cast: DlnaCast? = null
     private var televisionMode = false
     private var orientationListener: OrientationEventListener? = null
+    private var safeMode = false
+    private var firstFrameShown = false
 
-    override fun attachBaseContext(newBase: Context) {
-        super.attachBaseContext(scaleLargeCanvas(newBase))
+    /// 本进程真正使用的渲染方式（启动时定下来，运行中不变）。
+    private var skiaActive = false
+
+    private companion object {
+        // 同一个进程里 Activity 可能被重建多次（旋转、分屏、从后台回来），
+        // 那些都不算「又启动了一次」，否则正常使用也会把计数堆到安全模式。
+        @Volatile
+        private var startupEvaluated = false
+
+        // 崩溃兜底每个进程只装一次：每次重建都往处理器链上挂一层，
+        // 崩一次会重复写多行日志，旧 Activity 也会跟着泄漏。
+        @Volatile
+        private var crashHandlerInstalled = false
     }
 
+    override fun attachBaseContext(newBase: Context) {
+        installCrashHandler(newBase)
+        super.attachBaseContext(runCatching { prepareStartup(newBase) }.getOrDefault(newBase))
+    }
+
+    /// 记录启动阶段的痕迹。崩溃发生在首帧之前时，这是唯一能带出来的信息。
+    ///
+    /// 写的是核心（Go）同一份 `files/logs/app.log`，每行一个 JSON：App 的
+    /// 「播放调试日记」会把 `android.*` 事件翻成可读行，出问题时也可以直接取
+    /// 这个文件。超过 256KB 时轮转成 `app.log.1`（日记两代都读）。
+    private fun writeLogLine(base: Context, event: String, message: String) {
+        runCatching {
+            val directory = File(base.filesDir, "logs").apply { mkdirs() }
+            val file = File(directory, "app.log")
+            if (file.length() > STARTUP_LOG_LIMIT) {
+                val backup = File(directory, "app.log.1")
+                backup.delete()
+                file.renameTo(backup)
+            }
+            val line = JSONObject()
+                .put("event", event)
+                .put(
+                    "time",
+                    SimpleDateFormat("yyyy-MM-dd'T'HH:mm:ss.SSSXXX", Locale.US).format(Date()),
+                )
+                .put("message", message)
+                .toString()
+            file.appendText("$line\n", Charsets.UTF_8)
+        }
+    }
+
+    private fun startupLog(base: Context, message: String) =
+        writeLogLine(base, "android.startup", message)
+
+    /// Java / Kotlin 侧未捕获异常兜底：先落盘再交回系统，方便用户把日志发回来。
+    private fun installCrashHandler(base: Context) {
+        if (crashHandlerInstalled) return
+        crashHandlerInstalled = true
+        // 用 applicationContext 落盘，避免处理器一直持有 Activity。
+        val app = base.applicationContext ?: base
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            writeLogLine(app, "android.crash", "${thread.name}:\n${Log.getStackTraceString(error)}")
+            if (previous != null) {
+                previous.uncaughtException(thread, error)
+            } else {
+                Runtime.getRuntime().halt(10)
+            }
+        }
+    }
+
+    /// 电视盒子 / 电视的 GPU 驱动参差不齐，Impeller 在部分机型上会在首帧前后
+    /// 直接把进程带走。这里用启动次数兜底：连续两次没撑过首帧，第三次自动切到
+    /// Skia（等同设置里的「兼容渲染模式」），用户至少能进到界面。
+    ///
+    /// 计数在首帧之后 8 秒清零：启动后就崩的情况仍然算失败，不会因为「画了一帧」
+    /// 被误判成启动成功。进入安全模式后把设置项也置为开，界面与实际渲染一致；
+    /// 用户手动改设置即视为不再需要兜底。
+    private fun prepareStartup(base: Context): Context {
+        val prefs = base.getSharedPreferences(RENDERING_PREFS, Context.MODE_PRIVATE)
+        // 同一进程的重建只读当前状态，不累加计数。
+        if (startupEvaluated) {
+            safeMode = prefs.getBoolean(SAFE_MODE_KEY, false) ||
+                prefs.getInt(STARTUP_ATTEMPTS_KEY, 0) > 2
+            skiaActive = safeMode || prefs.getBoolean(COMPATIBLE_RENDERING_KEY, false)
+            return scaleLargeCanvas(base)
+        }
+        startupEvaluated = true
+        val attempts = prefs.getInt(STARTUP_ATTEMPTS_KEY, 0) + 1
+        safeMode = prefs.getBoolean(SAFE_MODE_KEY, false) || attempts > 2
+        val editor = prefs.edit().putInt(STARTUP_ATTEMPTS_KEY, attempts)
+        if (safeMode) {
+            editor.putBoolean(SAFE_MODE_KEY, true)
+            editor.putBoolean(COMPATIBLE_RENDERING_KEY, true)
+        }
+        editor.commit()
+        // attachBaseContext 阶段 Activity 还没 attach，不能用 isTelevisionDevice()；
+        // 电视默认 Skia 会在 getFlutterShellArgs() 里补上。
+        skiaActive = safeMode || prefs.getBoolean(COMPATIBLE_RENDERING_KEY, false)
+        startupLog(
+            base,
+            if (safeMode) "启动尝试 #$attempts：进入安全模式（Skia）" else "启动尝试 #$attempts",
+        )
+        return scaleLargeCanvas(base)
+    }
+
+    /// 车机 / 电视 / 投影等 4K~6K 大屏的逻辑短边远超平板，Flutter 按原始 density
+    /// 排版会让字号和按钮小到无法阅读、点击。这里只覆盖 density 相关字段，
+    /// 把逻辑短边压到接近平板（720dp）；locale / uiMode / fontScale 等沿用
+    /// 原配置（不能拿空 Configuration 去建上下文，部分电视 ROM 会因为宽高为 0
+    /// 或语言丢失在启动阶段出问题）。
     private fun scaleLargeCanvas(base: Context): Context {
+        val config = base.resources.configuration
         val metrics = base.resources.displayMetrics
-        if (metrics.density <= 0f) return base
+        if (metrics.density <= 0f || config.densityDpi <= 0) return base
         val shortestDp = minOf(metrics.widthPixels, metrics.heightPixels) / metrics.density
         if (shortestDp <= LARGE_CANVAS_DP) return base
-        val densityOnly = Configuration().apply {
-            densityDpi = (base.resources.configuration.densityDpi * shortestDp / TARGET_CANVAS_DP).roundToInt()
+        val targetDpi = (config.densityDpi * shortestDp / TARGET_CANVAS_DP).roundToInt()
+        if (targetDpi <= config.densityDpi) return base
+        val targetDensity = targetDpi / 160f
+        val override = Configuration(config).apply {
+            densityDpi = targetDpi
+            screenWidthDp = (metrics.widthPixels / targetDensity).roundToInt()
+            screenHeightDp = (metrics.heightPixels / targetDensity).roundToInt()
+            smallestScreenWidthDp =
+                (minOf(metrics.widthPixels, metrics.heightPixels) / targetDensity).roundToInt()
         }
-        return runCatching { base.createConfigurationContext(densityOnly) }.getOrDefault(base)
+        return base.createConfigurationContext(override)
     }
 
     @Suppress("DEPRECATION")
@@ -133,15 +264,58 @@ class MainActivity : FlutterActivity() {
     }
 
     private fun renderingPreferences() =
-        getSharedPreferences("duanju_rendering", Context.MODE_PRIVATE)
+        getSharedPreferences(RENDERING_PREFS, Context.MODE_PRIVATE)
 
     private fun compatibleRendering(): Boolean =
-        renderingPreferences().getBoolean("compatibleRendering", false)
+        renderingPreferences().getBoolean(COMPATIBLE_RENDERING_KEY, false)
+
+    /// 这次启动是否应该用 Skia。
+    ///
+    /// 优先级：安全模式 > 用户显式选择 > 电视默认 Skia。只有用户没亲手选过
+    /// 的电视设备才自动切 Skia；选过之后（哪怕是选 Impeller）都尊重设置。
+    private fun shouldUseSkia(): Boolean {
+        if (safeMode || compatibleRendering()) return true
+        if (renderingPreferences().getBoolean(RENDERING_CHOICE_KEY, false)) return false
+        return runCatching { televisionMode || isTelevisionDevice() }
+            .getOrDefault(televisionMode)
+    }
 
     override fun getFlutterShellArgs(): FlutterShellArgs {
         val args = super.getFlutterShellArgs()
-        if (compatibleRendering()) args.add("--enable-impeller=false")
+        // 电视默认关掉 Impeller：部分电视盒子的 Vulkan / GLES 驱动会在首帧直接
+        // 崩进程，而崩在启动阶段时用户根本没有机会去设置里打开兼容渲染。
+        // 仍保留设置项：非电视设备可以手动开，进入过安全模式的设备会自动开。
+        skiaActive = shouldUseSkia()
+        if (skiaActive) args.add("--enable-impeller=false")
         return args
+    }
+
+    override fun onFlutterUiDisplayed() {
+        super.onFlutterUiDisplayed()
+        firstFrameShown = true
+        startupLog(
+            this,
+            "首帧显示：${if (skiaActive) "Skia" else "Impeller"}${if (safeMode) "（安全模式）" else ""}",
+        )
+        // 首帧之后还要再活 8 秒才算启动成功，避免「闪一下再崩」被清掉计数。
+        mainHandler.postDelayed({
+            if (isFinishing || isDestroyed) return@postDelayed
+            clearStartupAttempts("启动稳定")
+        }, STARTUP_SETTLE_MS)
+    }
+
+    override fun onStop() {
+        super.onStop()
+        // 已经画出首帧、并且正常走到后台：这是用户在用它，不是启动失败。
+        // 否则开了就退（或切走）两次也会被误算成崩溃，平白进安全模式。
+        if (firstFrameShown) clearStartupAttempts("退到后台")
+    }
+
+    private fun clearStartupAttempts(reason: String) {
+        val prefs = renderingPreferences()
+        if (prefs.getInt(STARTUP_ATTEMPTS_KEY, 0) == 0) return
+        prefs.edit().putInt(STARTUP_ATTEMPTS_KEY, 0).apply()
+        startupLog(this, "$reason，清除崩溃计数")
     }
 
     private fun restartApplication() {
@@ -311,22 +485,43 @@ class MainActivity : FlutterActivity() {
         super.onSaveInstanceState(outState)
     }
 
+    /// 桥接对象构造失败的兜底：记一条启动日志，返回 null，不让一个可选功能
+    /// 把整个启动流程带走。
+    private fun <T : Any> startupBridge(name: String, block: () -> T): T? =
+        runCatching(block).onFailure { error ->
+            Log.w("guoapp", "$name 初始化失败", error)
+            startupLog(this, "$name 初始化失败：${Log.getStackTraceString(error)}")
+        }.getOrNull()
+
     override fun configureFlutterEngine(flutterEngine: FlutterEngine) {
         super.configureFlutterEngine(flutterEngine)
-        textInput = TextInputBridge(this, flutterEngine.dartExecutor.binaryMessenger)
-        mediaControls = MediaControls(this, flutterEngine.dartExecutor.binaryMessenger)
+        textInput = startupBridge("文本输入") {
+            TextInputBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        }
+        mediaControls = startupBridge("媒体通知") {
+            MediaControls(this, flutterEngine.dartExecutor.binaryMessenger)
+        }
         // 人机验证与 TVBox .jar Spider 桥接：只在 Android 上可用。
-        webViewBridge = WebViewBridge(this, flutterEngine.dartExecutor.binaryMessenger)
-        spiderBridge = SpiderBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+        webViewBridge = startupBridge("网页验证") {
+            WebViewBridge(this, flutterEngine.dartExecutor.binaryMessenger)
+        }
+        spiderBridge = startupBridge("Spider") {
+            SpiderBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+        }
         // 投屏（DLNA）：Flutter 侧只负责选设备与按钮，搜索 / SOAP 下发都在
         // DlnaCast 的单线程里跑，网络耗时不能占主线程。
-        val dlna = DlnaCast(applicationContext)
+        val dlna = startupBridge("投屏") { DlnaCast(applicationContext) }
         cast = dlna
         castChannel = MethodChannel(flutterEngine.dartExecutor.binaryMessenger, "duanju/cast")
             .also { channel ->
                 channel.setMethodCallHandler { call, result ->
+                    val controller = dlna
+                    if (controller == null) {
+                        result.error("cast_unavailable", "投屏模块未初始化", null)
+                        return@setMethodCallHandler
+                    }
                     when (call.method) {
-                        "discover" -> dlna.discover { devices, error ->
+                        "discover" -> controller.discover { devices, error ->
                             result.success(
                                 mapOf(
                                     "devices" to devices.map { it.toMap() },
@@ -344,7 +539,7 @@ class MainActivity : FlutterActivity() {
                             if (control.isEmpty() || url.isEmpty()) {
                                 result.error("invalid_cast", "缺少投屏设备或播放地址", null)
                             } else {
-                                dlna.play(control, url, title, position, relay) { ok, message ->
+                                controller.play(control, url, title, position, relay) { ok, message ->
                                     if (ok) result.success(null)
                                     else result.error("cast_failed", message, null)
                                 }
@@ -356,7 +551,7 @@ class MainActivity : FlutterActivity() {
                             if (control.isEmpty() || command.isEmpty()) {
                                 result.error("invalid_cast", "缺少投屏设备或操作", null)
                             } else {
-                                dlna.control(control, command) { ok, message ->
+                                controller.control(control, command) { ok, message ->
                                     if (ok) result.success(null)
                                     else result.error("cast_failed", message, null)
                                 }
@@ -367,11 +562,11 @@ class MainActivity : FlutterActivity() {
                             if (control.isEmpty()) {
                                 result.success(mapOf("state" to "UNKNOWN"))
                             } else {
-                                dlna.status(control) { state -> result.success(state) }
+                                controller.status(control) { state -> result.success(state) }
                             }
                         }
                         "close" -> {
-                            dlna.close()
+                            controller.close()
                             result.success(null)
                         }
                         else -> result.notImplemented()
@@ -407,13 +602,19 @@ class MainActivity : FlutterActivity() {
                         }
                         "battery" -> result.success(runCatching { battery() }.getOrNull())
                         "playbackPower" -> result.success(runCatching { playbackPower() }.getOrNull())
-                        "compatibleRendering" -> result.success(compatibleRendering())
+                        "compatibleRendering" -> result.success(skiaActive)
                         "setCompatibleRendering" -> {
                             val enabled = call.argument<Boolean>("enabled")
                             if (enabled == null) {
                                 result.error("invalid_rendering_mode", "缺少兼容渲染模式状态", null)
                             } else if (!renderingPreferences().edit()
-                                    .putBoolean("compatibleRendering", enabled).commit()) {
+                                    .putBoolean(COMPATIBLE_RENDERING_KEY, enabled)
+                                    // 用户亲手选了就以他为准：清掉安全模式与失败计数，
+                                    // 下次启动按设置走。
+                                    .putBoolean(RENDERING_CHOICE_KEY, true)
+                                    .putInt(STARTUP_ATTEMPTS_KEY, 0)
+                                    .remove(SAFE_MODE_KEY)
+                                    .commit()) {
                                 result.error("rendering_mode_not_saved", "兼容渲染模式未能保存", null)
                             } else {
                                 result.success(null)

@@ -14,7 +14,7 @@ import 'support/fakes.dart';
 /// 这类 bug 的典型表现是整块子树被丢弃（界面只剩一部分内容），
 /// 单看某个手机尺寸的测试完全发现不了。
 void main() {
-  Future<void> pump(WidgetTester tester, Size size) async {
+  Future<void> pump(WidgetTester tester, Size size, {FormFactor? form}) async {
     tester.view.physicalSize = size;
     tester.view.devicePixelRatio = 1.0;
     addTearDown(tester.view.reset);
@@ -36,6 +36,7 @@ void main() {
       MaterialApp(
         home: AppScope(
           repository: repository,
+          formFactor: form,
           child: MinePage(
             store: store,
             downloads: downloads,
@@ -74,5 +75,27 @@ void main() {
         expect(find.text(label), findsWidgets, reason: '${entry.key} 缺少入口 $label');
       }
     });
+  }
+
+  // 回归：电视模式可以在手机上手动开启。以前 8 个入口固定塞进一行，
+  // 390dp 宽时每格只有二十几 dp，图标和标题挤成一团、标题完全看不见。
+  for (final size in const [Size(390, 844), Size(844, 390), Size(1920, 1080)]) {
+    testWidgets(
+      '电视模式 ${size.width.toInt()}x${size.height.toInt()} 下入口不被挤扁',
+      (tester) async {
+        await pump(tester, size, form: FormFactor.television);
+        expect(tester.takeException(), isNull, reason: '电视模式下出现布局异常');
+        for (final label in ['直播', '听书', '自定义模块', '网盘与订阅', '设置']) {
+          final finder = find.text(label);
+          expect(finder, findsWidgets, reason: '电视模式缺少入口 $label');
+          final box = finder.evaluate().first.renderObject as RenderBox;
+          expect(
+            box.size.width,
+            greaterThan(80),
+            reason: '入口「$label」标题只剩 ${box.size.width}dp 宽，被挤成一团',
+          );
+        }
+      },
+    );
   }
 }
