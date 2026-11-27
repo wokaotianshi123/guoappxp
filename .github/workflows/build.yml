@@ -152,6 +152,17 @@ jobs:
           fi
           printf '%s' "$ANDROID_KEYSTORE_BASE64" | tr -d '[:space:]' | base64 -d > "$RUNNER_TEMP/release.jks"
           echo "ANDROID_KEYSTORE_PATH=$RUNNER_TEMP/release.jks" >> "$GITHUB_ENV"
+      - name: 缓存 Gradle 依赖
+        # 依赖缓存能显著减少对 Maven Central 的重复请求，是 429 限流最有效的预防。
+        # 只缓存 modules-2 与 wrapper：构建输出（caches 下其它目录）体积大且容易脏。
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.gradle/caches/modules-2
+            ~/.gradle/wrapper
+          key: gradle-${{ runner.os }}-${{ hashFiles('android/**/*.gradle.kts', 'android/gradle.properties', 'android/gradle/wrapper/gradle-wrapper.properties', 'pubspec.lock') }}
+          restore-keys: |
+            gradle-${{ runner.os }}-
       - run: python scripts/build_android.py
         env:
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}

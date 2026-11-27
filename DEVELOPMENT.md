@@ -39,6 +39,16 @@ python3 scripts/build_ios.py --export-options /path/to/ExportOptions.plist
 
 其他脚本：`generate_brand_assets.py` 从 `brand_icon.svg` 生成各平台图标；`clear_app_data.py`、`clear_catalog_cache.py` 清理 Windows 上的应用数据和剧库缓存。
 
+### 安卓构建的依赖下载
+
+Maven Central 会对共享出口 IP 限流（返回 429），GitHub Actions 的 runner 经常撞上。Gradle 收到 429 后会把那个仓库**整场标记为不可用**，后续所有依赖解析连锁失败，报出来的却是「找不到 Kotlin 插件」之类完全不相干的错。`android/` 下因此做了三层处理：
+
+- `settings.gradle.kts`、`build.gradle.kts` 的仓库列表里，镜像（Google 的 Central 镜像、阿里云 public / gradle-plugin）排在官方仓库前面，官方仓库保留兜底；
+- `gradle.properties` 里的 `systemProp.org.gradle.internal.plugins.portal.url.override` 直接把**插件门户地址**指向镜像 —— Flutter 的 gradle 插件是 `includeBuild` 进来的独立构建，有自己的 settings，仓库列表里的镜像对它无效，只有这个属性管得到；
+- CI 里缓存 `~/.gradle/caches/modules-2` 与 wrapper，减少重复请求。
+
+镜像缺件导致解析失败时，删掉 `gradle.properties` 里那行 `portal.url.override` 就退回官方门户。
+
 ## 检查与测试
 
 ~~~sh
