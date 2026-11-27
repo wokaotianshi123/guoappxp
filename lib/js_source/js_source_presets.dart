@@ -55,3 +55,40 @@ PresetJsSource? findPresetSource(String idOrFileName) {
   }
   return null;
 }
+
+/// 内置的脚本源订阅。
+///
+/// 与 [kPresetJsSources] 不同，这里只提供订阅地址：导入时仍走
+/// `importSubscription`，由订阅 JSON 决定要装哪些脚本、各自的地址与配置。
+class PresetJsSubscription {
+  const PresetJsSubscription({
+    required this.id,
+    required this.name,
+    required this.url,
+    this.description = '',
+  });
+
+  final String id;
+  final String name;
+  final String url;
+  final String description;
+}
+
+/// 默认不预填地址；用户在「从网址导入」里点一下才写进输入框。
+const List<PresetJsSubscription> kPresetJsSubscriptions = [
+  PresetJsSubscription(
+    id: 'xiaoguo',
+    name: '小果',
+    description: '小果影视脚本源订阅（含脚本与配置）',
+    url:
+        'https://cfkua.wokaotianshi.eu.org/https://raw.githubusercontent.com/'
+        'wokaotianshi123/config/refs/heads/main/xiaoguojs/xiaoguo.json',
+  ),
+];
+
+PresetJsSubscription? findPresetSubscription(String id) {
+  for (final preset in kPresetJsSubscriptions) {
+    if (preset.id == id) return preset;
+  }
+  return null;
+}

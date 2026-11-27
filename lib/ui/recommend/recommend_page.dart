@@ -107,7 +107,11 @@ class _RecommendPageState extends State<RecommendPage> {
     try {
       await openPage<void>(
         context,
-        (_) => DetailPage(store: widget.store, drama: drama),
+        (_) => DetailPage(
+          store: widget.store,
+          drama: drama,
+          preloadPlayback: false,
+        ),
       );
     } finally {
       _detailOpen = false;
@@ -116,8 +120,7 @@ class _RecommendPageState extends State<RecommendPage> {
     }
   }
 
-  bool _busy(RecommendFeed feed) =>
-      _moving || feed.loading || feed.loadingMore;
+  bool _busy(RecommendFeed feed) => _moving || feed.loading || feed.loadingMore;
 
   Future<void> _move(RecommendFeed feed, int direction) async {
     if (_busy(feed)) return;

@@ -11,6 +11,7 @@ import '../../js_source/js_signing_profile.dart';
 import '../../local_store.dart';
 import '../../models.dart';
 import '../widgets/group_card.dart';
+import 'js_source_import_dialog.dart';
 
 /// 我的 › JS 沙箱。
 ///
@@ -32,14 +33,12 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
 
   final _name = TextEditingController();
   final _script = TextEditingController();
-  final _url = TextEditingController();
   bool _busy = false;
 
   @override
   void dispose() {
     _name.dispose();
     _script.dispose();
-    _url.dispose();
     super.dispose();
   }
 
@@ -327,55 +326,11 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
   }
 
   Future<void> _urlImport() async {
-    _url.clear();
-    final result = await showDialog<bool>(
+    final url = await showDialog<String>(
       context: context,
-      builder: (context) => AlertDialog(
-        title: const Text('从网址导入'),
-        content: SizedBox(
-          width: 520,
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              const Text(
-                '可以填脚本直链（GitHub Raw / Gist / 自建 CDN），也可以填订阅地址：'
-                '订阅是一个 JSON，里面列出若干脚本源的名称与地址。地址支持相对写法'
-                '（如 ./sub/a.js 或 .\\sub\\a.js），会按订阅所在目录解析。',
-                style: TextStyle(fontSize: 12, height: 1.5),
-              ),
-              const SizedBox(height: 12),
-              TextField(
-                controller: _url,
-                autofocus: true,
-                keyboardType: TextInputType.url,
-                decoration: const InputDecoration(
-                  labelText: '脚本或订阅地址',
-                  hintText: 'https://example.com/source.js',
-                  isDense: true,
-                  border: OutlineInputBorder(),
-                ),
-              ),
-            ],
-          ),
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(context, false),
-            child: const Text('取消'),
-          ),
-          FilledButton(
-            onPressed: () {
-              if (_url.text.trim().isEmpty) return;
-              Navigator.pop(context, true);
-            },
-            child: const Text('下载并导入'),
-          ),
-        ],
-      ),
+      builder: (context) => const JsSourceImportDialog(),
     );
-    if (result != true) return;
-    final url = _url.text.trim();
+    if (url == null || url.isEmpty) return;
     await _run(() async {
       // 先按订阅解析；不是订阅就自动退化成单个脚本直链。
       final imported = await _service.importSubscription(url);
@@ -680,7 +635,11 @@ class _ImportDialog extends StatelessWidget {
               '所在目录解析。导出包里的 xiaoguo.json 与脚本放在同一目录：'
               '选 zip，或解压后直接选 xiaoguo.json，都会读同目录脚本，不需要'
               '联网。填错成脚本直链时会自动按单个脚本导入。',
-              style: TextStyle(fontSize: 12, height: 1.5, color: colors.onSurfaceVariant),
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.5,
+                color: colors.onSurfaceVariant,
+              ),
             ),
           ],
         ),
@@ -858,7 +817,8 @@ class _ExportPickerState extends State<_ExportPicker> {
   );
 }
 
-class _EmptySources extends StatelessWidget {  const _EmptySources();
+class _EmptySources extends StatelessWidget {
+  const _EmptySources();
 
   @override
   Widget build(BuildContext context) => Container(
@@ -931,8 +891,9 @@ class _SourceTile extends StatelessWidget {
           const SizedBox(width: 8),
           Text(
             'v${meta.version}',
-            style: Theme.of(context).textTheme.labelSmall
-                ?.copyWith(color: colors.onSurfaceVariant),
+            style: Theme.of(
+              context,
+            ).textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
           ),
         ],
       ),
@@ -1002,8 +963,9 @@ class _SourceTile extends StatelessWidget {
               padding: const EdgeInsets.only(right: 4),
               child: Text(
                 '已启用',
-                style: Theme.of(context).textTheme.labelSmall
-                    ?.copyWith(color: colors.onSurfaceVariant),
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                  color: colors.onSurfaceVariant,
+                ),
               ),
             )
           else
@@ -1048,8 +1010,10 @@ class _DiagnosticsCardState extends State<_DiagnosticsCard> {
                 padding: const EdgeInsets.symmetric(vertical: 10),
                 child: Text(
                   '还没有请求记录。打开一个脚本源浏览 / 播放后，这里会显示最近的接口往来。',
-                  style: Theme.of(context).textTheme.bodySmall
-                      ?.copyWith(color: colors.onSurfaceVariant, height: 1.5),
+                  style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                    color: colors.onSurfaceVariant,
+                    height: 1.5,
+                  ),
                 ),
               )
             else

@@ -165,10 +165,18 @@ class DetailPage extends StatefulWidget {
     required this.store,
     required this.drama,
     this.autoplay = false,
+    this.preloadPlayback = true,
   });
   final LocalStore store;
   final Drama drama;
   final bool autoplay;
+
+  /// 详情数据就绪时是否先在后台建一个播放会话。
+  ///
+  /// 从推荐页进来时传 false：那边返回后会重建自己的播放器，详情页只是
+  /// 浏览、没点播放时不该额外占一路取流，更不该在退场动画结束后才释放、
+  /// 把推荐页的新请求一起取消（#18）。
+  final bool preloadPlayback;
 
   @override
   State<DetailPage> createState() => _DetailPageState();
@@ -187,6 +195,7 @@ class _DetailPageState extends State<DetailPage> {
   String? _groupPagerDrama;
   int? _groupTarget;
   bool _groupDragging = false;
+
   /// 详情页选中的线路名与线路内分组。多线路源（TVBox / 网盘展开）才有意义。
   String _routeName = '';
   int _routeGroup = 0;
@@ -194,6 +203,7 @@ class _DetailPageState extends State<DetailPage> {
   final _televisionDetail = GlobalKey<TelevisionDetailState>();
   bool _entered = false;
   PlaybackHandle? _watched;
+
   /// 开启「点开剧集直接播放」时，详情路由只当过渡页，播放成功就把它 pop 掉，
   /// 返回时直接落到列表；加载失败则揭开黑幕留在详情页。
   late final bool _direct =
@@ -337,7 +347,8 @@ class _DetailPageState extends State<DetailPage> {
 
   void _preopen() {
     final details = _details!;
-    if (_handle != null ||
+    if (!widget.preloadPlayback ||
+        _handle != null ||
         _watching ||
         !mounted ||
         !_ready ||
@@ -1878,7 +1889,8 @@ class _RouteChip extends StatelessWidget {
   }
 }
 
-class _EpisodeCell extends StatelessWidget {  const _EpisodeCell({
+class _EpisodeCell extends StatelessWidget {
+  const _EpisodeCell({
     super.key,
     required this.episode,
     required this.named,

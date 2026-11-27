@@ -137,32 +137,118 @@ class _FollowPageState extends State<FollowPage> {
   @override
   Widget build(BuildContext context) {
     final form = AppScope.formFactorOf(context);
+    final phone = form == FormFactor.phone;
     return PopScope(
       canPop: _selection == null,
       onPopInvokedWithResult: (didPop, _) {
         if (!didPop) _finishEditing();
       },
-      child: Scaffold(
-        body: SafeArea(
-          bottom: false,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              _rail(
-                wide: form == FormFactor.pad || form == FormFactor.window,
+      child: phone
+          ? _phoneShell(context)
+          : Scaffold(
+              body: SafeArea(
+                bottom: false,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
+                  children: [
+                    _rail(
+                      wide: form == FormFactor.pad || form == FormFactor.window,
+                    ),
+                    Expanded(
+                      child: _section == 0
+                          ? _followBody(context)
+                          : HistoryPage(
+                              store: widget.store,
+                              root: true,
+                              embedded: true,
+                            ),
+                    ),
+                  ],
+                ),
               ),
-              Expanded(
-                child: _section == 0
-                    ? _followBody(context)
-                    : HistoryPage(
-                        store: widget.store,
-                        root: true,
-                        embedded: true,
+            ),
+    );
+  }
+
+  /// 手机窄屏不在左侧放竖栏：92px 会吃掉近四分之一宽度。
+  /// 改成顶部两段切换，内容区占满整屏；平板 / 桌面仍保留左栏。
+  Widget _phoneShell(BuildContext context) => Scaffold(
+    body: SafeArea(
+      bottom: false,
+      child: Column(
+        children: [
+          _phoneTabs(),
+          Expanded(
+            child: _section == 0
+                // 手机上的历史页用自己的标题和编辑 / 清空动作，
+                // embedded 版本在手机端不会渲染这些入口。
+                ? _followBody(context)
+                : HistoryPage(store: widget.store, root: true),
+          ),
+        ],
+      ),
+    ),
+  );
+
+  Widget _phoneTabs() {
+    final colors = Theme.of(context).colorScheme;
+    Widget tab(int section, IconData icon, String label) {
+      final selected = _section == section;
+      return Expanded(
+        child: FocusRing(
+          radius: 10,
+          child: Material(
+            color: selected
+                ? colors.primaryContainer.withValues(alpha: .55)
+                : Colors.transparent,
+            borderRadius: BorderRadius.circular(10),
+            child: InkWell(
+              key: ValueKey('library-tab-$section'),
+              borderRadius: BorderRadius.circular(10),
+              onTap: () => _switch(section),
+              child: SizedBox(
+                height: 38,
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Icon(
+                      icon,
+                      size: 18,
+                      color: selected
+                          ? colors.primary
+                          : colors.onSurfaceVariant,
+                    ),
+                    const SizedBox(width: 6),
+                    Text(
+                      label,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: TextStyle(
+                        fontSize: 13,
+                        fontWeight: selected
+                            ? FontWeight.w800
+                            : FontWeight.w500,
+                        color: selected ? colors.primary : colors.onSurface,
                       ),
+                    ),
+                  ],
+                ),
               ),
-            ],
+            ),
           ),
         ),
+      );
+    }
+
+    return Padding(
+      key: const ValueKey('library-tabs'),
+      padding: const EdgeInsets.fromLTRB(16, 8, 16, 2),
+      child: Row(
+        children: [
+          tab(0, Icons.bookmark_border_rounded, '追剧'),
+          const SizedBox(width: 6),
+          tab(1, Icons.history_rounded, '历史记录'),
+        ],
       ),
     );
   }
@@ -204,9 +290,7 @@ class _FollowPageState extends State<FollowPage> {
                   Icon(
                     icon,
                     size: 18,
-                    color: selected
-                        ? colors.primary
-                        : colors.onSurfaceVariant,
+                    color: selected ? colors.primary : colors.onSurfaceVariant,
                   ),
                   const SizedBox(width: 6),
                   Expanded(
