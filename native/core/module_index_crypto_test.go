@@ -54,6 +54,25 @@ func TestDecryptModuleIndexPassesPlainText(t *testing.T) {
 	}
 }
 
+// TestDecryptModuleIndexStripsBomAndSpace 真果鉴仓库改成明文后由人工维护，
+// 文件带 UTF-8 BOM 或首尾空白时要先清洗，否则 json.Unmarshal 会判成
+// 「索引格式无效」。
+func TestDecryptModuleIndexStripsBomAndSpace(t *testing.T) {
+	body := []byte(`{"format":1,"modules":[]}`)
+	raw := append([]byte("\xef\xbb\xbf\n  "), body...)
+	raw = append(raw, []byte("\n\n")...)
+	got, err := decryptModuleIndex(raw)
+	if err != nil {
+		t.Fatalf("带 BOM 的明文索引不该报错: %v", err)
+	}
+	if !bytes.Equal(got, body) {
+		t.Fatalf("清洗后 = %q，期望 %q", got, body)
+	}
+	if _, err := parseModuleIndex(got); err != nil {
+		t.Fatalf("清洗后的索引应能解析: %v", err)
+	}
+}
+
 // TestDecryptModuleIndexRejectsTampered 内容被改动或密钥不符时要报错，而不是
 // 返回半截明文。
 func TestDecryptModuleIndexRejectsTampered(t *testing.T) {
@@ -103,9 +122,9 @@ func TestParseEncryptedModuleIndex(t *testing.T) {
 	}
 }
 
-// TestBuiltinRepositoriesIncludeEncryptedStore 锁住内置仓库列表：
-// guocheng1378 已换成真果鉴的加密仓库地址。
-func TestBuiltinRepositoriesIncludeEncryptedStore(t *testing.T) {
+// TestBuiltinRepositoriesIncludeZhenguojianStore 锁住内置仓库列表：
+// guocheng1378 已换成真果鉴的仓库地址（明文 index.json）。
+func TestBuiltinRepositoriesIncludeZhenguojianStore(t *testing.T) {
 	var found bool
 	for _, repo := range moduleBuiltinRepositories {
 		if repo.URL == "https://guoapp.dpdns.org/modules/index.json" {
@@ -116,6 +135,6 @@ func TestBuiltinRepositoriesIncludeEncryptedStore(t *testing.T) {
 		}
 	}
 	if !found {
-		t.Fatalf("内置仓库缺少真果鉴加密仓库：%+v", moduleBuiltinRepositories)
+		t.Fatalf("内置仓库缺少真果鉴仓库：%+v", moduleBuiltinRepositories)
 	}
 }

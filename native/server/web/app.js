@@ -741,7 +741,69 @@ function hashFor(overrides) {
 // 「全部源」聚合搜索：勾选时并发打所有可见源（含自定义源），核心按标题/年份/集数
 // 归一去重后合并。搜索是分批回来的：先 searchStart 拿会话号，再每 200ms 轮询一次
 // 快照，哪个站源先回来就先画哪批，不必等最慢的那几个站源。
-var crossSearch = { token: 0, id: '', timer: null, painted: '' };
+//
+// 脚本源（js: 前缀）不在核心注册表里——脚本跑在本页的 Worker 里，核心的聚合
+// 搜索打不到它们，所以由这边另外并发搜索，结果并进同一份列表（见
+// searchJsSource / mergeJsCrossItems）。
+var crossSearch = {
+  token: 0,
+  id: '',
+  timer: null,
+  painted: '',
+  // 脚本源的分批结果：核心那份还没回来时也要能把它们画出来。
+  core: { items: [], total: 0, done: 0, finished: true, warning: '' },
+  jsTotal: 0,
+  jsDone: 0,
+  jsFailed: 0,
+  jsItems: [],
+};
+
+function isJsSourceId(id) {
+  return String(id || '').indexOf('js:') === 0;
+}
+
+// mergeJsCrossItems 把脚本源的搜索结果并进核心那一份。
+// 归一后标题相同的并成同一条的 peers（详情页可以按来源切换播放），
+// 完全没见过的追加成新卡片；按 id 去重，避免同一部剧出现两次。
+function mergeJsCrossItems(coreItems, jsItems) {
+  var items = coreItems.slice();
+  if (!jsItems || !jsItems.length) return items;
+  var byId = {};
+  var byTitle = {};
+  items.forEach(function (item, index) {
+    if (item && item.id) byId[item.id] = index;
+    var title = crossTitleKey(item && item.title);
+    if (title && byTitle[title] === undefined) byTitle[title] = index;
+  });
+  jsItems.forEach(function (item) {
+    if (!item || !item.id) return;
+    if (byId[item.id] !== undefined) return;
+    var title = crossTitleKey(item.title);
+    var position = title ? byTitle[title] : undefined;
+    if (position !== undefined) {
+      var host = items[position];
+      var peers = (host.peers || []).concat([{
+        source: item.source,
+        sourceId: item.sourceId,
+        id: item.id,
+        title: item.title,
+      }]);
+      items[position] = Object.assign({}, host, { peers: peers });
+      byId[item.id] = position;
+      return;
+    }
+    byId[item.id] = items.length;
+    items.push(item);
+    if (title && byTitle[title] === undefined) byTitle[title] = items.length - 1;
+  });
+  return items;
+}
+
+// crossTitleKey 只做归一（去空白、标点、大小写），与核心的跨源去重口径接近，
+// 用来判断「同一部剧的另一个来源」。
+function crossTitleKey(title) {
+  return normalizeSearchText(title);
+}
 
 // 模块页当前页签：installed / repos / builtin。
 // 源显示已并入「已安装」，在线仓库独立成一页，与 App 端模块页一致。
@@ -892,7 +954,17 @@ function pickSources() {
 
 function cancelCrossSearch() {
   var previous = crossSearch;
-  crossSearch = { token: previous.token + 1, id: '', timer: null, painted: '' };
+  crossSearch = {
+    token: previous.token + 1,
+    id: '',
+    timer: null,
+    painted: '',
+    core: { items: [], total: 0, done: 0, finished: true, warning: '' },
+    jsTotal: 0,
+    jsDone: 0,
+    jsFailed: 0,
+    jsItems: [],
+  };
   if (previous.timer) {
     clearTimeout(previous.timer);
   }
@@ -914,17 +986,48 @@ function renderCrossSearch() {
     if (!ids.length) {
       throw new Error('没有开启显示的站源，请先在「源显示」里开启');
     }
-    return api({ action: 'searchStart', sources: ids, query: state.query, page: 1 });
-  }).then(function (first) {
-    if (token !== crossSearch.token) {
-      return;
+    var jsIds = ids.filter(isJsSourceId);
+    var coreIds = ids.filter(function (id) { return !isJsSourceId(id); });
+    crossSearch.jsTotal = jsIds.length;
+    // 脚本源并行自己搜：先回来的先画，不等核心那一轮。
+    jsIds.forEach(function (id) { searchJsSource(id, token); });
+    if (!coreIds.length) {
+      // 勾的全是脚本源：没有核心会话可轮询，直接按脚本结果画。
+      paintCrossResults(crossSearch.core);
+      return null;
     }
-    crossSearch.id = first.search || '';
-    paintCrossResults(first);
-    if (!first.finished) {
-      pollCrossSearch(token);
-    }
+    return api({ action: 'searchStart', sources: coreIds, query: state.query, page: 1 })
+      .then(function (first) {
+        if (token !== crossSearch.token) {
+          return;
+        }
+        crossSearch.id = first.search || '';
+        crossSearch.core = first;
+        paintCrossResults(first);
+        if (!first.finished) {
+          pollCrossSearch(token);
+        }
+      });
   });
+}
+
+// searchJsSource 在 Worker 里搜一个脚本源，结果并进聚合列表。
+// 脚本源报错不影响其它源，只记一次失败（进度里按「已搜索」计数）。
+function searchJsSource(id, token) {
+  api({ action: 'catalog', source: id, category: '', page: 1, query: state.query })
+    .then(function (data) {
+      if (token !== crossSearch.token) return;
+      var items = (data && data.items) || [];
+      crossSearch.jsItems = crossSearch.jsItems.concat(items);
+      crossSearch.jsDone += 1;
+      paintCrossResults(crossSearch.core);
+    })
+    .catch(function () {
+      if (token !== crossSearch.token) return;
+      crossSearch.jsDone += 1;
+      crossSearch.jsFailed += 1;
+      paintCrossResults(crossSearch.core);
+    });
 }
 
 function pollCrossSearch(token) {
@@ -941,6 +1044,7 @@ function pollCrossSearch(token) {
         if (token !== crossSearch.token) {
           return;
         }
+        crossSearch.core = result;
         paintCrossResults(result);
         if (!result.finished) {
           pollCrossSearch(token);
@@ -959,10 +1063,15 @@ function pollCrossSearch(token) {
 
 function paintCrossResults(result) {
   var items = result.items || [];
-  var total = Number(result.total) || 0;
-  var done = Number(result.done) || 0;
-  var running = !result.finished;
+  var total = (Number(result.total) || 0) + crossSearch.jsTotal;
+  var done = (Number(result.done) || 0) + crossSearch.jsDone;
+  var running = !result.finished || crossSearch.jsDone < crossSearch.jsTotal;
   var warning = result.warning || '';
+  if (!warning && crossSearch.jsFailed) {
+    warning = crossSearch.jsFailed + ' 个脚本源没有返回结果';
+  }
+  // 脚本源的那几份合进来：同一部剧（标题归一后相同）并进 peers，不重复出一张卡。
+  items = mergeJsCrossItems(items, crossSearch.jsItems);
   // 只在「条目数/进度/提示」真的变了才重绘：轮询很密，没必要每次都重建 DOM，
   // 否则封面图会跟着重新解码、看起来在闪。
   var key = items.length + '|' + done + '|' + total + '|' + (running ? 1 : 0) + '|' + warning;
@@ -2803,7 +2912,7 @@ function renderSourceVisibility() {
         '<div class="vis-row" style="display:flex;align-items:center;justify-content:space-between;border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin:6px 0">' +
         '<div style="min-width:0">' +
         '<div style="font-weight:600">' + escapeHTML(item.name || '') +
-        (item.builtin ? '（内置）' : item.module ? '' : '（自定义）') + '</div>' +
+        (item.builtin ? '（内置）' : item.js ? '（脚本）' : item.module ? '' : '（自定义）') + '</div>' +
         '<div style="font-size:12px;opacity:0.6">' + escapeHTML(item.id) + '</div>' +
         '</div>' +
         '<label style="display:flex;align-items:center;gap:8px;cursor:pointer;flex:none">' +

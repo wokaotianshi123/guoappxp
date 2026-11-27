@@ -298,8 +298,8 @@ func (engine *nativeEngine) fetchIndexList(ctx context.Context, address string) 
 	if err != nil {
 		return nil, err
 	}
-	// 在线仓库可能是加密下发（GCM1 封包），先解出明文再解析；
-	// 明文索引会原样返回，两种来源走同一条解析路径。
+	// 在线仓库现在都是明文 JSON（真果鉴也是），清洗后直接解析；
+	// 镜像上残留的旧版 GCM1 密文会先解出明文，两种来源走同一条解析路径。
 	plain, err := decryptModuleIndex(raw)
 	if err != nil {
 		return nil, err

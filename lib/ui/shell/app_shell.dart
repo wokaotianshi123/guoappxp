@@ -241,7 +241,16 @@ class _AppShellState extends State<AppShell> {
     super.dispose();
   }
 
-  List<AppTab> get _tabs => AppTab.values;
+  List<AppTab> get _tabs => [
+    for (final tab in AppTab.values)
+      // 电视端默认不显示「推荐」：整屏视频流用遥控器不好操作，还会一进首页
+      // 就抢解码器和网络。想要的人在 设置 › 外观 › 显示推荐页 里打开。
+      if (tab != AppTab.recommend || _recommendVisible) tab,
+  ];
+
+  /// 非电视模式（手机 / 平板 / 窗口）始终保留推荐标签。
+  bool get _recommendVisible =>
+      !AppScope.of(context).television || widget.store.televisionRecommend;
 
   void _select(AppTab tab) {
     _barsShown.value = true;
@@ -355,7 +364,10 @@ class _AppShellState extends State<AppShell> {
 
   Widget _root(AppTab tab) => switch (tab) {
     AppTab.explore => ExplorePage(key: _explore, store: widget.store),
-    AppTab.recommend => RecommendPage(store: widget.store),
+    AppTab.recommend => RecommendPage(
+      store: widget.store,
+      onExitUp: _tabFocus[AppTab.recommend.index].requestFocus,
+    ),
     AppTab.follow => FollowPage(
       store: widget.store,
       entryFocus: _followEntry,
@@ -373,6 +385,20 @@ class _AppShellState extends State<AppShell> {
 
   @override
   Widget build(BuildContext context) {
+    final television = AppScope.of(context).television;
+    final tabs = _tabs;
+    // 标签可能被隐藏（电视端关掉「显示推荐页」）：先把当前标签挪回第一个，
+    // 否则这一帧的 IndexedStack 会指向一个没有挂载的空占位，整页空白。
+    // 焦点当时停在被藏掉的那个胶囊上时也要接回来，不然焦点会落到根节点。
+    if (!tabs.contains(_tab)) {
+      final dropped = _tab == AppTab.recommend;
+      _tab = tabs.first;
+      if (dropped && television) {
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) _tabFocus[tabs.first.index].requestFocus();
+        });
+      }
+    }
     final stack = NotificationListener<NavigationNotification>(
       onNotification: (_) {
         setState(() {});
@@ -416,9 +442,6 @@ class _AppShellState extends State<AppShell> {
       foreground: ModalRoute.of(context)?.isCurrent ?? true,
       child: ShellVisibleTab(tab: _tab, child: stack),
     );
-    final television = AppScope.of(context).television;
-    final tabs = _tabs;
-    if (!tabs.contains(_tab)) _tab = AppTab.explore;
     final covered = _navigator?.canPop() ?? false;
     return PopScope(
       canPop:

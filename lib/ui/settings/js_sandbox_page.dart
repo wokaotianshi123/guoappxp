@@ -2,6 +2,7 @@ import 'dart:convert';
 
 import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 
 import '../../js_source/js_source_diagnostics.dart';
 import '../../js_source/js_source_gateway.dart';
@@ -10,6 +11,7 @@ import '../../js_source/js_source_service.dart';
 import '../../js_source/js_signing_profile.dart';
 import '../../local_store.dart';
 import '../../models.dart';
+import '../widgets/focus_ring.dart';
 import '../widgets/group_card.dart';
 import 'js_source_import_dialog.dart';
 
@@ -79,13 +81,32 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
     _toast('已启用 ${meta.name}');
   });
 
+  /// 开启 / 隐藏这个脚本源。与模块源同一套开关：关掉后它不出现在站源菜单、
+  /// 搜索、追剧和观看记录里，脚本与记录都还在，重新打开就回来。
+  Future<void> _toggle(JsSourceMeta meta, bool enabled) => _run(() async {
+    await widget.store.setSourceEnabled(meta.sourceId, enabled);
+    _toast(enabled ? '已开启 ${meta.name}' : '已隐藏 ${meta.name}');
+  });
+
+  /// 只导出这一个脚本源，格式与「导出」里的多选包一致。
+  Future<void> _exportOne(JsSourceMeta meta) => _run(() async {
+    final bytes = _service.exportZip(ids: [meta.id]);
+    final stamp = DateTime.now().toIso8601String().substring(0, 10);
+    final saved = await FilePicker.saveFile(
+      fileName: 'guoapp-js-${meta.id}-$stamp.zip',
+      bytes: bytes,
+      mimeType: 'application/zip',
+    );
+    if (saved != null) _toast('已导出 ${meta.name} 的订阅包');
+  });
+
   Future<void> _delete(JsSourceMeta meta) async {
     final confirmed = await showDialog<bool>(
       context: context,
       builder: (context) => AlertDialog(
-        title: const Text('删除脚本源'),
+        title: const Text('卸载脚本源'),
         content: Text(
-          '确定删除「${meta.name}」吗？\n'
+          '确定卸载「${meta.name}」吗？\n'
           '本机的 ${meta.fileName} 会被移除，相关的观看记录仍保留。',
         ),
         actions: [
@@ -95,7 +116,7 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
           ),
           FilledButton(
             onPressed: () => Navigator.pop(context, true),
-            child: const Text('删除'),
+            child: const Text('卸载'),
           ),
         ],
       ),
@@ -105,7 +126,7 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
       await _service.removeSource(meta.id);
       JsSourceGateway.instance.refreshSources();
       widget.store.sourcesChanged();
-      _toast('已删除 ${meta.name}');
+      _toast('已卸载 ${meta.name}');
     });
   }
 
@@ -492,20 +513,29 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
             ),
           )
         else ...[
-          IconButton(
-            tooltip: '导入（文件 / 压缩包 / 网址或订阅）',
-            onPressed: _import,
-            icon: const Icon(Icons.add_circle_outline_rounded),
+          FocusRing(
+            radius: 999,
+            child: IconButton(
+              tooltip: '导入（文件 / 压缩包 / 网址或订阅）',
+              onPressed: _import,
+              icon: const Icon(Icons.add_circle_outline_rounded),
+            ),
           ),
-          IconButton(
-            tooltip: '导出订阅包（配置 + 脚本）',
-            onPressed: _export,
-            icon: const Icon(Icons.ios_share_rounded),
+          FocusRing(
+            radius: 999,
+            child: IconButton(
+              tooltip: '导出订阅包（配置 + 脚本）',
+              onPressed: _export,
+              icon: const Icon(Icons.ios_share_rounded),
+            ),
           ),
-          IconButton(
-            tooltip: '粘贴源码 / 重新扫描 / 清空',
-            onPressed: _showActions,
-            icon: const Icon(Icons.more_horiz_rounded),
+          FocusRing(
+            radius: 999,
+            child: IconButton(
+              tooltip: '粘贴源码 / 重新扫描 / 清空',
+              onPressed: _showActions,
+              icon: const Icon(Icons.more_horiz_rounded),
+            ),
           ),
         ],
         const SizedBox(width: 4),
@@ -524,7 +554,8 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
               padding: const EdgeInsets.fromLTRB(16, 0, 16, 8),
               child: Text(
                 '脚本源在端侧独立上下文里运行：目录、搜索、详情、取流都由脚本自己完成，'
-                '与内核站源互不影响。当前站源为「${SourceSite.byId(current).name}」。',
+                '与内核站源互不影响。当前站源为「${SourceSite.byId(current).name}」。'
+                '右侧开关控制它是否出现在站源菜单、搜索与追剧中，关掉后脚本和记录都保留。',
                 style: Theme.of(context).textTheme.bodySmall?.copyWith(
                   color: Theme.of(context).colorScheme.onSurfaceVariant,
                   height: 1.5,
@@ -546,19 +577,20 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
             else
               Padding(
                 padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: GroupCard(
+                child: Column(
+                  spacing: 10,
                   children: [
-                    for (var index = 0; index < sources.length; index++) ...[
-                      _SourceTile(
-                        meta: sources[index],
-                        active: sources[index].id == active,
-                        inUse: sources[index].sourceId == current,
-                        onActivate: () => _activate(sources[index]),
-                        onDelete: () => _delete(sources[index]),
+                    for (final meta in sources)
+                      _SourceCard(
+                        meta: meta,
+                        active: meta.id == active,
+                        inUse: meta.sourceId == current,
+                        enabled: widget.store.sourceEnabled(meta.sourceId),
+                        onToggle: (value) => _toggle(meta, value),
+                        onActivate: () => _activate(meta),
+                        onExport: () => _exportOne(meta),
+                        onDelete: () => _delete(meta),
                       ),
-                      if (index != sources.length - 1)
-                        const Divider(height: 1, indent: 16, endIndent: 16),
-                    ],
                   ],
                 ),
               ),
@@ -850,134 +882,235 @@ class _EmptySources extends StatelessWidget {
   );
 }
 
-class _SourceTile extends StatelessWidget {
-  const _SourceTile({
+class _SourceCard extends StatelessWidget {
+  const _SourceCard({
     required this.meta,
     required this.active,
     required this.inUse,
+    required this.enabled,
+    required this.onToggle,
     required this.onActivate,
+    required this.onExport,
     required this.onDelete,
   });
 
   final JsSourceMeta meta;
+
+  /// 是这个脚本在当前沙箱里处于「启用」状态（同一时间只有一个）。
   final bool active;
+
+  /// 当前浏览的站源就是它。
   final bool inUse;
+
+  /// 站源显示开关。关掉后脚本还在，只是不出现在站源菜单、搜索和追剧里。
+  final bool enabled;
+  final ValueChanged<bool> onToggle;
   final VoidCallback onActivate;
+  final VoidCallback onExport;
   final VoidCallback onDelete;
+
+  /// 电视端方向键线性遍历卡片内的可聚焦项。
+  ///
+  /// 开关在顶行右侧、操作按钮在底行，直角几何遍历下从按钮按「下」会跳过同排
+  /// 剩下的按钮直接跳到下一张卡片。这里拦截上下键改用阅读顺序的
+  /// next/previous 逐个移动（与模块页的卡片同一套做法），左右键仍走几何遍历。
+  static KeyEventResult _cardKey(FocusNode _, KeyEvent event) {
+    if (event is KeyUpEvent) return KeyEventResult.ignored;
+    final primary = FocusManager.instance.primaryFocus;
+    if (primary == null) return KeyEventResult.ignored;
+    switch (event.logicalKey) {
+      case LogicalKeyboardKey.arrowDown:
+        primary.nextFocus();
+        return KeyEventResult.handled;
+      case LogicalKeyboardKey.arrowUp:
+        primary.previousFocus();
+        return KeyEventResult.handled;
+      default:
+        return KeyEventResult.ignored;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
-    final colors = Theme.of(context).colorScheme;
-    return ListTile(
-      contentPadding: const EdgeInsets.fromLTRB(16, 10, 8, 10),
-      leading: Container(
-        width: 40,
-        height: 40,
-        decoration: BoxDecoration(
-          color: active ? colors.primaryContainer : colors.secondaryContainer,
-          shape: BoxShape.circle,
-        ),
-        child: Icon(
-          Icons.javascript_rounded,
-          size: 22,
-          color: active
-              ? colors.onPrimaryContainer
-              : colors.onSecondaryContainer,
-        ),
-      ),
-      title: Row(
-        children: [
-          Flexible(child: Text(meta.name, overflow: TextOverflow.ellipsis)),
-          const SizedBox(width: 8),
-          Text(
-            'v${meta.version}',
-            style: Theme.of(
-              context,
-            ).textTheme.labelSmall?.copyWith(color: colors.onSurfaceVariant),
-          ),
-        ],
-      ),
-      subtitle: Padding(
-        padding: const EdgeInsets.only(top: 4),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            Text(
-              '${meta.fileName} · ${meta.author.isEmpty ? "内置" : meta.author}',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-            ),
-            if (meta.description.isNotEmpty)
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: colors.onSurfaceVariant,
+      height: 1.4,
+    );
+    return GroupCard(
+      children: [
+        Focus(
+          canRequestFocus: false,
+          skipTraversal: true,
+          onKeyEvent: _cardKey,
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
               Padding(
-                padding: const EdgeInsets.only(top: 2),
-                child: Text(
-                  meta.description,
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                ),
-              ),
-            if (meta.features.isNotEmpty)
-              Padding(
-                padding: const EdgeInsets.only(top: 6),
-                child: Wrap(
-                  spacing: 6,
-                  runSpacing: 4,
+                padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    for (final feature in meta.features.take(6))
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 1,
-                        ),
-                        decoration: BoxDecoration(
-                          color: colors.secondaryContainer,
-                          borderRadius: BorderRadius.circular(4),
-                        ),
-                        child: Text(
-                          feature,
-                          style: Theme.of(context).textTheme.labelSmall,
-                        ),
+                    Container(
+                      width: 40,
+                      height: 40,
+                      decoration: BoxDecoration(
+                        color: active
+                            ? colors.primaryContainer
+                            : colors.secondaryContainer,
+                        shape: BoxShape.circle,
                       ),
+                      child: Icon(
+                        Icons.javascript_rounded,
+                        size: 22,
+                        color: active
+                            ? colors.onPrimaryContainer
+                            : colors.onSecondaryContainer,
+                      ),
+                    ),
+                    const SizedBox(width: 14),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Row(
+                            children: [
+                              Flexible(
+                                child: Text(
+                                  meta.name,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: theme.textTheme.titleMedium?.copyWith(
+                                    fontSize: 17,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 8),
+                              Text('v${meta.version}', style: muted),
+                            ],
+                          ),
+                          const SizedBox(height: 2),
+                          Text(
+                            '${meta.fileName} · ${meta.author.isEmpty ? "内置" : meta.author}',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: muted,
+                          ),
+                          if (meta.description.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 4),
+                              child: Text(
+                                meta.description,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                              ),
+                            ),
+                          if (meta.features.isNotEmpty)
+                            Padding(
+                              padding: const EdgeInsets.only(top: 6),
+                              child: Wrap(
+                                spacing: 6,
+                                runSpacing: 4,
+                                children: [
+                                  for (final feature in meta.features.take(6))
+                                    Container(
+                                      padding: const EdgeInsets.symmetric(
+                                        horizontal: 6,
+                                        vertical: 1,
+                                      ),
+                                      decoration: BoxDecoration(
+                                        color: colors.secondaryContainer,
+                                        borderRadius: BorderRadius.circular(4),
+                                      ),
+                                      child: Text(
+                                        feature,
+                                        style: theme.textTheme.labelSmall,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    FocusRing(
+                      radius: 20,
+                      child: Switch(
+                        value: enabled,
+                        onChanged: onToggle,
+                      ),
+                    ),
                   ],
                 ),
               ),
-          ],
-        ),
-      ),
-      trailing: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (inUse)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Text(
-                '使用中',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colors.primary,
-                  fontWeight: FontWeight.w700,
+              Divider(
+                height: 1,
+                indent: 18,
+                endIndent: 18,
+                color: colors.outlineVariant.withValues(alpha: 0.6),
+              ),
+              Padding(
+                padding: const EdgeInsets.fromLTRB(12, 8, 12, 10),
+                child: Row(
+                  spacing: 8,
+                  children: [
+                    if (inUse)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: Text(
+                          '使用中',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: colors.primary,
+                            fontWeight: FontWeight.w700,
+                          ),
+                        ),
+                      )
+                    else if (active)
+                      Padding(
+                        padding: const EdgeInsets.only(left: 6),
+                        child: Text(
+                          '当前启用',
+                          style: theme.textTheme.labelMedium?.copyWith(
+                            color: colors.onSurfaceVariant,
+                          ),
+                        ),
+                      )
+                    else
+                      FocusRing(
+                        radius: 20,
+                        child: FilledButton.tonalIcon(
+                          onPressed: onActivate,
+                          icon: const Icon(Icons.check_circle_outline_rounded),
+                          label: const Text('启用'),
+                        ),
+                      ),
+                    const Spacer(),
+                    FocusRing(
+                      radius: 20,
+                      child: IconButton.filledTonal(
+                        visualDensity: VisualDensity.compact,
+                        tooltip: '导出这个脚本源',
+                        onPressed: onExport,
+                        icon: const Icon(Icons.save_alt_rounded),
+                      ),
+                    ),
+                    FocusRing(
+                      radius: 20,
+                      child: FilledButton.tonalIcon(
+                        onPressed: onDelete,
+                        icon: const Icon(Icons.delete_outline_rounded),
+                        label: const Text('卸载'),
+                      ),
+                    ),
+                  ],
                 ),
               ),
-            )
-          else if (active)
-            Padding(
-              padding: const EdgeInsets.only(right: 4),
-              child: Text(
-                '已启用',
-                style: Theme.of(context).textTheme.labelSmall?.copyWith(
-                  color: colors.onSurfaceVariant,
-                ),
-              ),
-            )
-          else
-            TextButton(onPressed: onActivate, child: const Text('启用')),
-          IconButton(
-            tooltip: '删除',
-            onPressed: onDelete,
-            icon: const Icon(Icons.delete_outline_rounded, size: 20),
+            ],
           ),
-        ],
-      ),
-      onTap: active ? null : onActivate,
+        ),
+      ],
     );
   }
 }

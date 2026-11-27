@@ -28,9 +28,16 @@ const _shade = Color(0xFF161214);
 ///
 /// 只有「当前这一屏」挂播放器，相邻页面只显示封面占位——同屏多个播放器会
 /// 抢解码器。切剧时旧的一屏从树上摘下来，播放器由它自己释放。
+///
+/// 电视端（遥控器）另有一套焦点约定：整页不再有「占满屏幕的焦点节点」，
+/// 否则它的矩形把右上角三个按钮和浮层右侧那一列全包住，几何遍历永远
+/// 找不到它们，焦点还会被锁在页里出不去（见 [_televisionKey]）。
 class RecommendPage extends StatefulWidget {
-  const RecommendPage({super.key, required this.store});
+  const RecommendPage({super.key, required this.store, this.onExitUp});
   final LocalStore store;
+
+  /// 电视端在页面顶部再按「上」时的去处：把焦点交回顶部导航。
+  final VoidCallback? onExitUp;
 
   @override
   State<RecommendPage> createState() => _RecommendPageState();
@@ -219,51 +226,82 @@ class _RecommendPageState extends State<RecommendPage> {
         _pager.jumpToPage(feed.index);
       });
     }
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        CallbackShortcuts(
-          bindings: {
-            const SingleActivator(LogicalKeyboardKey.pageDown): () =>
-                unawaited(_move(feed, 1)),
-            const SingleActivator(LogicalKeyboardKey.pageUp): () =>
-                unawaited(_move(feed, -1)),
-          },
-          child: Focus(
-            autofocus: true,
-            child: ScrollConfiguration(
-              behavior: ScrollConfiguration.of(context).copyWith(
-                scrollbars: false,
-                dragDevices: const {
-                  PointerDeviceKind.touch,
-                  PointerDeviceKind.mouse,
-                  PointerDeviceKind.stylus,
-                  PointerDeviceKind.invertedStylus,
-                  PointerDeviceKind.trackpad,
-                },
-              ),
-              child: PageView.builder(
-                key: ValueKey('recommend-pager-${widget.store.source}'),
-                controller: _pager,
-                scrollDirection: Axis.vertical,
-                itemCount: pages.length,
-                onPageChanged: (index) {
-                  _pagerIndex = index;
-                  _dropHandle();
-                  feed.select(index);
-                  if (pages.length - index <= 2) unawaited(feed.loadMore());
-                },
-                itemBuilder: (context, index) => Listener(
-                  onPointerSignal: (event) => _wheel(event, feed),
-                  child: _slide(feed, index),
-                ),
-              ),
+    final television = AppScope.of(context).television;
+    final pager = CallbackShortcuts(
+      bindings: {
+        const SingleActivator(LogicalKeyboardKey.pageDown): () =>
+            unawaited(_move(feed, 1)),
+        const SingleActivator(LogicalKeyboardKey.pageUp): () =>
+            unawaited(_move(feed, -1)),
+      },
+      child: Focus(
+        // 桌面端靠这个节点接 PageUp / PageDown。电视端千万不要它：一个占满
+        // 整页的焦点节点会把自己的矩形罩在页内所有按钮上面，几何遍历永远
+        // 找不到右上角的「换一批 / 上一部 / 下一部」，也逃不到顶部导航。
+        autofocus: !television,
+        canRequestFocus: !television,
+        skipTraversal: television,
+        child: ScrollConfiguration(
+          behavior: ScrollConfiguration.of(context).copyWith(
+            scrollbars: false,
+            dragDevices: const {
+              PointerDeviceKind.touch,
+              PointerDeviceKind.mouse,
+              PointerDeviceKind.stylus,
+              PointerDeviceKind.invertedStylus,
+              PointerDeviceKind.trackpad,
+            },
+          ),
+          child: PageView.builder(
+            key: ValueKey('recommend-pager-${widget.store.source}'),
+            controller: _pager,
+            scrollDirection: Axis.vertical,
+            itemCount: pages.length,
+            onPageChanged: (index) {
+              _pagerIndex = index;
+              _dropHandle();
+              feed.select(index);
+              if (pages.length - index <= 2) unawaited(feed.loadMore());
+            },
+            itemBuilder: (context, index) => Listener(
+              onPointerSignal: (event) => _wheel(event, feed),
+              child: _slide(feed, index),
             ),
           ),
         ),
-        _topBar(feed),
-      ],
+      ),
     );
+    final content = Stack(
+      fit: StackFit.expand,
+      children: [pager, _topBar(feed)],
+    );
+    if (!television) return content;
+    return Focus(
+      canRequestFocus: false,
+      skipTraversal: true,
+      onKeyEvent: (_, event) => _televisionKey(event),
+      child: content,
+    );
+  }
+
+  /// 电视端按键：把「上」做成可控的逃逸。
+  ///
+  /// 页内几何遍历找不到上一格时（例如焦点停在右上角的「换一批」），直接把
+  /// 焦点交回顶部导航；否则焦点一旦进了推荐页就再也出不去，右移不到旁边的
+  /// 「追剧 / 我的」。其它方向交给默认的方向遍历：顶部三个按钮、浮层右侧
+  /// 那一列按钮各自都是独立的焦点站点，可以逐个走通。
+  KeyEventResult _televisionKey(KeyEvent event) {
+    if (event is KeyUpEvent ||
+        event.logicalKey != LogicalKeyboardKey.arrowUp) {
+      return KeyEventResult.ignored;
+    }
+    final moved =
+        FocusManager.instance.primaryFocus?.focusInDirection(
+          TraversalDirection.up,
+        ) ??
+        false;
+    if (!moved) widget.onExitUp?.call();
+    return KeyEventResult.handled;
   }
 
   Widget _topBar(RecommendFeed feed) {

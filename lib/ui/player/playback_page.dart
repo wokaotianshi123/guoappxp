@@ -237,12 +237,22 @@ class _PlaybackPageState extends State<PlaybackPage> {
     final live = MediaQuery.of(context);
     final shown = _pip.shown || _pip.leaving && live.size != _media?.size;
     if (!shown || _media == null) _media = live;
+    // 推荐流（feed）在电视上是整页里的一屏，它自己的按键交给外层推荐页处理：
+    // 这里的焦点作用域如果自动抢焦点，一个占满整屏的节点会把右上角的三个
+    // 按钮和浮层右侧那一列都罩住，遥控器不但走不到，还再也退不出去。
+    // 同时把方向遍历的边界改成「交给父作用域」，浮层右侧走到头时能回到
+    // 顶部导航与别的标签页。
+    final loose = widget.feed && _television;
+    _pageScope.directionalTraversalEdgeBehavior = loose
+        ? TraversalEdgeBehavior.parentScope
+        // 其余形态保持默认（到边就停），不要在播放页里绕圈跳到别的控件上。
+        : TraversalEdgeBehavior.stop;
     return Stack(
       fit: StackFit.expand,
       children: [
         FocusScope(
           node: _pageScope,
-          autofocus: true,
+          autofocus: !loose,
           onKeyEvent: _key,
           child: Offstage(
             offstage: shown,

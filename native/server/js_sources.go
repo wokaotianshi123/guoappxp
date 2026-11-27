@@ -57,6 +57,9 @@ type jsSourceMeta struct {
 	Features    []string `json:"features"`
 	FileName    string   `json:"fileName"`
 	Active      bool     `json:"active"`
+	// Visible 是「首页是否显示」的开关状态，与内置源、模块源同一套口径
+	// （source-visibility.json）。只由 handleJsSources 填充，扫描时留空。
+	Visible bool `json:"visible"`
 }
 
 var (
@@ -272,6 +275,12 @@ func jsSourceScript(id string) (string, bool) {
 	return "", false
 }
 
+// jsSourceKey 是脚本源在「首页显示」开关里的标识：与 App 端一致用 js: 前缀，
+// 避免和同名模块源（模块标识就是站源 id）共用一条开关记录。
+func jsSourceKey(id string) string {
+	return "js:" + strings.TrimSpace(id)
+}
+
 func readJsActiveID() string {
 	jsSourceMu.Lock()
 	defer jsSourceMu.Unlock()
@@ -389,6 +398,9 @@ func handleJsSources(writer http.ResponseWriter, request *http.Request) {
 		}
 		for index := range items {
 			items[index].Active = items[index].ID == active
+			// 首页显示开关：与内置源 / 模块源共用 source-visibility.json，
+			// id 按 App 端的约定加 js: 前缀，避免和同名模块源撞车。
+			items[index].Visible = !isSourceHidden(jsSourceKey(items[index].ID))
 		}
 		writeJSON(writer, map[string]any{"items": items, "active": active})
 	case http.MethodPost:

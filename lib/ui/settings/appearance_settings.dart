@@ -223,7 +223,17 @@ class AppearanceSettings extends StatelessWidget {
                     : null,
               ),
             ],
-            if (AppScope.of(context).television)
+            if (AppScope.of(context).television) ...[
+              SwitchTile(
+                title: '显示推荐页',
+                subtitle: '在顶部导航里加上「推荐」；关闭后只剩发现、追剧和我的',
+                value: store.televisionRecommend,
+                onChanged: (value) => saveSetting(
+                  context,
+                  () => store.setTelevisionRecommend(value),
+                ),
+              ),
+              const Divider(indent: 16, endIndent: 16),
               SwitchTile(
                 title: '搜索用字母键盘',
                 subtitle: '开启后按确认键弹出字母键盘，可按拼音首字母搜；关闭时使用系统输入法',
@@ -233,6 +243,7 @@ class AppearanceSettings extends StatelessWidget {
                   () => store.setTelevisionKeyboard(value),
                 ),
               ),
+            ],
           ],
         ),
         GroupCard(

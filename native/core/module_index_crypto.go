@@ -7,18 +7,21 @@ import (
 	"errors"
 )
 
-// 加密在线仓库（真果鉴 guoapp.dpdns.org 一系）的索引解密。
+// 在线仓库（真果鉴 guoapp.dpdns.org 一系）索引的读取。
 //
-// 服务端把 index.json 用 AES-256-GCM 加密后下发，封包格式固定为：
+// 真果鉴仓库现在直接下发**明文** index.json（标准 JSON，顶层 format + modules），
+// 客户端拿到就能解析，不再需要解密；之前它会用 AES-256-GCM 把索引加密后下发，
+// 封包格式固定为：
 //
 //	GCM1 | nonce(12) | 密文 | tag(16)
 //
-// 前缀是 4 个 ASCII 字节 "GCM1"，其后没有版本号或长度字段，nonce 每次随机，
-// 因此同一份索引每次请求的密文都不同。密钥内置在客户端（与本项目同源的
-// 真果鉴 APK 里以 32 字节常量形式存在），这里按同样的密钥与格式解密。
+// 前缀是 4 个 ASCII 字节 "GCM1"，其后没有版本号或长度字段，nonce 每次随机。
+// 老版本客户端只认这种封包，所以这里保留解密封包的分支：镜像 / CDN 上残留的
+// 旧密文照样能读，明文与密文两条路最后都走同一个 parseModuleIndex。
 //
-// 明文是标准索引 JSON，解出来之后走原有的 parseModuleIndex，所以加密仓库与
-// 明文仓库在后续流程里完全没有区别。
+// 明文索引在解析前会做一次清洗（见 plainModuleIndex）：编辑器或上传工具偶尔
+// 会在文件头带上 UTF-8 BOM、在末尾留下空行，json.Unmarshal 遇到 BOM 会直接
+// 报「索引格式无效」，把一份本来完全合法的索引判成坏数据。
 
 const (
 	// encryptedModuleIndexPrefix 是加密索引的魔数前缀。
@@ -29,9 +32,10 @@ const (
 	encryptedModuleIndexTag = 16
 )
 
-// encryptedModuleIndexKey 是加密在线仓库的 AES-256 密钥。
+// encryptedModuleIndexKey 是旧版加密在线仓库的 AES-256 密钥。
 //
-// 与真果鉴 APK 中 libduanju_core.so 的 .noptrdata 段内置值一致；改密钥会
+// 与真果鉴 APK 中 libduanju_core.so 的 .noptrdata 段内置值一致。仓库改成明文
+// 下发后只有镜像上的历史密文还会用到它，保留是为了老链接不至于报错；改密钥会
 // 同时影响所有使用该仓库的客户端，不要随意改动。
 var encryptedModuleIndexKey = []byte{
 	0x92, 0x91, 0x79, 0x5e, 0x2b, 0x95, 0xa7, 0x1d,
@@ -40,18 +44,27 @@ var encryptedModuleIndexKey = []byte{
 	0xa3, 0xd0, 0x6e, 0xf0, 0x22, 0x7e, 0x21, 0x96,
 }
 
-// isEncryptedModuleIndex 判断索引是否为加密格式。
+// isEncryptedModuleIndex 判断索引是否为旧版的加密封包。
 func isEncryptedModuleIndex(raw []byte) bool {
 	return bytes.HasPrefix(raw, []byte(encryptedModuleIndexPrefix))
 }
 
-// decryptModuleIndex 解开 GCM1 封包的索引，返回明文 JSON。
+// plainModuleIndex 清洗明文索引：去掉 UTF-8 BOM 与首尾空白。
 //
-// 明文索引原样返回（不是加密格式时不报错），让调用方可以统一处理
-// 「加密仓库 / 明文仓库」两种来源。
+// 真果鉴仓库的 index.json 现在由人工 / 脚本直接维护，文件头带 BOM、结尾多几个
+// 空行都很常见。这两种情况都会让 json.Unmarshal 失败并显示成「索引格式无效」，
+// 看起来像仓库坏了，所以解析前先归一。
+func plainModuleIndex(raw []byte) []byte {
+	return bytes.TrimSpace(bytes.TrimPrefix(raw, []byte("\xef\xbb\xbf")))
+}
+
+// decryptModuleIndex 返回可解析的索引明文：明文原样（清洗后）返回，旧版 GCM1
+// 封包解出明文再返回。
+//
+// 不是加密格式时不报错，让调用方统一处理「明文仓库 / 加密仓库」两种来源。
 func decryptModuleIndex(raw []byte) ([]byte, error) {
 	if !isEncryptedModuleIndex(raw) {
-		return raw, nil
+		return plainModuleIndex(raw), nil
 	}
 	body := raw[len(encryptedModuleIndexPrefix):]
 	if len(body) <= encryptedModuleIndexNonce+encryptedModuleIndexTag {

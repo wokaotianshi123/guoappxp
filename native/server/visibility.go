@@ -219,6 +219,20 @@ func handleSourceVisibility(writer http.ResponseWriter, request *http.Request) {
 				})
 			}
 		}
+		// JS 沙箱里的脚本源也要能在「源显示」和搜索选源里出现：脚本跑在浏览器的
+		// Worker 里，不注册进核心，所以这里单独从脚本目录读一遍。标识按 App 端
+		// 的约定加 js: 前缀，和同名模块源互不干扰。
+		for _, meta := range scanJsSources() {
+			id := jsSourceKey(meta.ID)
+			if seen[id] {
+				continue
+			}
+			seen[id] = true
+			items = append(items, map[string]any{
+				"id": id, "name": meta.Name, "builtin": false, "module": false,
+				"js": true, "visible": !hiddenLocked(id),
+			})
+		}
 		// 与 /api/sources 同款排序：先中文（拼音序）后字母序。
 		sort.SliceStable(items, func(i, j int) bool {
 			return core.CompareSourceNames(items[i]["name"].(string), items[j]["name"].(string)) < 0

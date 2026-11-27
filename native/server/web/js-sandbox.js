@@ -78,6 +78,8 @@ var JsSandbox = (function () {
   }
 
   /// 列表里的站源条目，与 /api/sources 的字段对齐（loadSources 直接拼）。
+  /// visible 来自「源显示」开关：关掉的脚本源不出现在站源下拉框和搜索里，
+  /// 与模块源同一套口径。
   function ownEntries() {
     return state.sources.map(function (item) {
       return {
@@ -85,8 +87,9 @@ var JsSandbox = (function () {
         name: item.name || item.id,
         group: 'js',
         groupName: 'JS 沙箱',
-        visible: true,
+        visible: item.visible !== false,
         module: false,
+        js: true,
       };
     });
   }
@@ -162,6 +165,22 @@ var JsSandbox = (function () {
     return request('/api/js/sources?id=' + encodeURIComponent(id), { method: 'DELETE' }).then(function () {
       return refresh();
     });
+  }
+
+  /// setVisible 保存脚本源的首页显示开关。id 走 js: 前缀，与模块源互不干扰。
+  function setVisible(id, visible) {
+    return request('/api/source-visibility', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: 'js:' + id, visible: !!visible }),
+    })
+      .then(function (response) { return response.json(); })
+      .then(function (data) {
+        if (!data || data.ok !== true) {
+          throw new Error(data && data.error ? data.error : '保存源显示设置失败');
+        }
+        return data;
+      });
   }
 
   function activate(id) {
@@ -983,6 +1002,7 @@ var JsSandbox = (function () {
       var signing = results[1] || { configured: false };
       var rows = items
         .map(function (item) {
+          var shown = item.visible !== false;
           var features = (item.features || [])
             .slice(0, 6)
             .map(function (feature) {
@@ -995,10 +1015,18 @@ var JsSandbox = (function () {
             '<div class="js-source-title">' + escapeHTML(item.name || item.id) +
             '<span class="js-version">v' + escapeHTML(item.version || '') + '</span></div>' +
             '<div class="js-source-actions">' +
+            // 与模块源的「已安装」一致：首页显示开关、导出、卸载都在这一行。
+            '<label style="display:flex;align-items:center;gap:6px;cursor:pointer;margin-right:4px" ' +
+            'title="关闭后不出现在站源下拉框与全部源搜索里，脚本与记录保留">' +
+            '<span style="font-size:12px;opacity:0.8">' + (shown ? '显示' : '隐藏') + '</span>' +
+            '<input type="checkbox" class="vis-toggle" data-visible="' + escapeHTML(item.id) + '"' +
+            (shown ? ' checked' : '') + ' />' +
+            '</label>' +
             (item.active
               ? '<span class="js-badge">当前启用</span>'
               : '<button type="button" class="btn" data-activate="' + escapeHTML(item.id) + '">启用</button>') +
-            '<button type="button" class="btn danger" data-remove="' + escapeHTML(item.id) + '">删除</button>' +
+            '<button type="button" class="btn" data-export="' + escapeHTML(item.id) + '">导出</button>' +
+            '<button type="button" class="btn danger" data-remove="' + escapeHTML(item.id) + '">卸载</button>' +
             '</div>' +
             '</div>' +
             '<div class="js-source-meta">' + escapeHTML(item.fileName || item.id + '.js') +
@@ -1219,12 +1247,57 @@ var JsSandbox = (function () {
     Array.prototype.forEach.call(container.querySelectorAll('[data-remove]'), function (button) {
       button.addEventListener('click', function () {
         var id = button.getAttribute('data-remove');
-        if (!window.confirm('删除脚本源「' + id + '」？本机的 .js 文件会被移除。')) return;
+        if (!window.confirm('卸载脚本源「' + id + '」？本机的 .js 文件会被移除，观看记录仍保留。')) return;
         removeSource(id).then(function () {
           return loadSources().then(function () {
             render(container);
           });
         });
+      });
+    });
+    // 首页显示开关：关掉后脚本源不出现在站源下拉框与全部源搜索里，
+    // 与模块源的开关同一套口径（source-visibility.json）。
+    Array.prototype.forEach.call(container.querySelectorAll('.vis-toggle'), function (input) {
+      input.addEventListener('change', function () {
+        var id = input.getAttribute('data-visible');
+        var shown = !!input.checked;
+        input.disabled = true;
+        setVisible(id, shown)
+          // 先刷新脚本清单：loadSources 用的是缓存下来的 entries，
+          // 不刷新的话刚隐藏的源还会留在下拉框里。
+          .then(function () { return refresh(); })
+          .then(function () { return loadSources(); })
+          .then(function () { return render(container); })
+          .catch(function (error) {
+            input.disabled = false;
+            window.alert(error.message || '保存源显示设置失败');
+          });
+      });
+    });
+    // 单个脚本源导出：与「导出订阅包」同一个接口，带上 ids 只打包这一个。
+    Array.prototype.forEach.call(container.querySelectorAll('[data-export]'), function (button) {
+      button.addEventListener('click', function () {
+        var id = button.getAttribute('data-export');
+        button.disabled = true;
+        request('/api/js/sources?export=1&ids=' + encodeURIComponent(id))
+          .then(function (response) { return response.blob(); })
+          .then(function (blob) {
+            var url = URL.createObjectURL(blob);
+            var link = document.createElement('a');
+            var stamp = new Date().toISOString().slice(0, 10);
+            link.href = url;
+            link.download = 'guoapp-js-' + id + '-' + stamp + '.zip';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            setTimeout(function () { URL.revokeObjectURL(url); }, 1000);
+          })
+          .catch(function (error) {
+            window.alert(error.message || '导出脚本源失败');
+          })
+          .then(function () {
+            button.disabled = false;
+          });
       });
     });
   }

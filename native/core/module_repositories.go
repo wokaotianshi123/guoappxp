@@ -36,8 +36,9 @@ type moduleRepositoriesConfig struct {
 // 后两家是社区合集，用户可在「在线仓库」里随时切换。
 var moduleBuiltinRepositories = []nativeModuleRepository{
 	{Name: "官方仓库", URL: "https://raw.githubusercontent.com/guoapp-modules/index/main/index.json"},
-	// 真果鉴官方仓库：索引以 AES-256-GCM 加密下发（GCM1 封包），
-	// 由 decryptModuleIndex 解出明文后走同一套解析。
+	// 真果鉴官方仓库：现在直接下发明文 index.json，与 GitHub 那两家一样按普通
+	// 索引解析；老版本它用 AES-256-GCM 加密下发，历史密文仍能由
+	// decryptModuleIndex 解出来。
 	{Name: "真果鉴", URL: "https://guoapp.dpdns.org/modules/index.json"},
 	{Name: "jqk4388", URL: "https://raw.githubusercontent.com/jqk4388/guoapp-modules-private/refs/heads/main/index.json"},
 }

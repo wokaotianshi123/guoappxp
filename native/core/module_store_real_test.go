@@ -239,6 +239,37 @@ func TestStoreModulesReal(t *testing.T) {
 	t.Logf("全部 %d 个模块通过", len(outcomes))
 }
 
+// TestZhenguojianStoreIndexPlain 验证真果鉴仓库现在下发的是明文索引：
+// 抓一次线上 index.json，走与 App 相同的清洗 + 解析路径，确认能读出模块。
+//
+// 与上面的商店测试一样默认跳过（要联网）：
+//
+//	GUOAPP_STORE_TEST=1 go test ./core/ -run TestZhenguojianStoreIndexPlain -v
+func TestZhenguojianStoreIndexPlain(t *testing.T) {
+	if os.Getenv("GUOAPP_STORE_TEST") != "1" {
+		t.Skip("设置 GUOAPP_STORE_TEST=1 才会联网验证真果鉴仓库")
+	}
+	raw, err := fetchStoreBytes(storeTestClient(), "https://guoapp.dpdns.org/modules/index.json")
+	if err != nil {
+		t.Fatalf("读取真果鉴索引失败: %v", err)
+	}
+	if isEncryptedModuleIndex(raw) {
+		t.Fatal("真果鉴仓库应已是明文索引，实际拿到 GCM1 密文")
+	}
+	plain, err := decryptModuleIndex(raw)
+	if err != nil {
+		t.Fatalf("清洗明文索引失败: %v", err)
+	}
+	entries, err := parseModuleIndex(plain)
+	if err != nil {
+		t.Fatalf("解析真果鉴索引失败: %v", err)
+	}
+	if len(entries) == 0 {
+		t.Fatal("真果鉴索引解析后没有任何可用模块")
+	}
+	t.Logf("真果鉴索引共 %d 个可用模块，首个为 %s %s", len(entries), entries[0].ID, entries[0].Version)
+}
+
 // moduleFileURL 按商店的 tag 结构拼出模块文件地址（文件在标签根目录）。
 func moduleFileURL(repo, tag, file string) string {
 	return "https://raw.githubusercontent.com/" + repo + "/" + tag + "/" + file

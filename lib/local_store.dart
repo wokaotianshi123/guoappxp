@@ -32,13 +32,16 @@ const _movedTexts = {'themeColor'};
 
 /// 没选过站源时的默认源：JS 沙箱里的官方免费短剧（`js:hongguo`）。
 ///
-/// 它和模块红果内容同源，但属于两个独立站源：脚本在端侧跑，不依赖商店模块
-/// 是否安装。这里只用于「还没选过」的默认值，用户明确选过哪个就一直是哪个。
-const _preferredSource = 'js:hongguo';const _backupFlags = {
+/// 安装包不再内置红果模块，但脚本源始终随包提供，站源列表里一定会有它；
+/// 这里只用于「还没选过」的默认值，用户明确选过哪个就一直是哪个。
+const _preferredSource = 'js:hongguo';
+
+const _backupFlags = {
   'exportAfterDownload',
   'deleteAfterAutoExport',
   'deleteAfterManualExport',
   'televisionKeyboard',
+  'televisionRecommend',
   'searchAllSources',
   'historyTab',
   'pureBlack',
@@ -566,6 +569,13 @@ class LocalStore extends ChangeNotifier {
 
   bool get televisionKeyboard => _flag('televisionKeyboard', false);
 
+  /// 电视端顶部导航是否显示「推荐」标签。
+  ///
+  /// 默认关闭：电视上推荐流整屏播放，一进页面就抢解码器与网络，而遥控器
+  /// 操作它比手机 / 平板别扭得多（上下换剧只能靠顶部三个按钮）。想要的人
+  /// 可以在 设置 › 外观 里打开。非电视模式不受这个开关影响。
+  bool get televisionRecommend => _flag('televisionRecommend', false);
+
   /// 「全部源」搜索偏好：默认关闭，打开后搜索页并发查所有已开启的站源。
   bool get searchAllSources => _flag('searchAllSources', false);
   bool get historyTab => _flag('historyTab', true);
@@ -727,6 +737,8 @@ class LocalStore extends ChangeNotifier {
   );
   Future<void> setTelevisionKeyboard(bool value) =>
       _setting('televisionKeyboard', value);
+  Future<void> setTelevisionRecommend(bool value) =>
+      _setting('televisionRecommend', value);
   Future<void> setSearchAllSources(bool value) =>
       _setting('searchAllSources', value);
   Future<void> setHistoryTab(bool value) => _setting('historyTab', value);
@@ -1164,6 +1176,7 @@ class LocalStore extends ChangeNotifier {
       'deleteAfterAutoExport': deleteAfterAutoExport,
       'deleteAfterManualExport': deleteAfterManualExport,
       'televisionKeyboard': televisionKeyboard,
+      'televisionRecommend': televisionRecommend,
       'sourceSwitches': _map(_settings['sourceSwitches']),
       'sourceOrder': sourceOrder,
       'modules': modules.where(validSourceId).toSet().toList(),

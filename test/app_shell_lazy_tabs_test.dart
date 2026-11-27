@@ -77,4 +77,43 @@ void main() {
       }
     }
   });
+
+  // 电视端顶部导航默认只有发现 / 追剧 / 我的：推荐流整屏起播，遥控器不好操作，
+  // 还要和首屏抢解码器与网络。想用的人在 设置 › 外观 里打开。
+  testWidgets('电视端默认不显示推荐标签，打开开关后才出现', (tester) async {
+    tester.view.physicalSize = const Size(1280, 720);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
+    final store = await openStore();
+    expect(store.televisionRecommend, isFalse);
+    await tester.pumpWidget(
+      MaterialApp(
+        home: AppScope(
+          repository: FakeRepository(),
+          formFactor: FormFactor.television,
+          child: ListenableBuilder(
+            listenable: store,
+            builder: (context, _) => AppShell(store: store),
+          ),
+        ),
+      ),
+    );
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+
+    expect(find.byKey(const ValueKey('nav-recommend')), findsNothing);
+    for (final tab in [AppTab.explore, AppTab.follow, AppTab.mine]) {
+      expect(
+        find.byKey(ValueKey('nav-${tab.name}')),
+        findsOneWidget,
+        reason: '电视端应保留${tab.label}',
+      );
+    }
+
+    await store.setTelevisionRecommend(true);
+    await tester.pump();
+    await tester.pump(const Duration(milliseconds: 400));
+    expect(find.byKey(const ValueKey('nav-recommend')), findsOneWidget);
+  });
 }
