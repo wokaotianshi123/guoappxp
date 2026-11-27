@@ -127,10 +127,31 @@ func (manager *transcodeManager) get(key string) *transcodeJob {
 // start 启动（或复用）一个转码任务。红果等站源的视频是 CENC 加密的 H.265，
 // 浏览器既不能解密也不能解码，必须由 ffmpeg 解密后重编码成 H.264 才能播放。
 func (manager *transcodeManager) start(key, input, decryptionKey string) (*transcodeJob, error) {
+	return manager.startWithHeaders(key, input, decryptionKey, nil)
+}
+
+// startWithHeaders 与 start 相同，额外把站源要求的 UA / Referer 交给 ffmpeg。
+// 红果等脚本源的片源 CDN 会校验请求头，不带头的 ffmpeg 会被 403。
+func (manager *transcodeManager) startWithHeaders(key, input, decryptionKey string, headers map[string]string) (*transcodeJob, error) {
+	var headerBlock strings.Builder
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" || strings.ContainsAny(name+value, "\r\n") {
+			continue
+		}
+		headerBlock.WriteString(name)
+		headerBlock.WriteString(": ")
+		headerBlock.WriteString(value)
+		headerBlock.WriteString("\r\n")
+	}
 	return manager.launch(key, func(dir string) []string {
 		arguments := []string{"-nostdin", "-loglevel", "error", "-y"}
 		if decryptionKey != "" {
 			arguments = append(arguments, "-decryption_key", decryptionKey)
+		}
+		if headerBlock.Len() > 0 {
+			arguments = append(arguments, "-headers", headerBlock.String())
 		}
 		arguments = append(arguments,
 			"-i", input,

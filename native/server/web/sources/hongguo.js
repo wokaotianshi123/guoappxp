@@ -7,7 +7,7 @@
 const meta = {
   id: "hongguo",
   name: "官方免费短剧",
-  version: "1.1.0-dev.23",
+  version: "1.1.0-dev.24",
   description: "官方首发短剧源，包含海量都市爽文、战神回归、现代甜宠等优质短剧",
   author: "社区开发者",
   type: "video",
@@ -2508,7 +2508,13 @@ spider.danmaku = function (id, startMs, durationMs) {
     if (!cell || !discoveryGenres.every(id => choices.some(item => item.selector_item_id === id && text(item.show_name)))) {
       throw failure('官方找剧分类暂不可用，请重试', 'INVALID_RESPONSE');
     }
-    cachedDiscoveryTab = { cell, choices };
+    // 翻页游标在 tab 上，不在 cell 里：不带 session_id 再翻，接口会把第一屏
+    // 原样返回，表现为「只有十几部、翻不出第二页」。
+    cachedDiscoveryTab = {
+      cell, choices,
+      sessionId: text(tab?.session_id),
+      nextOffset: Math.max(number(tab?.next_offset), videos([cell]).length)
+    };
     cachedDiscoveryTabTime = Date.now();
     return cachedDiscoveryTab;
   }
@@ -2531,7 +2537,7 @@ spider.danmaku = function (id, startMs, durationMs) {
       throw failure('分类已更新，请重新选择分类', 'INVALID_CATEGORY');
     }
     return await paged('discover:' + genre, page, async () => {
-      const { cell, choices } = await discoveryTab();
+      const { cell, choices, sessionId, nextOffset } = await discoveryTab();
       const category = genre === 'all' ? '短剧' : text(choices.find(item => item.selector_item_id === genre).show_name);
       const params = {
         cell_id: text(cell.cell_id_str), tab_type: 8, selected_items: genre,
@@ -2540,7 +2546,11 @@ spider.danmaku = function (id, startMs, durationMs) {
       };
       const minimum = Math.min(24, Math.max(1, number(extend?.initialBatch)));
       if (genre === 'all' && choices.find(item => item.selector_item_id === genre).is_selected) {
-        return { cell, params, category, minimum };
+        return {
+          cell,
+          data: { next_offset: nextOffset, session_id: sessionId, has_more: true },
+          params, category, minimum
+        };
       }
       const response = await api('/reading/bookapi/bookmall/cell/change/v', {
         ...params, unlimited_selector_change_type: 2, change_type: 1, offset: 0, limit: 40
@@ -2568,8 +2578,6 @@ spider.danmaku = function (id, startMs, durationMs) {
 
   let cachedRankingBoards = null;
   let cachedRankingBoardsTime = 0;
-  // 推荐榜不再进分类栏，记录其 group/board，交给推荐页展示。
-  let cachedRecommendBoard = null;
   spider.rankingBoards = async function () {
     if (cachedRankingBoards && Date.now() - cachedRankingBoardsTime < 15 * 60 * 1000) {
       return cachedRankingBoards;
@@ -2582,11 +2590,9 @@ spider.danmaku = function (id, startMs, durationMs) {
       for (const board of group.sub_cell_selector?.outer_row?.items || []) {
         if (!/^[a-z0-9_]{1,80}$/.test(board.selector_item_id || '')) continue;
         const boardName = (group.selector_item_id === 'all' ? '' : text(group.show_name) + '·') + text(board.show_name);
-        // 推荐榜不放进分类栏，留给推荐页显示。
-        if (boardName.indexOf('推荐') !== -1) {
-          cachedRecommendBoard = { group: group.selector_item_id, board: board.selector_item_id };
-          continue;
-        }
+        // 「推荐榜」是固定 10 条的榜单，不适合放在推荐页（那里要无限信息流），
+        // 也不放进分类栏，直接跳过。
+        if (boardName.indexOf('推荐') !== -1) continue;
         items.push({
           id: 'hongguo-app:' + group.selector_item_id + ':' + board.selector_item_id,
           name: boardName,
@@ -2620,37 +2626,27 @@ spider.danmaku = function (id, startMs, durationMs) {
 
   spider.recommendations = async function (genre, page) {
     const pg = Math.max(1, number(page));
-    let result;
-    // 推荐榜已从分类栏移到推荐页：优先展示推荐榜。
-    if (!cachedRecommendBoard) {
-      try {
-        await spider.rankingBoards();
-      } catch (_) {}
+    const key = text(genre);
+    // AI 剧用专门的热度榜。
+    if (['ai_series', 'ai-drama', 'AI 剧', 'AI剧'].includes(key)) {
+      return rankedPage('ai_playlet', 'ai_playlet_hot_sc', pg, 'recommendations:ai');
     }
-    if (cachedRecommendBoard) {
-      result = await rankedPage(
-        cachedRecommendBoard.group,
-        cachedRecommendBoard.board,
-        pg,
-        'recommendations:rank',
-      );
-    } else {
-      const key = text(genre);
-      if (['ai_series', 'ai-drama', 'AI 剧', 'AI剧'].includes(key)) {
-        result = await rankedPage('ai_playlet', 'ai_playlet_hot_sc', pg, 'recommendations:ai');
-      } else {
-        const comic = ['comic_series', 'comic-drama', 'comic', '漫剧'].includes(key);
-        const tabType = comic ? 32 : 38;
-        result = await paged('recommendations:' + tabType, pg, async () => {
-          const response = await api('/reading/bookapi/bookmall/tab/v', { tab_type: tabType, tab_index: comic ? 2 : 1, offset: 0 });
-          const tab = response.data?.tab_item?.find(item => number(item.tab_type) === tabType);
-          if (!tab) throw failure('官方接口未返回此推荐分类，请重试', 'INVALID_RESPONSE');
-          const cell = container(tab.cell_data);
-          return { cell, params: { tab_type: tabType } };
-        });
-      }
-    }
-    return result;
+    // 其余走官方信息流（tab_type 38 / 漫剧 32）。
+    //
+    // 这里曾经优先取「推荐榜」，但榜单是固定 10 条且 has_more 恒为 false，
+    // 导致推荐页永远只有 10 部、翻不到下一页。信息流本身是无限的，
+    // 所以推荐必须以信息流为主；榜单只是「发现」页里的独立 tab。
+    const comic = ['comic_series', 'comic-drama', 'comic', '漫剧'].includes(key);
+    const tabType = comic ? 32 : 38;
+    return paged('recommendations:' + tabType, pg, async () => {
+      const response = await api('/reading/bookapi/bookmall/tab/v', {
+        tab_type: tabType, tab_index: comic ? 2 : 1, offset: 0
+      });
+      const tab = response.data?.tab_item?.find(item => number(item.tab_type) === tabType);
+      if (!tab) throw failure('官方接口未返回此推荐分类，请重试', 'INVALID_RESPONSE');
+      const cell = container(tab.cell_data);
+      return { cell, params: { tab_type: tabType } };
+    });
   };
 })();
 

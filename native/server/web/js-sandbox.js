@@ -12,6 +12,11 @@
 var JsSandbox = (function () {
   var DEVICE_KEY = 'duoapp:jsSandbox:device';
 
+  // 与 App 端 js_source_presets.dart 里的「小果」内置订阅保持一致。
+  // 输入框默认留空，点「小果订阅」才填入，用户仍可改成别的订阅地址。
+  var XIAOGUO_SUBSCRIPTION =
+    'https://cfkua.wokaotianshi.eu.org/https://raw.githubusercontent.com/wokaotianshi123/config/refs/heads/main/xiaoguojs/xiaoguo.json';
+
   var state = {
     sources: [],
     active: '',
@@ -511,13 +516,28 @@ var JsSandbox = (function () {
       MISSING_EPISODE: '这一集还没有可播放的分集',
       MEDIA_URL_EXPIRED: '播放地址已过期，请重新获取',
       MEDIA_REJECTED: '播放地址暂不可用，请重试',
+      MEDIA_TYPE_INVALID: '片源返回的不是视频（可能是验证页或错误页），请重试',
+      MEDIA_NETWORK: '片源网络请求失败，请重试',
       NO_STREAM: '站源没有返回播放地址',
       GUEST_REGISTRATION_FAILED: '官方会话初始化失败，请重试',
       DRM_PROTECTED: '这一集的片源是 DRM 加密的，没有播放器密钥解不出来，本源只能浏览；官方源需内置签名参数才能播放',
       SOURCE_CONFIGURATION_MISSING: '这个脚本需要签名参数：内置官方源已随安装包配置好；自定义脚本请在 JS 沙箱 › 签名参数里填密钥后重试',
+      BUSINESS_REJECTED: '官方接口暂未提供本集的播放信息，请换一集重试',
+      MISSING_MODEL: '官方接口没有返回本集片源，请重试',
+      SECURITY_BLOCKED: '片源校验未通过，请重试',
+      INVALID_RESPONSE: '站源返回的数据无法识别，请重试',
+      MODEL_FAILED: '官方接口取流失败，请稍后重试',
       CANCELLED: '请求已取消',
     };
-    return map[code] || (error && error.message ? String(error.message) : '脚本执行失败');
+    if (map[code]) return map[code];
+    if (code.indexOf('MEDIA_HTTP_') === 0) {
+      return '片源服务器返回 HTTP ' + code.slice('MEDIA_HTTP_'.length) + '，请重新获取播放地址';
+    }
+    if (code === 'HTTP_403' || code === 'HTTP_429') {
+      return '官方接口限制访问（' + code + '），请稍后重试';
+    }
+    if (error && error.message) return String(error.message);
+    return '取流失败' + (code ? '（' + code + '）' : '') + '，请重试';
   }
 
   // ---------------------------------------------------------------- 请求拦截
@@ -787,29 +807,96 @@ var JsSandbox = (function () {
           failure.code = (play && play.error) || 'NO_STREAM';
           throw failure;
         }
-        var url = String(play.url);
+        var rawUrl = String(play.url);
         var headers = play.header || play.headers || {};
-        var agent = headers['User-Agent'] || headers['user-agent'] || '';
-        var referer = headers['Referer'] || headers['referer'] || '';
-        // 浏览器不能给 <video> 加请求头，带头的直链一律走服务端代理。
-        if (agent || referer) {
-          var proxy = '/api/js/stream?u=' + encodeURIComponent(url);
-          if (agent) proxy += '&ua=' + encodeURIComponent(agent);
-          if (referer) proxy += '&r=' + encodeURIComponent(referer);
-          url = proxy;
+        if (!headers || typeof headers !== 'object') headers = {};
+        // 脚本有时会给 null / 数字，这里统一转字符串，避免服务端按
+        // map[string]string 解码失败导致加密片源拿不到转码计划。
+        var safeHeaders = {};
+        Object.keys(headers).forEach(function (name) {
+          var value = headers[name];
+          if (value === undefined || value === null) return;
+          safeHeaders[name] = String(value);
+        });
+        var agent = safeHeaders['User-Agent'] || safeHeaders['user-agent'] || '';
+        var referer = safeHeaders['Referer'] || safeHeaders['referer'] || '';
+        // 先按脚本返回的原始地址判断是不是 HLS：代理地址（/api/js/stream?u=…）
+        // 本身看不出后缀，交给播放页按 plan.mode 决定用 hls.js 还是 <video>。
+        var mode = /\.m3u8($|[?#])/i.test(rawUrl) ? 'hls' : 'direct';
+        // 浏览器不能给 <video> 加请求头，带头的直链一律走服务端代理；
+        // m3u8 即使不带请求头也走代理，避免 hls.js 拉清单时被跨域 CORS 挡住，
+        // 分片地址也能由服务端统一改写。
+        var proxied = '';
+        if (agent || referer || mode === 'hls') {
+          proxied = '/api/js/stream?u=' + encodeURIComponent(rawUrl);
+          if (agent) proxied += '&ua=' + encodeURIComponent(agent);
+          if (referer) proxied += '&r=' + encodeURIComponent(referer);
         }
-        var detected = /\/(2160|1080|720|480|360)p[./]/.exec(String(play.url));
-        var quality = Number(play.quality) || (detected ? Number(detected[1]) : 0);
-        return {
-          url: url,
-          mode: 'direct',
-          quality: quality,
-          qualities: quality ? [quality] : [],
-          routeIndex: pair.ctx.route,
-          routeCount: routeCount,
-          session: '',
-          danmakuId: String(play.danmakuId || ''),
-        };
+        var sourceUrl = proxied || rawUrl;
+        var note = '';
+        // 红果等片源是 CENC 加密 / HEVC，浏览器既不能解密也不能解码。
+        // 交给服务端复用核心的 ffmpeg 链路转成 H.264 HLS；普通片源服务端
+        // 只做一次 64KB 探测，仍返回 direct，不影响其它脚本源。
+        return request('/api/js/playback', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            url: rawUrl,
+            // HLS 的加密信息在清单里，由 hls.js 自己处理；只有 mp4 直链的
+            // decryptionKey 才需要交给服务端 ffmpeg。
+            key: mode === 'hls' ? '' : String(play.decryptionKey || ''),
+            headers: safeHeaders,
+            dramaId: String(drama.id || ''),
+            index: index,
+            quality: Number(payload.quality || 0) || 0,
+            route: pair.ctx.route,
+          }),
+        })
+          .then(function (response) {
+            if (!response.ok) return null;
+            return response.json();
+          })
+          .then(function (answer) {
+            var data = (answer && answer.data) || null;
+            if (data && data.mode === 'hls' && data.url) {
+              mode = 'hls';
+              sourceUrl = String(data.url);
+            } else if (data && data.message) {
+              note = String(data.message);
+            }
+            var detected = /\/(2160|1080|720|480|360)p[./]/.exec(String(play.url));
+            var quality = Number(play.quality) || (detected ? Number(detected[1]) : 0);
+            var plan = {
+              url: sourceUrl,
+              sourceUrl: rawUrl,
+              mode: mode,
+              quality: quality,
+              qualities: quality ? [quality] : [],
+              routeIndex: pair.ctx.route,
+              routeCount: routeCount,
+              session: '',
+              danmakuId: String(play.danmakuId || ''),
+            };
+            if (note) plan.message = note;
+            if (data && data.transcoding) plan.transcoding = true;
+            if (data && data.encrypted) plan.encrypted = true;
+            if (data && data.hevc) plan.hevc = true;
+            return plan;
+          })
+          .catch(function () {
+            // 探测/转码接口异常不应挡住播放：退回脚本给的直链或代理地址。
+            return {
+              url: sourceUrl,
+              sourceUrl: rawUrl,
+              mode: mode,
+              quality: Number(play.quality) || 0,
+              qualities: Number(play.quality) ? [Number(play.quality)] : [],
+              routeIndex: pair.ctx.route,
+              routeCount: routeCount,
+              session: '',
+              danmakuId: String(play.danmakuId || ''),
+            };
+          });
       })
       .catch(function (error) {
         throw new Error(errorMessage(error));
@@ -938,6 +1025,17 @@ var JsSandbox = (function () {
           : '<button type="button" class="btn" id="js-signing">签名参数' +
             (signing.configured ? '（已配置）' : '（未配置）') + '</button>') +
         '</div>' +
+        '<div class="js-subscribe">' +
+        '<div class="js-subscribe-head">内置订阅' +
+        '<span class="js-subscribe-tip">输入框默认留空；点「小果订阅」自动填入地址，也可以手动改成别的订阅 JSON 地址</span>' +
+        '</div>' +
+        '<div class="js-subscribe-row">' +
+        '<input type="text" id="js-subscription-url" class="js-subscribe-input" ' +
+        'placeholder="订阅 JSON 地址（留空可点右侧「小果订阅」）" autocomplete="off" spellcheck="false" />' +
+        '<button type="button" class="btn" id="js-fill-xiaoguo">小果订阅</button>' +
+        '<button type="button" class="btn" id="js-import-subscription">导入订阅</button>' +
+        '</div>' +
+        '</div>' +
         '<div class="js-hint">' +
         '脚本源在浏览器 Worker 里执行：目录、搜索、详情、取流都由脚本自己完成，' +
         '网络请求经本服务代发（绕开跨域限制）。切换脚本即切换整套解析逻辑，不影响内置站源。' +
@@ -950,6 +1048,38 @@ var JsSandbox = (function () {
   }
 
   function bind(container) {
+    var subscriptionInput = document.getElementById('js-subscription-url');
+    var fillSubscription = document.getElementById('js-fill-xiaoguo');
+    if (fillSubscription && subscriptionInput) {
+      fillSubscription.addEventListener('click', function () {
+        subscriptionInput.value = XIAOGUO_SUBSCRIPTION;
+        subscriptionInput.focus();
+      });
+    }
+    var importSubscription = document.getElementById('js-import-subscription');
+    if (importSubscription && subscriptionInput) {
+      importSubscription.addEventListener('click', function () {
+        var address = String(subscriptionInput.value || '').trim();
+        if (!address) {
+          window.alert('请先填写订阅地址，或点「小果订阅」自动填入。');
+          subscriptionInput.focus();
+          return;
+        }
+        importSubscription.disabled = true;
+        importSource({ url: address })
+          .then(function (data) {
+            return render(container).then(function () {
+              window.alert(importSummary(data, '订阅导入完成'));
+            });
+          })
+          .catch(function (error) {
+            window.alert(error.message || '导入订阅失败');
+          })
+          .then(function () {
+            importSubscription.disabled = false;
+          });
+      });
+    }
     var preset = document.getElementById('js-import-preset');
     if (preset) {
       preset.addEventListener('click', function () {

@@ -194,7 +194,22 @@ function settleFetch(data) {
     waiter.reject(failure);
     return;
   }
-  var headers = data.headers || {};
+  // 服务端把响应头原样带回（Go 侧是 Content-Type 这种规范大小写），
+  // 但脚本普遍按 fetch 的习惯读小写键或 headers.get('content-type')。
+  // 这里统一转成小写，并补一个 Headers 风格的 get，避免红果这类脚本
+  // 因为读不到 content-type 把可用片源判成 MEDIA_TYPE_INVALID。
+  var rawHeaders = data.headers || {};
+  var headers = {};
+  Object.keys(rawHeaders).forEach(function (key) {
+    headers[String(key).toLowerCase()] = rawHeaders[key] == null ? '' : String(rawHeaders[key]);
+  });
+  Object.defineProperty(headers, 'get', {
+    value: function (name) {
+      var key = String(name == null ? '' : name).toLowerCase();
+      return Object.prototype.hasOwnProperty.call(headers, key) ? headers[key] : null;
+    },
+    enumerable: false,
+  });
   waiter.resolve({
     status: status,
     ok: status >= 200 && status < 300,

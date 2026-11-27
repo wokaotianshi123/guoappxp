@@ -585,6 +585,44 @@ body {
 .self-heal { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; margin-top: 14px; }
 
 /* ---- JS 沙箱页 ---- */
+.js-subscribe {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  margin: 8px 0;
+}
+.js-subscribe-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  gap: 8px;
+  font-weight: 600;
+  margin-bottom: 8px;
+}
+.js-subscribe-tip {
+  font-size: 12px;
+  font-weight: 400;
+  opacity: 0.7;
+}
+.js-subscribe-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+.js-subscribe-input {
+  flex: 1 1 260px;
+  min-width: 0;
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+}
+.js-subscribe-input:focus {
+  outline: none;
+  border-color: var(--accent, #e5484d);
+}
 .js-hint {
   font-size: 12px;
   opacity: 0.7;

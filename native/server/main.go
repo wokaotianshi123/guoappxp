@@ -288,12 +288,27 @@ func nextAvailablePort(host string, start int) (int, error) {
 // resolve 带回的解密密钥兜底（红果等 CENC 源）。小数据 + 短超时，降低播放页
 // 打开时的阻塞耗时。
 func probeCodec(rawURL string) (encrypted bool, hevc bool) {
+	return probeCodecWithHeaders(rawURL, nil)
+}
+
+// probeCodecWithHeaders 与 probeCodec 相同，额外带上脚本源要求的 UA / Referer。
+// 脚本源（如红果）的 CDN 会校验 User-Agent，不带头的探测会被 403 掉，
+// 从而漏判 HEVC / 加密，最终把浏览器播不了的片源当直链返回。
+func probeCodecWithHeaders(rawURL string, headers map[string]string) (encrypted bool, hevc bool) {
 	client := &http.Client{Transport: localTransport, Timeout: 10 * time.Second}
 	request, err := http.NewRequest(http.MethodGet, rawURL, nil)
 	if err != nil {
 		return false, false
 	}
 	request.Header.Set("Range", "bytes=0-65535") // 只取前 64KB
+	for name, value := range headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" {
+			continue
+		}
+		request.Header.Set(name, value)
+	}
 	response, err := client.Do(request)
 	if err != nil {
 		return false, false
@@ -1180,6 +1195,7 @@ func main() {
 	mux.HandleFunc("/api/js/signing", handleJsSigning)
 	mux.HandleFunc("/api/js/fetch", handleJsFetch)
 	mux.HandleFunc("/api/js/stream", handleJsStream)
+	mux.HandleFunc("/api/js/playback", handleJsPlayback)
 	mux.HandleFunc("/api/modules", handleModules)
 	mux.HandleFunc("/api/modules/", handleModules)
 	mux.HandleFunc("/api/netdisk/", handleNetdisk)

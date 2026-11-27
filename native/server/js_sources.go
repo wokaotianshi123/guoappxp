@@ -1256,6 +1256,11 @@ var jsFetchClient = &http.Client{
 	},
 }
 
+// jsStreamClient 专门给播放流用：不能设总超时，否则长视频播到 40 秒就会被
+// 客户端主动掐断。建立连接 / 等响应头仍由 Transport 的超时兜底，浏览器
+// 关掉播放页时 request.Context() 也会取消。
+var jsStreamClient = &http.Client{Transport: jsFetchClient.Transport}
+
 var jsFetchBlocked = regexp.MustCompile(`^(localhost|127\.|10\.|192\.168\.|169\.254\.|::1|\[::1\])`)
 
 func isPrivateHost(host string) bool {
@@ -1344,7 +1349,9 @@ func handleJsFetch(writer http.ResponseWriter, request *http.Request) {
 	}
 	headers := map[string]string{}
 	for key := range response.Header {
-		headers[key] = response.Header.Get(key)
+		// Worker 里的脚本按 fetch 习惯读小写键（content-type），这里统一小写，
+		// 避免红果等源因为读不到 content-type 把可用片源判成 MEDIA_TYPE_INVALID。
+		headers[strings.ToLower(key)] = response.Header.Get(key)
 	}
 	writeJSON(writer, map[string]any{
 		"status":  response.StatusCode,
@@ -1386,7 +1393,7 @@ func handleJsStream(writer http.ResponseWriter, request *http.Request) {
 	if referer := strings.TrimSpace(request.URL.Query().Get("r")); referer != "" {
 		outgoing.Header.Set("Referer", referer)
 	}
-	response, err := jsFetchClient.Do(outgoing)
+	response, err := jsStreamClient.Do(outgoing)
 	if err != nil {
 		http.Error(writer, "取流失败", http.StatusBadGateway)
 		return
@@ -1415,6 +1422,98 @@ func handleJsStream(writer http.ResponseWriter, request *http.Request) {
 	}
 	writer.WriteHeader(response.StatusCode)
 	_, _ = io.Copy(writer, response.Body)
+}
+
+// handleJsPlayback 处理脚本源取流后的播放计划。普通直链只做一次 64KB 探测；
+// CENC 加密（脚本带回 decryptionKey）或 HEVC 的片源交给 ffmpeg 解密/转码成
+// H.264 HLS，否则浏览器会出现「地址取到了但画面播不了」。
+func handleJsPlayback(writer http.ResponseWriter, request *http.Request) {
+	if request.Method != http.MethodPost {
+		http.Error(writer, "只接受 POST 请求", http.StatusMethodNotAllowed)
+		return
+	}
+	var payload struct {
+		URL     string            `json:"url"`
+		Key     string            `json:"key"`
+		Headers map[string]string `json:"headers"`
+		DramaID string            `json:"dramaId"`
+		Index   int               `json:"index"`
+		Quality int               `json:"quality"`
+		Route   int               `json:"route"`
+		Force   bool              `json:"force"`
+	}
+	if err := json.NewDecoder(io.LimitReader(request.Body, 1<<20)).Decode(&payload); err != nil {
+		http.Error(writer, "请求不是合法 JSON", http.StatusBadRequest)
+		return
+	}
+	parsed, err := url.Parse(strings.TrimSpace(payload.URL))
+	if err != nil || (parsed.Scheme != "http" && parsed.Scheme != "https") || parsed.Host == "" {
+		http.Error(writer, "播放地址无效", http.StatusBadRequest)
+		return
+	}
+	if isPrivateHost(parsed.Hostname()) {
+		http.Error(writer, "播放地址不可访问", http.StatusForbidden)
+		return
+	}
+	headers := map[string]string{}
+	for name, value := range payload.Headers {
+		name = strings.TrimSpace(name)
+		value = strings.TrimSpace(value)
+		if name == "" || value == "" || strings.ContainsAny(name+value, "\r\n") {
+			continue
+		}
+		headers[name] = value
+	}
+	key := strings.TrimSpace(payload.Key)
+	encrypted, hevc := key != "", false
+	if !encrypted {
+		encrypted, hevc = probeCodecWithHeaders(parsed.String(), headers)
+	}
+	answer := map[string]any{
+		"mode":      "direct",
+		"encrypted": encrypted,
+		"hevc":      hevc,
+		"ffmpeg":    ffmpegPath() != "",
+	}
+	if ffmpegPath() == "" {
+		if encrypted || hevc {
+			answer["message"] = "需要 ffmpeg 转码"
+		}
+		writeJSON(writer, map[string]any{"ok": true, "data": answer})
+		return
+	}
+	if !encrypted && !hevc && !payload.Force {
+		writeJSON(writer, map[string]any{"ok": true, "data": answer})
+		return
+	}
+	jobID := jobKey(
+		payload.DramaID,
+		strconv.Itoa(payload.Index),
+		strconv.Itoa(payload.Quality),
+		strconv.Itoa(payload.Route),
+		key,
+		parsed.String(),
+	)
+	job, err := transcoder.startWithHeaders(jobID, parsed.String(), key, headers)
+	if err != nil {
+		answer["message"] = err.Error()
+		writeJSON(writer, map[string]any{"ok": true, "data": answer})
+		return
+	}
+	ready, failure := transcoder.wait(job)
+	if ready {
+		answer["mode"] = "hls"
+		answer["url"] = "/api/live/" + jobID + "/index.m3u8"
+		answer["transcoding"] = !job.isFinished()
+	} else if failure != "" {
+		answer["message"] = "转码失败：" + failure
+	} else {
+		// ffmpeg 还在生成第一个分片，交给前端 hls.js 的清单重试接管。
+		answer["mode"] = "hls"
+		answer["url"] = "/api/live/" + jobID + "/index.m3u8"
+		answer["transcoding"] = true
+	}
+	writeJSON(writer, map[string]any{"ok": true, "data": answer})
 }
 
 // rewritePlaylist 把分片 / 密钥地址改成经本代理的相对地址，并带上同样的

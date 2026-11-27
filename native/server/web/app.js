@@ -301,7 +301,7 @@ function failoverRoute(reasonText, skipSameLineRetry) {
       }
       // 新线路也享有同等的"先原线重试"宽容，mountVideo 里会重置计数。
       // 新线路是新的播放会话，沿用同一 <video> 就地重建，倍速/全屏都不丢。
-      mountVideo(next.url, 0);
+      mountVideo(next.url, 0, next);
     })
     .catch(function () {
       if (mountAt !== mountToken) {
@@ -1529,7 +1529,7 @@ function renderWatch(id, index, source) {
       if (remembered && remembered.position > 5) {
         resumeAt = remembered.position;
       }
-      mountVideo(plan.url, resumeAt);
+      mountVideo(plan.url, resumeAt, plan);
       bindFavoriteToggle(state.drama);
       bindEpisodes();
       // 打开播放页就先记一条播放记录，之后的进度由播放器持续更新。
@@ -1699,7 +1699,7 @@ function playToIndex(targetIndex) {
         note.style.display = 'none';
       }
       syncEpisodeChrome(targetIndex);
-      mountVideo(plan.url, 0);
+      mountVideo(plan.url, 0, plan);
       libraryRequest({ list: 'history', op: 'put', item: currentEntry(0, 0) }).catch(function () {});
       return true;
     })
@@ -1880,7 +1880,7 @@ function playNextEpisode() {
         note.style.display = 'none';
       }
       syncEpisodeChrome(nextIndex);
-      mountVideo(plan.url, 0);
+      mountVideo(plan.url, 0, plan);
       libraryRequest({ list: 'history', op: 'put', item: currentEntry(0, 0) }).catch(function () {});
       return true;
     })
@@ -1928,7 +1928,7 @@ function playPreviousEpisode() {
         note.style.display = 'none';
       }
       syncEpisodeChrome(prevIndex);
-      mountVideo(plan.url, 0);
+      mountVideo(plan.url, 0, plan);
       libraryRequest({ list: 'history', op: 'put', item: currentEntry(0, 0) }).catch(function () {});
       return true;
     })
@@ -2279,7 +2279,28 @@ function hideVideoBackdrop() {
   if (backdrop) backdrop.style.display = 'none';
 }
 
-function mountVideo(url, resumeAt) {
+// 判断播放地址是不是 HLS 清单。脚本源的直链常带 UA，会被包成
+// /api/js/stream?u=<编码后的 m3u8>&ua=…，这时只看 URL 后缀会漏判，
+// 把 m3u8 当普通视频塞给 <video>（桌面 Chrome 直接播不了 HLS）。
+// 因此优先用播放计划里的 mode/sourceUrl，其次再解开代理参数判断。
+function videoIsPlaylist(url, plan) {
+  if (plan && plan.mode === 'hls') return true;
+  if (plan && typeof plan.sourceUrl === 'string' && /\.m3u8($|[?#])/i.test(plan.sourceUrl)) {
+    return true;
+  }
+  var direct = String(url || '');
+  if (direct.indexOf('/api/js/stream?') !== -1) {
+    try {
+      var parsed = new URL(direct, location.origin);
+      direct = parsed.searchParams.get('u') || direct;
+    } catch (error) {
+      // 解析失败就按原地址判断
+    }
+  }
+  return /\.m3u8($|[?#])/i.test(direct);
+}
+
+function mountVideo(url, resumeAt, plan) {
   var video = document.getElementById('player');
   if (!video) {
     return;
@@ -2312,7 +2333,7 @@ function mountVideo(url, resumeAt) {
     // 加载失败先走"原线路重试"，重试仍失败才换线（failoverRoute 内部两层）。
     failoverRoute('视频加载失败');
   };
-  var isPlaylist = /\.m3u8($|\?)/i.test(url);
+  var isPlaylist = videoIsPlaylist(url, plan);
   var mediaRecoveries = 0;
   if (isPlaylist && window.Hls && window.Hls.isSupported()) {
     hlsInstance = new window.Hls({
