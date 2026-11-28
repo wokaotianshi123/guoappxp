@@ -170,15 +170,26 @@ class ProcessPyBackend implements PyBackend {
   final Map<int, Completer<Map<String, dynamic>>> _pending = {};
   PyRuntimeStatus? _status;
 
-  Future<Process?> _ensure() async {
+  /// 启动中的解释器。首次调用常有多个并发（状态探测 + 目录 + 详情），
+  /// 没有这道闸时每个调用都会各起一个 python.exe：后启动的把 `_process`
+  /// 与 `_lines` 覆盖掉，先启动那个进程的 stdout 再没人读，它的回复永远
+  /// 到不了 `_pending`，请求只能挂到 70 秒超时（Windows 版「加载超时」）。
+  Future<Process?>? _starting;
+
+  Future<Process?> _ensure() {
     final existing = _process;
-    if (existing != null) return existing;
+    if (existing != null) return Future.value(existing);
+    return _starting ??= _start().whenComplete(() => _starting = null);
+  }
+
+  Future<Process?> _start() async {
     final executable = _pythonExecutable();
     final host = _hostScript();
     if (executable == null || host == null) return null;
     try {
       final process = await Process.start(
         executable,
+        // -u 关掉缓冲：否则 stdout 是管道时会整块缓冲，回复迟迟不刷出来。
         ['-u', host, '--rpc'],
         workingDirectory: File(host).parent.path,
       );
@@ -188,6 +199,18 @@ class ProcessPyBackend implements PyBackend {
           .transform(const LineSplitter())
           .listen(_onLine);
       process.stderr.drain<void>();
+      // 解释器意外退出时，把还在等的请求全部唤醒，避免一路等到超时。
+      process.exitCode.then((_) {
+        if (!identical(_process, process)) return;
+        _process = null;
+        final pending = List.of(_pending.entries);
+        _pending.clear();
+        for (final entry in pending) {
+          entry.value.completeError(
+            AppFailure('py 运行时已退出', code: 'py_unavailable'),
+          );
+        }
+      });
       return process;
     } catch (_) {
       _process = null;

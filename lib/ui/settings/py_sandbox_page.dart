@@ -8,6 +8,7 @@ import '../../py_source/py_bridge.dart';
 import '../../py_source/py_source_gateway.dart';
 import '../../py_source/py_source_models.dart';
 import '../../py_source/py_source_service.dart';
+import 'py_source_import_dialog.dart';
 
 /// 我的 › PY 沙箱。
 ///
@@ -112,14 +113,45 @@ class _PySandboxPageState extends State<PySandboxPage> {
   Future<void> _importFile() => _run(() async {
     final file = await FilePicker.pickFile(
       type: FileType.custom,
-      allowedExtensions: const ['py'],
+      allowedExtensions: const ['py', 'json', 'zip'],
     );
     if (file == null) return;
+    final lower = file.name.toLowerCase();
+    if (lower.endsWith('.zip')) {
+      final result = await _service.importZip(await file.readAsBytes());
+      _refresh();
+      if (result.error.isNotEmpty) {
+        _toast('导入失败：${result.error}');
+        return;
+      }
+      _toast(
+        result.failed.isEmpty
+            ? '已导入 ${result.imported.length} 个 py 源'
+            : '导入 ${result.imported.length} 个，失败 ${result.failed.length} 个',
+      );
+      return;
+    }
     final bytes = await file.readAsBytes();
-    final result = await _service.import(
-      utf8.decode(bytes, allowMalformed: true),
-      file.name,
-    );
+    final text = utf8.decode(bytes, allowMalformed: true);
+    if (lower.endsWith('.json')) {
+      // 订阅配置：同目录下放着的脚本会一起装进来。
+      final result = await _service.importLocalSubscription(
+        text,
+        configPath: file.path,
+      );
+      _refresh();
+      if (result.imported.isEmpty) {
+        _toast('导入失败：${result.error.isEmpty ? result.failed.join('、') : result.error}');
+        return;
+      }
+      _toast(
+        result.failed.isEmpty
+            ? '已导入 ${result.imported.length} 个 py 源'
+            : '导入 ${result.imported.length} 个，失败 ${result.failed.length} 个',
+      );
+      return;
+    }
+    final result = await _service.import(text, file.name);
     if (result.meta == null) {
       _toast('导入失败：${result.error}');
       return;
@@ -135,16 +167,34 @@ class _PySandboxPageState extends State<PySandboxPage> {
   });
 
   Future<void> _importUrl() async {
-    final url = await _promptText('从网址导入', 'py 文件直链');
-    if (url == null || url.trim().isEmpty) return;
+    final url = await showDialog<String>(
+      context: context,
+      builder: (context) => const PySourceImportDialog(),
+    );
+    if (url == null || url.isEmpty) return;
     await _run(() async {
-      final result = await _service.importFromUrl(url);
-      if (result.meta == null) {
-        _toast('导入失败：${result.error}');
+      // 订阅与直链只下载一次：服务端按内容判断是订阅 JSON 还是 .py 脚本。
+      final result = await _service.importUrl(url);
+      _refresh();
+      if (result is PySubscriptionResult) {
+        if (result.imported.isEmpty) {
+          _toast('导入失败：${result.error.isEmpty ? result.failed.join('、') : result.error}');
+          return;
+        }
+        _toast(
+          result.failed.isEmpty
+              ? '已导入 ${result.imported.length} 个 py 源'
+              : '导入 ${result.imported.length} 个，失败 ${result.failed.length} 个',
+        );
         return;
       }
-      _refresh();
-      _toast('已导入 ${result.meta!.name}');
+      if (result is PyImportResult) {
+        if (result.meta == null) {
+          _toast('导入失败：${result.error}');
+          return;
+        }
+        _toast('已导入 ${result.meta!.name}');
+      }
     });
   }
 
@@ -201,7 +251,15 @@ class _PySandboxPageState extends State<PySandboxPage> {
     final bytes = await file.readAsBytes();
     final result = await _service.importZip(bytes);
     _refresh();
-    _toast('导入 ${result.imported.length} 个，失败 ${result.failed.length} 个');
+    if (result.error.isNotEmpty) {
+      _toast('导入失败：${result.error}');
+      return;
+    }
+    _toast(
+      result.failed.isEmpty
+          ? '已导入 ${result.imported.length} 个 py 源'
+          : '导入 ${result.imported.length} 个，失败 ${result.failed.length} 个',
+    );
   });
 
   Future<void> _exportAll() => _run(() async {
@@ -209,14 +267,22 @@ class _PySandboxPageState extends State<PySandboxPage> {
       _toast('还没有可导出的 py 源');
       return;
     }
-    final bytes = _service.exportZip();
+    final ids = await showDialog<List<String>>(
+      context: context,
+      builder: (_) => _PyExportPicker(sources: _service.sources),
+    );
+    if (ids == null || ids.isEmpty || !mounted) return;
+    final bytes = _service.exportZip(ids: ids);
     final stamp = DateTime.now().toIso8601String().substring(0, 10);
+    final name = ids.length == 1
+        ? 'guoapp-py-${ids.first}-$stamp.zip'
+        : 'guoapp-py-${ids.length}-$stamp.zip';
     final saved = await FilePicker.saveFile(
-      fileName: 'guoapp-py-$stamp.zip',
+      fileName: name,
       bytes: bytes,
       mimeType: 'application/zip',
     );
-    if (saved != null) _toast('已导出全部 py 源');
+    if (saved != null) _toast('已导出 ${ids.length} 个 py 源的订阅包');
   });
 
   Future<void> _clearAll() async {
@@ -239,23 +305,6 @@ class _PySandboxPageState extends State<PySandboxPage> {
     });
   }
 
-  Future<String?> _promptText(String title, String hint) async {
-    final controller = TextEditingController();
-    final value = await showDialog<String>(
-      context: context,
-      builder: (context) => AlertDialog(
-        title: Text(title),
-        content: TextField(controller: controller, decoration: InputDecoration(hintText: hint)),
-        actions: [
-          TextButton(onPressed: () => Navigator.pop(context), child: const Text('取消')),
-          FilledButton(onPressed: () => Navigator.pop(context, controller.text.trim()), child: const Text('确定')),
-        ],
-      ),
-    );
-    controller.dispose();
-    return value;
-  }
-
   void _refresh() {
     PySourceGateway.instance.refreshSources();
     widget.store.sourcesChanged();
@@ -268,7 +317,7 @@ class _PySandboxPageState extends State<PySandboxPage> {
         title: const Text('PY 沙箱'),
         actions: [
           IconButton(onPressed: _busy ? null : _importZip, icon: const Icon(Icons.unarchive_outlined), tooltip: '导入 zip'),
-          IconButton(onPressed: _busy ? null : _exportAll, icon: const Icon(Icons.archive_outlined), tooltip: '导出全部'),
+          IconButton(onPressed: _busy ? null : _exportAll, icon: const Icon(Icons.archive_outlined), tooltip: '导出订阅包'),
           IconButton(onPressed: _busy ? null : _clearAll, icon: const Icon(Icons.delete_sweep_outlined), tooltip: '清空'),
         ],
       ),
@@ -340,4 +389,108 @@ class _PySandboxPageState extends State<PySandboxPage> {
       },
     );
   }
+}
+
+/// 导出勾选弹层：与 JS 沙箱同一套交互。
+class _PyExportPicker extends StatefulWidget {
+  const _PyExportPicker({required this.sources});
+  final List<PySourceMeta> sources;
+
+  @override
+  State<_PyExportPicker> createState() => _PyExportPickerState();
+}
+
+class _PyExportPickerState extends State<_PyExportPicker> {
+  late final Set<String> _selected = {
+    for (final source in widget.sources) source.id,
+  };
+
+  bool get _allSelected => _selected.length == widget.sources.length;
+
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('导出 py 源'),
+    content: SizedBox(
+      width: 480,
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            spacing: 8,
+            children: [
+              Expanded(
+                child: Text(
+                  '已选 ${_selected.length} / ${widget.sources.length} 个',
+                  style: const TextStyle(fontSize: 13),
+                ),
+              ),
+              TextButton(
+                onPressed: () => setState(() {
+                  if (_allSelected) {
+                    _selected.clear();
+                  } else {
+                    _selected
+                      ..clear()
+                      ..addAll(widget.sources.map((source) => source.id));
+                  }
+                }),
+                child: Text(_allSelected ? '全不选' : '全选'),
+              ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxHeight: 340),
+            child: ListView(
+              shrinkWrap: true,
+              children: [
+                for (final source in widget.sources)
+                  CheckboxListTile(
+                    value: _selected.contains(source.id),
+                    onChanged: (value) => setState(() {
+                      if (value == true) {
+                        _selected.add(source.id);
+                      } else {
+                        _selected.remove(source.id);
+                      }
+                    }),
+                    dense: true,
+                    contentPadding: EdgeInsets.zero,
+                    title: Text(
+                      source.name,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                    subtitle: Text(
+                      source.fileName.isEmpty ? source.id : source.fileName,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(height: 8),
+          const Text(
+            '包内含 xiaoguo.json 与脚本，可直接在「我的 › PY 沙箱」里重新导入，'
+            '解压后整个目录也能给其他客户端读取。',
+            style: TextStyle(fontSize: 12),
+          ),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('取消'),
+      ),
+      FilledButton(
+        onPressed: _selected.isEmpty
+            ? null
+            : () => Navigator.pop(context, _selected.toList()),
+        child: const Text('导出'),
+      ),
+    ],
+  );
 }

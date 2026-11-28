@@ -1153,9 +1153,17 @@ def _dispatch(spider, request):
         methods = [
             name for name in REQUIRED_METHODS if callable(getattr(spider, name, None))
         ]
+        # 弹幕 / 多季这类非 TVBox 标准方法由脚本自定义，单独报给壳层，
+        # 壳层据此决定要不要去请求弹幕接口。
+        optional = [
+            name
+            for name in ("danmaku", "danmakuContent", "seriesSeasons")
+            if callable(getattr(spider, name, None))
+        ]
         return {
             "name": str(spider.getName() or ""),
             "methods": methods,
+            "optional": optional,
             "stubbedImports": list(getattr(spider, "_huoyi_stubbed_imports", [])),
             "filled": list(getattr(spider, "_huoyi_filled", [])),
             "sslUnverified": _ssl_unverified,
@@ -1208,6 +1216,28 @@ def _dispatch(spider, request):
                 items = video.get("list") or []
                 home = dict(home)
                 home["list"] = items
+        if not items:
+            # 很多蜘蛛在 homeContent(False) 时只返回 class、不返回 list，
+            # 于是「全部」tab 一片空。这里退一步：拿第一个真实分类去取
+            # 首页内容，让「全部」至少能列出内容而不是空列表。
+            for row in home.get("class") or []:
+                if not isinstance(row, dict):
+                    continue
+                type_id = str(row.get("type_id") or "").strip()
+                if not type_id:
+                    continue
+                try:
+                    fallback = _call_arity(
+                        spider.categoryContent, (type_id, page, False, extend)
+                    )
+                except Exception:  # noqa: BLE001 分类取不到就保持空
+                    break
+                if isinstance(fallback, dict) and fallback.get("list"):
+                    home = dict(home)
+                    home["list"] = fallback.get("list") or []
+                    if fallback.get("pagecount") is not None:
+                        home["pagecount"] = fallback.get("pagecount")
+                    break
         return home
     if action == "search":
         query = str(request.get("query") or "").strip()
@@ -1229,6 +1259,25 @@ def _dispatch(spider, request):
         play_id = str(request.get("playId") or "")
         result = _call_arity(spider.playerContent, (flag, play_id, []))
         return result if isinstance(result, dict) else {}
+    if action == "seasons":
+        # 多季：TVBox 方言没有这个方法，脚本自定义 `seriesSeasons` 时才有。
+        fn = getattr(spider, "seriesSeasons", None)
+        if not callable(fn):
+            return {"list": []}
+        vod_id = str(request.get("vodId") or "")
+        result = _call_arity(fn, (vod_id,))
+        return result if isinstance(result, dict) else {"list": result}
+    if action == "danmaku":
+        # 弹幕：脚本自定义 `danmaku` / `danmakuContent` 时才有，否则返回空。
+        fn = getattr(spider, "danmaku", None) or getattr(spider, "danmakuContent", None)
+        if not callable(fn):
+            return {"items": []}
+        series = str(request.get("series") or "")
+        video = str(request.get("video") or "")
+        start = int(request.get("startMs") or 0)
+        duration = int(request.get("durationMs") or 0)
+        result = _call_arity(fn, (series, video, start, duration))
+        return result if isinstance(result, dict) else {"items": result}
     if action == "proxy":
         param = request.get("param") or {}
         result = _call_arity(spider.localProxy, (param,))

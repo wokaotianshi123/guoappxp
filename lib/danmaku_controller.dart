@@ -43,7 +43,7 @@ class DanmakuController extends ChangeNotifier {
       _plan != null &&
       !_plan!.local &&
       _plan!.session.isNotEmpty &&
-      _plan!.danmakuId.isNotEmpty;
+      (_plan!.danmakuId.isNotEmpty || _plan!.danmakuUrl.isNotEmpty);
   bool get visible =>
       !_closed &&
       supported &&

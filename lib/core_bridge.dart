@@ -524,9 +524,11 @@ class NativeRepository extends AppRepository {
       return sandbox.danmaku(plan, startMs: startMs, durationMs: durationMs);
     }
     final py = pySandbox;
+    // py 源即使没有 danmakuId，只要播放计划里带了弹幕地址（红果系在
+    // playerContent 里直接给本机 /hg_dm 地址）也应该交给沙箱去取。
     if (py != null &&
-        plan.danmakuId.isNotEmpty &&
-        plan.session.startsWith('py:')) {
+        plan.session.startsWith('py:') &&
+        (plan.danmakuId.isNotEmpty || plan.danmakuUrl.isNotEmpty)) {
       return py.danmaku(plan, startMs: startMs, durationMs: durationMs);
     }
     if (plan.local || plan.session.isEmpty || plan.danmakuId.isEmpty) {

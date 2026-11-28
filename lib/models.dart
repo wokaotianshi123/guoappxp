@@ -636,6 +636,7 @@ class PlaybackPlan {
     this.qualities = const [],
     this.session = '',
     this.danmakuId = '',
+    this.danmakuUrl = '',
     this.prefetchedBytes = 0,
     this.expiresAt = 0,
     this.routeIndex = 0,
@@ -655,6 +656,10 @@ class PlaybackPlan {
   final List<int> qualities;
   final String session;
   final String danmakuId;
+
+  /// 弹幕正文地址。红果系 py 蜘蛛在 `playerContent` 里给一个本机
+  /// `http://127.0.0.1:PORT/hg_dm?...` 地址，由沙箱自己去取。
+  final String danmakuUrl;
   final int prefetchedBytes;
   final int expiresAt;
   final int routeIndex;
@@ -677,6 +682,7 @@ class PlaybackPlan {
       ..sort((a, b) => b.compareTo(a)),
     session: json['session'] as String? ?? '',
     danmakuId: json['danmakuId'] as String? ?? '',
+    danmakuUrl: json['danmakuUrl'] as String? ?? '',
     prefetchedBytes: intValue(json['prefetchedBytes']),
     expiresAt: intValue(json['expiresAt']),
     routeIndex: intValue(json['routeIndex']),

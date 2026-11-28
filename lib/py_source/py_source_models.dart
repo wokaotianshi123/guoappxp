@@ -118,3 +118,21 @@ class PyZipImportResult {
   final String error;
   bool get success => imported.isNotEmpty;
 }
+
+/// 从订阅导入的结果。
+class PySubscriptionResult {
+  const PySubscriptionResult({
+    this.imported = const [],
+    this.failed = const [],
+    this.error = '',
+  });
+  const PySubscriptionResult.failed(this.error)
+    : imported = const [],
+      failed = const [];
+
+  final List<PySourceMeta> imported;
+  final List<String> failed;
+  final String error;
+
+  bool get success => imported.isNotEmpty;
+}

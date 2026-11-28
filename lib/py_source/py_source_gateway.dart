@@ -1,14 +1,16 @@
 import 'dart:async';
+import 'dart:convert';
+import 'dart:io';
 
 import '../core_bridge.dart';
 import '../danmaku_models.dart';
+import '../js_source/js_source_gateway.dart' show normalizeCover, categoryNameOf;
 import '../models.dart';
 import '../ranking_models.dart';
 import 'py_bridge.dart';
 import 'py_contract.dart';
 import 'py_source_models.dart';
 import 'py_source_service.dart';
-
 /// py 沙箱与 App 之间的桥。
 ///
 /// 与 `JsSourceGateway` 同构：把已导入的 `.py` 挂成 `SourceSite`（`py:` 前缀），
@@ -62,6 +64,27 @@ class PySourceGateway {
   PySourceMeta? metaOf(String source) =>
       _service?.sourceById(pySourceScriptId(source));
 
+  /// 脚本是否实现了弹幕方法。只探一次并缓存，避免每次播放都多打一次 RPC。
+  final Map<String, bool> _danmakuSupport = {};
+
+  Future<bool> _supportsDanmaku(String path) async {
+    final cached = _danmakuSupport[path];
+    if (cached != null) return cached;
+    try {
+      final reply = await PyBridge.call(path, {'action': 'ping'});
+      final methods = {
+        ...(reply['methods'] as List? ?? const []).map((v) => v.toString()),
+        ...(reply['optional'] as List? ?? const []).map((v) => v.toString()),
+      };
+      final supported =
+          methods.contains('danmaku') || methods.contains('danmakuContent');
+      return _danmakuSupport[path] = supported;
+    } catch (_) {
+      // 探测失败时按「不支持」处理：不要因为一次网络抖动让播放失败。
+      return _danmakuSupport[path] = false;
+    }
+  }
+
   String _path(String source) {
     final id = pySourceScriptId(source);
     final path = _service?.pathOf(id) ?? '';
@@ -94,6 +117,9 @@ class PySourceGateway {
       if (id.isEmpty || name.isEmpty || !seen.add(id)) continue;
       rows.add(CatalogCategory(id, name));
     }
+    // 脚本没声明分类时补一条「全部」：否则分类条整个是空的，目录页
+    // 连一个 tab 都没有，看起来就像「源没接上」。
+    if (rows.isEmpty) return const [CatalogCategory.all];
     return rows;
   });
 
@@ -194,12 +220,23 @@ class PySourceGateway {
     if (plan.url.isEmpty) {
       throw AppFailure('这个 py 源没有返回播放地址', code: 'NO_STREAM');
     }
+    // 弹幕：优先用脚本自己给的地址/标识。红果系 py 蜘蛛在 playerContent
+    // 里直接返回本机弹幕地址，但仍需要一个稳定的 episodeId 做分页校验，
+    // 所以这里统一按「源内编号:集号」补一个。
+    var danmakuId = plan.danmakuId;
+    final danmakuUrl = plan.danmakuUrl;
+    if (danmakuId.isEmpty &&
+        (danmakuUrl.isNotEmpty || await _supportsDanmaku(_path(source)))) {
+      danmakuId = '${drama.sourceId}:${episode.number}';
+    }
     return PlaybackPlan(
       url: plan.url,
       directUrl: plan.url,
       headers: plan.headers,
       quality: quality,
       session: 'py:${pySourceScriptId(source)}',
+      danmakuId: danmakuId,
+      danmakuUrl: danmakuUrl,
       routeIndex: routeIndex >= 0 ? routeIndex : intValue(episode.raw['routeIndex']),
       routeCount: intValue(episode.raw['routeCount']) > 0
           ? intValue(episode.raw['routeCount'])
@@ -215,19 +252,262 @@ class PySourceGateway {
     return resolve(last.drama, last.episode, routeIndex: routeIndex);
   }
 
-  Future<List<DramaSeason>> seasons(Drama drama) =>
-      _guard(() async => const <DramaSeason>[]);
+  /// 多季：TVBox 方言没有标准多季方法，常见做法是「一季一条线路」
+  /// （`vod_play_from` 里写「第N季 超清」）。这里从线路名解析季号，
+  /// 每一季用对应线路的分集构造一个 `DramaSeason`。
+  ///
+  /// 脚本另外实现了 `seriesSeasons` 时优先用它。
+  Future<List<DramaSeason>> seasons(Drama drama) => _guard(() async {
+    final source = drama.source;
+    final sourceId = drama.sourceId.trim().isNotEmpty
+        ? drama.sourceId.trim()
+        : drama.id;
+    if (sourceId.isEmpty) return const <DramaSeason>[];
 
+    // 先问脚本有没有专门的多季方法。
+    final explicit = await PyBridge.call(_path(source), {
+      'action': 'seasons',
+      'vodId': sourceId,
+    });
+    final explicitRows = explicit['list'] as List? ?? const [];
+    if (explicitRows.isNotEmpty) {
+      final seasons = <int, DramaSeason>{};
+      for (final row in explicitRows) {
+        if (row is! Map) continue;
+        final vod = Map<String, dynamic>.from(row);
+        final id = (vod['vod_id']?.toString() ?? '').trim();
+        final title = (vod['vod_name']?.toString() ?? '').trim();
+        if (id.isEmpty || title.isEmpty) continue;
+        final number = intValue(vod['season']);
+        if (number <= 0) continue;
+        seasons[number] = DramaSeason(
+          number: number,
+          drama: Drama(
+            id: '$source:$id',
+            source: source,
+            sourceId: id,
+            title: title,
+            description: (vod['vod_content']?.toString() ?? '').trim(),
+            cover: normalizeCover(vod['vod_pic']?.toString() ?? ''),
+            episodes: intValue(vod['vod_episodes']),
+            category: categoryNameOf(
+              (vod['vod_class']?.toString() ?? '').trim().isEmpty
+                  ? drama.category
+                  : vod['vod_class'].toString(),
+            ),
+            vip: false,
+          ),
+        );
+      }
+      if (seasons.isNotEmpty) {
+        return seasons.values.toList()
+          ..sort((a, b) => a.number.compareTo(b.number));
+      }
+    }
+
+    // 回退：从详情线路名里解析「第N季」。这是红果系 py 蜘蛛的通行做法
+    // （多季时一季一条线路，线路名写成「第N季 超清」）。
+    //
+    // 注意不能把「画质线路」当季：单季剧的线路名是 超清 / 高清 / 标准，
+    // 没有季号，这时必须返回空，否则详情页会冒出 5 个假季。
+    final detail = await PyBridge.call(_path(source), {
+      'action': 'detail',
+      'vodId': sourceId,
+    });
+    final rows = detail['list'] as List? ?? const [];
+    if (rows.isEmpty || rows.first is! Map) return const <DramaSeason>[];
+    final vod = Map<String, dynamic>.from(rows.first as Map);
+    final routes = PyContract.parseRoutes(
+      vod['vod_play_from']?.toString() ?? '',
+      vod['vod_play_url']?.toString() ?? '',
+    );
+    if (routes.length < 2) return const <DramaSeason>[];
+    // 先确认线路名里确实带季号，且不止一个季。
+    final numbers = <int>[];
+    for (final route in routes) {
+      final number = _seasonNumberOf(route.name);
+      if (number != null && !numbers.contains(number)) numbers.add(number);
+    }
+    if (numbers.length < 2) return const <DramaSeason>[];
+    final seasons = <int, DramaSeason>{};
+    for (var index = 0; index < routes.length; index++) {
+      final route = routes[index];
+      final number = _seasonNumberOf(route.name);
+      if (number == null) continue;
+      if (seasons.containsKey(number)) continue;
+      seasons[number] = DramaSeason(
+        number: number,
+        drama: Drama(
+          id: '${drama.id}#s$number',
+          source: source,
+          sourceId: sourceId,
+          title: '${drama.title} 第$number季',
+          description: drama.description,
+          cover: drama.cover,
+          episodes: route.chapters.length,
+          category: drama.category,
+          vip: false,
+        ),
+      );
+    }
+    if (seasons.length < 2) return const <DramaSeason>[];
+    return seasons.values.toList()
+      ..sort((a, b) => a.number.compareTo(b.number));
+  });
+
+  /// 从线路名里取季号：「第2季 超清」「第二季」「第三部」都能认。
+  static int? _seasonNumberOf(String label) {
+    final match = RegExp(r'第\s*([0-9]+|[一二三四五六七八九十]+)\s*[季部]')
+        .firstMatch(label);
+    if (match == null) return null;
+    final raw = match.group(1) ?? '';
+    final asInt = int.tryParse(raw);
+    if (asInt != null) return asInt > 0 ? asInt : null;
+    const digits = '零一二三四五六七八九';
+    var total = 0;
+    var current = 0;
+    for (final char in raw.split('')) {
+      if (char == '十') {
+        total += (current == 0 ? 1 : current) * 10;
+        current = 0;
+      } else {
+        final value = digits.indexOf(char);
+        if (value < 0) return null;
+        current = value;
+      }
+    }
+    total += current;
+    return total > 0 ? total : null;
+  }
+
+  /// 弹幕：py 蜘蛛的通行做法是在 `playerContent` 里给 `danmaku` 字段
+  /// （通常是本机 `http://127.0.0.1:PORT/hg_dm?...` 的 XML/JSON 地址）。
+  /// 这里把它取回来解析；脚本另外实现 `danmaku` 方法时也能直接用。
   Future<DanmakuPage> danmaku(
     PlaybackPlan plan, {
     required int startMs,
     required int durationMs,
-  }) => _guard(() async => DanmakuPage(
-    episodeId: plan.danmakuId,
-    startMs: startMs,
-    nextMs: startMs + durationMs,
-    items: const [],
-  ));
+  }) => _guard(() async {
+    final source = plan.session;
+    final next = startMs + durationMs;
+    final items = <DanmakuItem>[];
+    final seen = <String>{};
+
+    void addRow(Object? id, Object? text, int timeMs) {
+      final key = id?.toString() ?? '';
+      final value = text?.toString().trim() ?? '';
+      if (key.isEmpty || value.isEmpty || timeMs <= 0) return;
+      if (timeMs < startMs || timeMs >= next) return;
+      if (!seen.add(key)) return;
+      items.add(DanmakuItem(id: key, text: value, timeMs: timeMs));
+    }
+
+    // 1) 脚本自己实现 danmaku 方法时优先用它。
+    final raw = await PyBridge.call(_path(source), {
+      'action': 'danmaku',
+      'series': plan.danmakuId,
+      'video': plan.danmakuId,
+      'startMs': startMs,
+      'durationMs': durationMs,
+    });
+    final itemRows = raw['items'];
+    if (itemRows is List && itemRows.isNotEmpty) {
+      for (final row in itemRows.take(200)) {
+        if (row is! Map) continue;
+        var timeMs = intValue(row['timeMs']);
+        if (timeMs <= 0) timeMs = intValue(row['createTime']) * 1000;
+        addRow(row['id'], row['text'], timeMs);
+      }
+    } else {
+      for (final row in (raw['list'] as List? ?? const []).take(200)) {
+        if (row is! Map) continue;
+        addRow(row['id'], row['text'], intValue(row['createTime']) * 1000);
+      }
+    }
+
+    // 2) 没有的话，去播放计划里的 danmaku 地址取（红果系 py 蜘蛛走这条）。
+    if (items.isEmpty) {
+      final url = plan.danmakuUrl;
+      if (url.isNotEmpty) {
+        final text = await _fetchDanmaku(url);
+        if (text.isNotEmpty) {
+          _parseDanmakuText(text, addRow);
+        }
+      }
+    }
+
+    items.sort((a, b) => a.timeMs.compareTo(b.timeMs));
+    return DanmakuPage(
+      episodeId: plan.danmakuId,
+      startMs: startMs,
+      nextMs: next,
+      items: items,
+    );
+  });
+
+  /// 拉取弹幕正文；失败返回空串，不影响播放。
+  Future<String> _fetchDanmaku(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null || (uri.scheme != 'http' && uri.scheme != 'https')) {
+      return '';
+    }
+    final client = HttpClient()..connectionTimeout = const Duration(seconds: 8);
+    try {
+      final request = await client.getUrl(uri);
+      request.headers.set('User-Agent', 'Mozilla/5.0 (guoapp py sandbox)');
+      final response = await request.close().timeout(const Duration(seconds: 12));
+      if (response.statusCode < 200 || response.statusCode >= 300) return '';
+      final bytes = BytesBuilder(copy: false);
+      await for (final chunk in response.timeout(const Duration(seconds: 12))) {
+        if (bytes.length + chunk.length > 8 * 1024 * 1024) break;
+        bytes.add(chunk);
+      }
+      return utf8.decode(bytes.takeBytes(), allowMalformed: true);
+    } catch (_) {
+      return '';
+    } finally {
+      client.close(force: true);
+    }
+  }
+
+  /// 解析弹幕正文：兼容 JSON（items/list）与 B 站风格 XML（`<d p="时间,模式,...">文本</d>`）。
+  void _parseDanmakuText(
+    String text,
+    void Function(Object? id, Object? text, int timeMs) addRow,
+  ) {
+    final trimmed = text.trimLeft();
+    if (trimmed.startsWith('{') || trimmed.startsWith('[')) {
+      try {
+        final decoded = jsonDecode(trimmed);
+        final rows = decoded is Map
+            ? (decoded['items'] ?? decoded['list'] ?? decoded['data'])
+            : decoded;
+        if (rows is List) {
+          for (final row in rows.take(400)) {
+            if (row is! Map) continue;
+            var timeMs = intValue(row['timeMs']);
+            if (timeMs <= 0) {
+              final seconds = double.tryParse('${row['time'] ?? row['progress'] ?? ''}');
+              if (seconds != null) timeMs = (seconds * 1000).round();
+            }
+            if (timeMs <= 0) timeMs = intValue(row['createTime']) * 1000;
+            addRow(row['id'] ?? row['cid'] ?? row['text'], row['text'] ?? row['content'], timeMs);
+          }
+        }
+        return;
+      } catch (_) {
+        // 落到 XML 分支。
+      }
+    }
+    final pattern = RegExp(r'<d\s+p="([^"]*)"[^>]*>([^<]*)</d>');
+    var index = 0;
+    for (final match in pattern.allMatches(text)) {
+      final parts = (match.group(1) ?? '').split(',');
+      final seconds = double.tryParse(parts.isNotEmpty ? parts[0] : '');
+      if (seconds == null) continue;
+      addRow('xml${index++}', match.group(2), (seconds * 1000).round());
+    }
+  }
 
 
   bool ownsSession(String session) => session.startsWith('py:');

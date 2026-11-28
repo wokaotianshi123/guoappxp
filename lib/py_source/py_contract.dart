@@ -100,9 +100,14 @@ class PyContract {
   }
 
   /// 播放地址：返回原样 url + header，`parse` 交给调用方决定。
-  static ({String url, Map<String, String> headers, bool parse}) planFromResult(
-    Map<String, dynamic> result,
-  ) {
+  static ({
+    String url,
+    Map<String, String> headers,
+    bool parse,
+    String danmakuId,
+    String danmakuUrl,
+  })
+  planFromResult(Map<String, dynamic> result) {
     final headers = <String, String>{};
     final raw = result['header'];
     if (raw is Map) {
@@ -121,7 +126,17 @@ class PyContract {
         intValue(result['parse']) == 1 ||
         result['jx'] == true ||
         intValue(result['jx']) == 1;
-    return (url: url, headers: headers, parse: parse);
+    // 部分 py 蜘蛛会在播放结果里直接给弹幕标识与地址；红果系走 `danmaku`。
+    final danmakuId = _text(result['danmakuId']);
+    var danmakuUrl = _text(result['danmaku']);
+    if (danmakuUrl.isEmpty) danmakuUrl = _text(result['danmakuUrl']);
+    return (
+      url: url,
+      headers: headers,
+      parse: parse,
+      danmakuId: danmakuId,
+      danmakuUrl: danmakuUrl,
+    );
   }
 
   static Map<String, dynamic>? _tryDecodeMap(String text) {
