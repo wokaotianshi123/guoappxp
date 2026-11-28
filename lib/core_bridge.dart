@@ -22,6 +22,7 @@ import 'webview_bridge.dart';
 import 'sorani_account.dart';
 import 'source_modules.dart';
 import 'js_source/js_source_gateway.dart';
+import 'py_source/py_source_gateway.dart';
 
 typedef _NativeRequest = Pointer<Utf8> Function(Pointer<Utf8>);
 typedef _DartRequest = Pointer<Utf8> Function(Pointer<Utf8>);
@@ -409,6 +410,10 @@ class NativeRepository extends AppRepository {
   /// 不会因为沙箱初始化慢半拍而看到一排空列表。
   JsSourceGateway? get jsSandbox =>
       JsSourceGateway.instance.attached ? JsSourceGateway.instance : null;
+
+  /// PY 沙箱网关。装配后才有值，未装配时所有入口退回内核。
+  PySourceGateway? get pySandbox =>
+      PySourceGateway.instance.attached ? PySourceGateway.instance : null;
   static final _coverPaths = <String, String>{};
   NativeRepository({this.background = false});
   final bool background;
@@ -493,6 +498,7 @@ class NativeRepository extends AppRepository {
   }) async {
     // 沙箱源没有内核预缓冲队列：返回 null 让预加载器跳过，播放时照常解析。
     if (jsSandbox?.handles(drama.source) == true) return null;
+    if (pySandbox?.handles(drama.source) == true) return null;
     return PlaybackPlan.fromJson(
       await _read('preload', {
         'action': 'preload',
@@ -516,6 +522,12 @@ class NativeRepository extends AppRepository {
         plan.danmakuId.isNotEmpty &&
         isJsPlaybackSession(plan.session)) {
       return sandbox.danmaku(plan, startMs: startMs, durationMs: durationMs);
+    }
+    final py = pySandbox;
+    if (py != null &&
+        plan.danmakuId.isNotEmpty &&
+        plan.session.startsWith('py:')) {
+      return py.danmaku(plan, startMs: startMs, durationMs: durationMs);
     }
     if (plan.local || plan.session.isEmpty || plan.danmakuId.isEmpty) {
       throw AppFailure('本集暂不支持弹幕');
@@ -613,6 +625,7 @@ class NativeRepository extends AppRepository {
   @override
   Future<void> cancelCatalog() {
     jsSandbox?.cancelAll();
+    pySandbox?.cancelAll();
     return _cancelReads('catalog-');
   }
 
@@ -632,6 +645,10 @@ class NativeRepository extends AppRepository {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(source)) {
       return sandbox.recommendations(source, genre, more ? 0 : 1);
+    }
+    final py = pySandbox;
+    if (py != null && py.handles(source)) {
+      return py.recommendations(source, genre, more ? 0 : 1);
     }
     _authorize(source);
     return CatalogPage.fromJson(
@@ -660,6 +677,10 @@ class NativeRepository extends AppRepository {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(drama.source)) {
       return (await sandbox.detail(drama)).drama;
+    }
+    final py = pySandbox;
+    if (py != null && py.handles(drama.source)) {
+      return (await py.detail(drama)).drama;
     }
     _authorize(drama.source);
     final result = await _call({
@@ -710,6 +731,10 @@ class NativeRepository extends AppRepository {
     if (sandbox != null && sandbox.handles(board.source)) {
       return sandbox.rankings(board.source, board, page);
     }
+    final py = pySandbox;
+    if (py != null && py.handles(board.source)) {
+      return py.rankings(board.source, board, page);
+    }
     _authorize(board.source);
     return RankingPage.fromJson(
       await _call({
@@ -746,6 +771,10 @@ class NativeRepository extends AppRepository {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(source)) {
       return sandbox.suggestions(source, query);
+    }
+    final py = pySandbox;
+    if (py != null && py.handles(source)) {
+      return py.suggestions(source, query);
     }
     _authorize(source);
     final result = await _read('suggestions', {
@@ -1414,6 +1443,11 @@ class NativeRepository extends AppRepository {
       final rows = await sandbox.categories(source);
       return rows.isEmpty ? const [CatalogCategory.all] : rows;
     }
+    final py = pySandbox;
+    if (py != null && py.handles(source)) {
+      final rows = await py.categories(source);
+      return rows.isEmpty ? const [CatalogCategory.all] : rows;
+    }
     final result = await _read('categories-$source', {
       'action': 'categories',
       'source': source,
@@ -1437,6 +1471,16 @@ class NativeRepository extends AppRepository {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(source)) {
       return sandbox.catalog(
+        source,
+        category,
+        page,
+        query: query,
+        force: force,
+      );
+    }
+    final py = pySandbox;
+    if (py != null && py.handles(source)) {
+      return py.catalog(
         source,
         category,
         page,
@@ -1469,6 +1513,9 @@ class NativeRepository extends AppRepository {
     if (jsSandbox?.handles(source) == true) {
       return CatalogPage(const []);
     }
+    if (pySandbox?.handles(source) == true) {
+      return CatalogPage(const []);
+    }
     return CatalogPage.fromJson(
       await _call({'action': 'cached', 'source': source, 'category': category}),
     );
@@ -1489,7 +1536,7 @@ class NativeRepository extends AppRepository {
           ];
     final native = [
       for (final source in sources)
-        if (!SourceSite.isJsId(source)) source,
+        if (!SourceSite.isJsId(source) && !SourceSite.isPyId(source)) source,
     ];
     if (jsSources.isEmpty) {
       return SearchProgress.fromJson(
@@ -1593,6 +1640,10 @@ class NativeRepository extends AppRepository {
     if (sandbox != null && sandbox.handles(drama.source)) {
       return sandbox.detail(drama);
     }
+    final py = pySandbox;
+    if (py != null && py.handles(drama.source)) {
+      return py.detail(drama);
+    }
     return DramaDetail.fromJson(
       await _call({'action': 'detail', 'drama': drama.toJson()}),
     );
@@ -1607,6 +1658,14 @@ class NativeRepository extends AppRepository {
         return await sandbox.seasons(drama);
       } catch (_) {
         // 脚本没实现多季或接口暂不可用时，按「没有多季」处理，不影响详情页。
+        return const <DramaSeason>[];
+      }
+    }
+    final py = pySandbox;
+    if (py != null && py.handles(drama.source)) {
+      try {
+        return await py.seasons(drama);
+      } catch (_) {
         return const <DramaSeason>[];
       }
     }
@@ -1634,6 +1693,15 @@ class NativeRepository extends AppRepository {
         routeIndex: routeIndex,
       );
     }
+    final py = pySandbox;
+    if (py != null && py.handles(drama.source)) {
+      return py.resolve(
+        drama,
+        episode,
+        quality: quality,
+        routeIndex: routeIndex,
+      );
+    }
     return PlaybackPlan.fromJson(
       await _call({
         'action': 'resolve',
@@ -1649,8 +1717,8 @@ class NativeRepository extends AppRepository {
 
   @override
   Future<PlaybackPlan> fallback(PlaybackPlan current) async {
-    if (isJsPlaybackSession(current.session)) {
-      throw AppFailure('这个 JS 源只返回了一条线路', code: 'NO_ROUTE');
+    if (isJsPlaybackSession(current.session) || current.session.startsWith('py:')) {
+      throw AppFailure('这个源只返回了一条线路', code: 'NO_ROUTE');
     }
     return PlaybackPlan.fromJson(
       await _call({
@@ -1672,6 +1740,14 @@ class NativeRepository extends AppRepository {
       }
       throw AppFailure('这个 JS 源只返回了一条线路', code: 'NO_ROUTE');
     }
+    if (current.session.startsWith('py:')) {
+      if (route == current.routeIndex) return current;
+      final py = pySandbox;
+      if (py == null) {
+        throw AppFailure('这个 py 源只返回了一条线路', code: 'NO_ROUTE');
+      }
+      return py.resolveRoute(route);
+    }
     return PlaybackPlan.fromJson(
       await _call({
         'action': 'selectRoute',
@@ -1685,6 +1761,7 @@ class NativeRepository extends AppRepository {
   @override
   Future<void> cancelPlayback() async {
     jsSandbox?.cancelPlayback();
+    pySandbox?.cancelPlayback();
     await _call({'action': 'cancelPlayback', 'sequence': ++_playbackSequence});
   }
 

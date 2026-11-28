@@ -423,6 +423,7 @@ class LocalStore extends ChangeNotifier {
       !locked &&
       (SourceSite.isCustomId(source) ||
           SourceSite.isJsId(source) ||
+          SourceSite.isPyId(source) ||
           (SourceSite.isAvailable(source) &&
               (SourceSite.isModule(source) || profile.allows(source)))) &&
       sourceEnabled(source);
@@ -432,6 +433,8 @@ class LocalStore extends ChangeNotifier {
       if (allowsSource(site.id)) site.asSourceSite,
     for (final site in SourceSite.jsValues)
       if (allowsSource(site.id)) site,
+    for (final site in SourceSite.pyValues)
+      if (allowsSource(site.id)) site,
   ];
   List<SourceSite> get permittedSources => [
     for (final site in SourceSite.values)
@@ -439,6 +442,8 @@ class LocalStore extends ChangeNotifier {
     for (final site in _customSources)
       if (!locked) site.asSourceSite,
     for (final site in SourceSite.jsValues)
+      if (!locked) site,
+    for (final site in SourceSite.pyValues)
       if (!locked) site,
   ];
 

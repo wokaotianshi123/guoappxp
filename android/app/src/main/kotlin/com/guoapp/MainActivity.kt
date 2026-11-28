@@ -96,6 +96,7 @@ class MainActivity : FlutterActivity() {
     private var mediaControls: MediaControls? = null
     private var webViewBridge: WebViewBridge? = null
     private var spiderBridge: SpiderBridge? = null
+    private var pyBridge: PyBridge? = null
     private var headroomReadAt = 0L
     private var thermalHeadroom: Double? = null
     private var deviceChannel: MethodChannel? = null
@@ -507,6 +508,11 @@ class MainActivity : FlutterActivity() {
         }
         spiderBridge = startupBridge("Spider") {
             SpiderBridge(applicationContext, flutterEngine.dartExecutor.binaryMessenger)
+        }
+        // PY 沙箱：Chaquopy 内嵌 CPython。缺运行时不影响其它功能，
+        // Dart 侧会探测到不可用并在 PY 沙箱页提示。
+        pyBridge = startupBridge("Python") {
+            PyBridge(this, flutterEngine.dartExecutor.binaryMessenger)
         }
         // 投屏（DLNA）：Flutter 侧只负责选设备与按钮，搜索 / SOAP 下发都在
         // DlnaCast 的单线程里跑，网络耗时不能占主线程。
@@ -974,6 +980,8 @@ class MainActivity : FlutterActivity() {
         webViewBridge = null
         spiderBridge?.dispose()
         spiderBridge = null
+        pyBridge?.shutdown()
+        pyBridge = null
         deviceChannel?.setMethodCallHandler(null)
         deviceChannel = null
         castChannel?.setMethodCallHandler(null)

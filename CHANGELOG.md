@@ -1,5 +1,17 @@
 # 更新日志
 
+## 2.1.9+137
+
+新增 PY 沙箱：导入 TVBox 方言的 .py 蜘蛛源，与 JS 沙箱并列。（开发快照，需在 Android / iOS / Windows 实机复测）
+
+- 我的 › PY 沙箱：导入文件 / 网址 / 粘贴源码，列表内可切换当前源、开启隐藏、单源导出、卸载；顶部支持 zip 批量导入、导出全部与清空。站源菜单的「管理PY源」入口同 JS 沙箱。
+- py 源以 `py:` 前缀挂成站源，目录 / 搜索 / 详情 / 播放走内嵌 CPython 执行蜘蛛（homeContent / categoryContent / searchContent / detailContent / playerContent），详情只展示第一条线路，多线路交给播放页切换。
+- Android 用 Chaquopy（Python 3.11）内嵌 CPython，pip 预装 requests / pycryptodome / beautifulsoup4 / lxml / pyquery；iOS 复用内嵌 CPython 的 PythonBridge（`scripts/prepare_ios_python.py` 备料）；Windows 通过 `scripts/prepare_windows_python.py` 把可嵌入 Python 放到 exe 旁，Dart 以进程 JSON-RPC 调用。
+- 运行时缺失的平台会显示提示，py 源仍可导入与浏览，但执行时报「Python 运行时不可用」。
+- JS 沙箱弹幕兼容两种脚本返回：`items:[{id,text,timeMs}]`（内置官方源、红果合辑弹幕源用这套）与 `list:[{id,text,createTime}]`（协议文档用这套），不再因为只认 list 而把弹幕过滤成空。
+- 红果合辑弹幕源修正弹幕通道：play 返回 danmakuId、把 series_id 编进分集 id（运行时按 scope 分实例，弹幕作用域拿不到详情的内存映射）。
+- 已知限制：本地服务版（浏览器）暂未接入 py 源；py 蜘蛛能力受脚本与平台 Python 包限制。
+
 ## 2.1.8+136
 
 电视端焦点与推荐页开关、移除内置红果模块，真果鉴站源仓库改为按明文读取。（开发快照，需在电视实机复测）

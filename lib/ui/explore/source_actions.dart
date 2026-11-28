@@ -5,6 +5,7 @@ import '../../models.dart';
 import '../modules/modules_page.dart';
 import '../search/search_page.dart';
 import '../settings/js_sandbox_page.dart';
+import '../settings/py_sandbox_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../widgets/choice_panel.dart';
@@ -58,6 +59,12 @@ Future<void> pickSource(BuildContext anchor, LocalStore store) async {
         icon: Icons.javascript_rounded,
         onPressed: () =>
             openPage<void>(anchor, (_) => JsSandboxPage(store: store)),
+      ),
+      (
+        label: '管理PY源',
+        icon: Icons.terminal,
+        onPressed: () =>
+            openPage<void>(anchor, (_) => PySandboxPage(store: store)),
       ),
     ],
   );

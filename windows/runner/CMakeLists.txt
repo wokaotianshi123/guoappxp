@@ -49,3 +49,13 @@ target_include_directories(${BINARY_NAME} PRIVATE "${CMAKE_CURRENT_BINARY_DIR}")
 
 # Run the Flutter tool portions of the build. This must not be removed.
 add_dependencies(${BINARY_NAME} flutter_assemble)
+
+# PY 沙箱：把 scripts/prepare_windows_python.py 产出的内置 Python 运行时
+# 拷到可执行文件旁的 python/ 目录，Dart 侧 ProcessPyBackend 从这里找解释器。
+set(PY_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python")
+if(EXISTS "${PY_RUNTIME_DIR}")
+  add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+      "${PY_RUNTIME_DIR}/." "$<TARGET_FILE_DIR:${BINARY_NAME}>/python"
+    COMMENT "Copying embedded Python runtime")
+endif()

@@ -430,15 +430,31 @@ class JsSourceGateway {
     final next = startMs + durationMs;
     final items = <DanmakuItem>[];
     final seen = <String>{};
-    for (final row in (raw['list'] as List? ?? const []).take(90)) {
-      if (row is! Map) continue;
+
+    void addRow(Map row, int timeMs) {
       final id = row['id']?.toString() ?? '';
       final text = row['text']?.toString().trim() ?? '';
-      final seconds = intValue(row['createTime']);
-      if (id.isEmpty || text.isEmpty || seconds <= 0 || !seen.add(id)) continue;
-      final timeMs = seconds * 1000;
-      if (timeMs < startMs || timeMs >= next) continue;
+      if (id.isEmpty || text.isEmpty || timeMs <= 0) return;
+      if (timeMs < startMs || timeMs >= next) return;
+      if (!seen.add(id)) return;
       items.add(DanmakuItem(id: id, text: text, timeMs: timeMs));
+    }
+
+    // 兼容两种脚本返回：items:[{id,text,timeMs}]（毫秒，内置官方源用这套）
+    // 与 list:[{id,text,createTime}]（秒，协议文档用这套）。
+    final itemRows = raw['items'];
+    if (itemRows is List && itemRows.isNotEmpty) {
+      for (final row in itemRows.take(200)) {
+        if (row is! Map) continue;
+        var timeMs = intValue(row['timeMs']);
+        if (timeMs <= 0) timeMs = intValue(row['createTime']) * 1000;
+        addRow(row, timeMs);
+      }
+    } else {
+      for (final row in (raw['list'] as List? ?? const []).take(200)) {
+        if (row is! Map) continue;
+        addRow(row, intValue(row['createTime']) * 1000);
+      }
     }
     items.sort((a, b) => a.timeMs.compareTo(b.timeMs));
     return DanmakuPage(

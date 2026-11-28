@@ -14,6 +14,7 @@ import '../downloads/downloads_page.dart';
 import '../modules/modules_page.dart';
 import '../netdisk/netdisk_page.dart';
 import '../settings/js_sandbox_page.dart';
+import '../settings/py_sandbox_page.dart';
 import '../settings/sources_page.dart';
 import '../shell/app_shell.dart';
 import '../settings/settings_page.dart';
@@ -78,6 +79,10 @@ class MinePage extends StatelessWidget {
   void _openJsSandbox(BuildContext context) =>
       openPage<void>(context, (_) => JsSandboxPage(store: store));
 
+  /// PY 沙箱：导入 / 启用 .py 蜘蛛源。
+  void _openPySandbox(BuildContext context) =>
+      openPage<void>(context, (_) => PySandboxPage(store: store));
+
   /// 听书：找书 / 书架 / 历史。原来是底部一级标签，现在收进「我的」，
   /// 功能不变，只是不再常驻首屏。
   void _openAudiobook(BuildContext context) => openPage<void>(
@@ -130,6 +135,11 @@ class MinePage extends StatelessWidget {
       icon: Icons.javascript_rounded,
       title: 'JS 沙箱',
       onTap: () => _openJsSandbox(context),
+    ),
+    _Entry(
+      icon: Icons.terminal,
+      title: 'PY 沙箱',
+      onTap: () => _openPySandbox(context),
     ),
     _Entry(
       icon: Icons.cloud_outlined,
@@ -261,6 +271,12 @@ class MinePage extends StatelessWidget {
         title: 'JS 沙箱',
         subtitle: '导入与启用 .js 脚本源',
         onTap: () => _openJsSandbox(context),
+      ),
+      _TelevisionEntry(
+        icon: Icons.terminal,
+        title: 'PY 沙箱',
+        subtitle: '导入与启用 .py 蜘蛛源',
+        onTap: () => _openPySandbox(context),
       ),
       _TelevisionEntry(
         icon: Icons.cloud_outlined,

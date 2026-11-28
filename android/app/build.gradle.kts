@@ -3,6 +3,24 @@ import java.util.Properties
 plugins {
     id("com.android.application")
     id("dev.flutter.flutter-gradle-plugin")
+    id("com.chaquo.python")
+}
+
+// PY 沙箱：内嵌 CPython（Chaquopy）。pip 依赖与 moytv 保持一致，
+// py 蜘蛛常用的 requests / bs4 / lxml / pycryptodome 都能直接 import。
+chaquopy {
+    defaultConfig {
+        version = "3.11"
+        System.getenv("CHAQUOPY_BUILD_PYTHON")?.takeIf { it.isNotBlank() }
+            ?.let { buildPython(it) }
+        pip {
+            install("requests")
+            install("pycryptodome")
+            install("beautifulsoup4")
+            install("lxml")
+            install("pyquery")
+        }
+    }
 }
 
 // 安卓包名走单独入口，不复用 PACKAGE_NAME：后者同时决定 Windows / iOS / macOS 的

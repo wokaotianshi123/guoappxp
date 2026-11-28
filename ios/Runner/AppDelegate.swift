@@ -2,6 +2,7 @@ import Flutter
 import UIKit
 import WebKit
 import DuanjuCore
+import PythonBridge
 import CFNetwork
 import AVFoundation
 import MediaPlayer
@@ -37,6 +38,9 @@ import MediaPlayer
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "WebViewBridge") {
       webViewBridge = WebViewBridge(messenger: registrar.messenger())
+    }
+    if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "PythonBridge") {
+      PythonBridge.register(with: registrar)
     }
     if let registrar = engineBridge.pluginRegistry.registrar(forPlugin: "DeviceSettings") {
       let channel = FlutterMethodChannel(name: "duanju/device", binaryMessenger: registrar.messenger())

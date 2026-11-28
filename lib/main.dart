@@ -16,6 +16,8 @@ import 'diary_service.dart';
 import 'local_files.dart';
 import 'js_source/js_source_gateway.dart';
 import 'js_source/js_source_service.dart';
+import 'py_source/py_source_gateway.dart';
+import 'py_source/py_source_service.dart';
 import 'local_store.dart';
 import 'picture_in_picture.dart';
 import 'portable_data.dart';
@@ -160,6 +162,15 @@ class _AppBootstrapState extends State<AppBootstrap>
         JsSourceService.current ??= jsService;
       } catch (error) {
         DiaryService.add('[JS] 沙箱初始化失败：$error');
+      }
+      // PY 沙箱：导入的 .py 源挂成站源。运行时缺失（非 Android）时也能
+      // 列出已导入的源，只是执行舞台回报不可用。
+      try {
+        final pyService = PySourceService();
+        await PySourceGateway.instance.attach(pyService);
+        PySourceService.current ??= pyService;
+      } catch (error) {
+        DiaryService.add('[PY] 沙箱初始化失败：$error');
       }
       if (!mounted) return;
       setState(() {
