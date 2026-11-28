@@ -59,6 +59,11 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
+        // Chaquopy 必须显式声明 abiFilters；与 Flutter --split-per-abi 及
+        // scripts/build_android.py 产出的三份 libduanju_core.so 保持一致。
+        ndk {
+            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
+        }
         manifestPlaceholders["appLabel"] = "小果影视"
         manifestPlaceholders["appBanner"] = "@drawable/tv_banner"
     }
