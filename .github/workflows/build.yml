@@ -129,6 +129,12 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      # Chaquopy 构建 pip 依赖时，宿主 Python 必须与目标版本一致（3.11）。
+      # runner 默认是 3.12，直接跑会报 Couldn't find Python 3.11。
+      - id: python311
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -165,6 +171,8 @@ jobs:
             gradle-${{ runner.os }}-
       - run: python scripts/build_android.py
         env:
+          # Chaquopy 需要与内嵌版本一致的宿主 Python 来执行 pip。
+          CHAQUOPY_BUILD_PYTHON: ${{ steps.python311.outputs.python-path }}
           ANDROID_KEYSTORE_PASSWORD: ${{ secrets.SIGNING_KEYSTORE_PASSWORD }}
           ANDROID_KEY_ALIAS: ${{ secrets.SIGNING_KEY_ALIAS }}
           ANDROID_KEY_PASSWORD: ${{ secrets.SIGNING_KEY_PASSWORD }}
