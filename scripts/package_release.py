@@ -211,8 +211,11 @@ def package_windows_installer(bundle, bundle_executable):
 
 
 if options.platform == 'android':
+    # 与 build_android.py 的 flavor 对应；原来用 --split-per-abi 时产物叫
+    # app-{abi}-release.apk，现在 Chaquopy 需要 abiFilters，改用 flavor 分 ABI。
+    flavors = {'arm64-v8a': 'arm64', 'armeabi-v7a': 'arm', 'x86_64': 'x64'}
     for abi in options.abi or ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
-        source = root / 'build' / 'app' / 'outputs' / 'flutter-apk' / f'app-{abi}-release.apk'
+        source = root / 'build' / 'app' / 'outputs' / 'flutter-apk' / f'app-{flavors[abi]}-release.apk'
         if not source.is_file():
             raise SystemExit('缺少 APK：' + str(source))
         with zipfile.ZipFile(source) as archive:

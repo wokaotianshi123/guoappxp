@@ -25,10 +25,15 @@ abi_args = [item for abi in options.abi or [] for item in ['--abi', abi]]
 subprocess.run([sys.executable, str(root / 'scripts' / 'build_native.py'), '--platform', 'android', *abi_args],
                cwd=root, env=env, check=True)
 subprocess.run([flutter, 'pub', 'get'], cwd=root, env=env, check=True)
-build_args = [flutter, 'build', 'apk', '--release', '--split-per-abi', '--no-pub', *app.flutter_arguments]
-if options.abi:
-    targets = {'arm64-v8a': 'android-arm64', 'armeabi-v7a': 'android-arm', 'x86_64': 'android-x64'}
-    build_args += ['--target-platform', ','.join(targets[abi] for abi in options.abi)]
-subprocess.run(build_args, cwd=root, env=env, check=True)
+# Chaquopy 要求 abiFilters，AGP 又不允许它和 --split-per-abi 共存；
+# 改成每个 ABI 一个 flavor，分别构建（与 android/app/build.gradle.kts 对应）。
+flavors = {'arm64-v8a': 'arm64', 'armeabi-v7a': 'arm', 'x86_64': 'x64'}
+targets = {'arm64-v8a': 'android-arm64', 'armeabi-v7a': 'android-arm', 'x86_64': 'android-x64'}
+for abi in options.abi or ['arm64-v8a', 'armeabi-v7a', 'x86_64']:
+    build_args = [
+        flutter, 'build', 'apk', '--release', '--flavor', flavors[abi],
+        '--no-pub', '--target-platform', targets[abi], *app.flutter_arguments,
+    ]
+    subprocess.run(build_args, cwd=root, env=env, check=True)
 subprocess.run([sys.executable, str(root / 'scripts' / 'package_release.py'), '--platform', 'android', *abi_args],
                cwd=root, env=env, check=True)

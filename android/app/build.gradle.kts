@@ -59,13 +59,31 @@ android {
         targetSdk = flutter.targetSdkVersion
         versionCode = flutter.versionCode
         versionName = flutter.versionName
-        // Chaquopy 必须显式声明 abiFilters；与 Flutter --split-per-abi 及
-        // scripts/build_android.py 产出的三份 libduanju_core.so 保持一致。
-        ndk {
-            abiFilters += listOf("arm64-v8a", "armeabi-v7a", "x86_64")
-        }
+        // Chaquopy 要求每个变体都有 abiFilters；这里按 ABI 拆成三个 flavor，
+        // 由 flavor 提供（不能写在 defaultConfig 再叠加 --split-per-abi，
+        // AGP 不允许 abiFilters 与 splits.abi 同时存在）。
+        missingDimensionStrategy("abi", "arm64")
         manifestPlaceholders["appLabel"] = "小果影视"
         manifestPlaceholders["appBanner"] = "@drawable/tv_banner"
+    }
+
+    // 每个 ABI 一个 flavor：Chaquopy 靠 flavor 里的 abiFilters 决定内嵌哪套
+    // CPython / pip 依赖，同时与 scripts/build_native.py 产出的三份内核对应。
+    // 不再用 --split-per-abi（它和 ndk.abiFilters 在 AGP 里互斥）。
+    flavorDimensions += "abi"
+    productFlavors {
+        create("arm64") {
+            dimension = "abi"
+            ndk { abiFilters += listOf("arm64-v8a") }
+        }
+        create("arm") {
+            dimension = "abi"
+            ndk { abiFilters += listOf("armeabi-v7a") }
+        }
+        create("x64") {
+            dimension = "abi"
+            ndk { abiFilters += listOf("x86_64") }
+        }
     }
 
     signingConfigs {
