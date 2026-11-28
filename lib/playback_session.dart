@@ -18,6 +18,7 @@ import 'playback_loader.dart';
 import 'playback_preferences.dart';
 import 'playback_preloader.dart';
 import 'playback_recovery.dart';
+import 'playback_stream_proxy.dart';
 
 const _swapChromaSource = '''
 //!HOOK NATIVE
@@ -947,9 +948,8 @@ class PlaybackSession extends ChangeNotifier {
         installed = true;
         _acceptErrors = true;
         await player.open(
-          Media(
-            plan.url,
-            httpHeaders: plan.headers,
+          await _mediaOf(
+            plan,
             start: position > 0
                 ? Duration(milliseconds: (position * 1000).round())
                 : null,
@@ -1071,10 +1071,7 @@ class PlaybackSession extends ChangeNotifier {
       await _configure(standby, plan);
       await _limitCache(standby, true);
       await _selectAudio(standby, false);
-      await standby.open(
-        Media(plan.url, httpHeaders: plan.headers),
-        play: false,
-      );
+      await standby.open(await _mediaOf(plan), play: false);
     } catch (_) {
       if (identical(_standbyPlan, plan)) _dropStandby();
       return;
@@ -1103,6 +1100,31 @@ class PlaybackSession extends ChangeNotifier {
       'demuxer-max-bytes',
       '${(limited ? 4 : 32) * 1024 * 1024}',
     );
+  }
+
+  /// 给播放地址套上去广告代理。
+  ///
+  /// 去广告原本只在 Go 核心自己开的本地流会话里生效，JS / PY 沙箱返回的是
+  /// 站源原始直链，核心那层完全不介入——所以「设置里开了去广告，沙箱源照样
+  /// 有广告」。这里统一在 Dart 层包一层 HLS 代理，不管源是内核还是沙箱，
+  /// 只要经播放器播出就都走同一条清洗逻辑。
+  ///
+  /// 非 HLS（mp4 等）与关闭开关时原样返回，不产生额外请求。
+  Future<Media> _mediaOf(PlaybackPlan plan, {Duration? start}) async {
+    var url = plan.url;
+    if (!plan.local) {
+      try {
+        url = await PlaybackStreamProxy.instance.wrap(
+          plan.url,
+          enabled: store.playbackPreferences.adBlock,
+          headers: plan.headers,
+        );
+      } catch (_) {
+        // 代理起不来时退回原地址：宁可没去广告，也不能不能播。
+        url = plan.url;
+      }
+    }
+    return Media(url, httpHeaders: plan.headers, start: start);
   }
 
   Future<int?> networkSpeed() async {
@@ -1260,9 +1282,8 @@ class PlaybackSession extends ChangeNotifier {
       _health.reset();
       _staleAudio = false;
       await player.open(
-        Media(
-          plan.url,
-          httpHeaders: plan.headers,
+        await _mediaOf(
+          plan,
           start: position > 0
               ? Duration(milliseconds: (position * 1000).round())
               : null,

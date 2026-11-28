@@ -1692,6 +1692,7 @@ class NativeRepository extends AppRepository {
         drama,
         episode,
         quality: quality,
+        adBlock: adBlock,
         routeIndex: routeIndex,
       );
     }
@@ -1701,6 +1702,7 @@ class NativeRepository extends AppRepository {
         drama,
         episode,
         quality: quality,
+        adBlock: adBlock,
         routeIndex: routeIndex,
       );
     }
