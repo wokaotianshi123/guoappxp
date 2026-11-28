@@ -1,7 +1,6 @@
-name: duanju_app
-description: 独立运行的多端短剧应用
-publish_to: none
-version: 2.1.9+137
+﻿name: duanju_app
+description: 鐙珛杩愯鐨勫绔煭鍓у簲鐢?publish_to: none
+version: 2.1.10+138
 
 environment:
   sdk: '>=3.12.0 <4.0.0'
@@ -32,22 +31,15 @@ dependencies:
   package_info_plus: ^10.2.1
   dynamic_color: ^2.1.0
   url_launcher: ^6.3.3
-  # 直播播放时保持屏幕常亮。该插件本来就在 media_kit_video 的依赖树里，
-  # 这里显式声明只是为了能直接引用，不会引入新的原生插件。
-  wakelock_plus: ^1.8.0
+  # 鐩存挱鎾斁鏃朵繚鎸佸睆骞曞父浜€傝鎻掍欢鏈潵灏卞湪 media_kit_video 鐨勪緷璧栨爲閲岋紝
+  # 杩欓噷鏄惧紡澹版槑鍙槸涓轰簡鑳界洿鎺ュ紩鐢紝涓嶄細寮曞叆鏂扮殑鍘熺敓鎻掍欢銆?  wakelock_plus: ^1.8.0
   lpinyin: ^2.0.3
-  # 隐藏浏览器：站源把分集地址写成 browser://<短链> 时，用它走完 Cloudflare
-  # 挑战，把落地地址交回站源模块。只在取播放地址时用，不影响其它功能。
-  flutter_inappwebview: 6.2.0-beta.3
-  # JS 沙箱：脚本源（CatPawOpen / CatVodOpen 规范）在端侧直接执行。
-  # Android / Windows 用 QuickJS，iOS / macOS 用系统 JavaScriptCore。
-  flutter_js: ^0.8.7
-  # 沙箱里的 fetch 宿主用 Dart 发请求（QuickJS 不自带 XHR），与站源模块
-  # 共用同一套 UA / 超时策略。
-  http: ^1.6.0
-  # JS 沙箱导出 / 导入脚本源 zip。本就在 file_picker 的依赖树里，
-  # 这里显式声明只是为了能直接引用，不会引入新的原生插件。
-  archive: ^4.7.1
+  # 闅愯棌娴忚鍣細绔欐簮鎶婂垎闆嗗湴鍧€鍐欐垚 browser://<鐭摼> 鏃讹紝鐢ㄥ畠璧板畬 Cloudflare
+  # 鎸戞垬锛屾妸钀藉湴鍦板潃浜ゅ洖绔欐簮妯″潡銆傚彧鍦ㄥ彇鎾斁鍦板潃鏃剁敤锛屼笉褰卞搷鍏跺畠鍔熻兘銆?  flutter_inappwebview: 6.2.0-beta.3
+  # JS 娌欑锛氳剼鏈簮锛圕atPawOpen / CatVodOpen 瑙勮寖锛夊湪绔晶鐩存帴鎵ц銆?  # Android / Windows 鐢?QuickJS锛宨OS / macOS 鐢ㄧ郴缁?JavaScriptCore銆?  flutter_js: ^0.8.7
+  # 娌欑閲岀殑 fetch 瀹夸富鐢?Dart 鍙戣姹傦紙QuickJS 涓嶈嚜甯?XHR锛夛紝涓庣珯婧愭ā鍧?  # 鍏辩敤鍚屼竴濂?UA / 瓒呮椂绛栫暐銆?  http: ^1.6.0
+  # JS 娌欑瀵煎嚭 / 瀵煎叆鑴氭湰婧?zip銆傛湰灏卞湪 file_picker 鐨勪緷璧栨爲閲岋紝
+  # 杩欓噷鏄惧紡澹版槑鍙槸涓轰簡鑳界洿鎺ュ紩鐢紝涓嶄細寮曞叆鏂扮殑鍘熺敓鎻掍欢銆?  archive: ^4.7.1
 
 dev_dependencies:
   flutter_test:
@@ -67,6 +59,4 @@ flutter:
     enable-swift-package-manager: false
   uses-material-design: true
   assets:
-    # JS 沙箱的内置数据源。用户可在 我的 › JS 沙箱 里导入 / 替换。
-    # hongguo.js 走官方 App 接口，签名参数在构建时注入。
-    - assets/sources/hongguo.js
+    # JS 娌欑鐨勫唴缃暟鎹簮銆傜敤鎴峰彲鍦?鎴戠殑 鈥?JS 娌欑 閲屽鍏?/ 鏇挎崲銆?    # hongguo.js 璧板畼鏂?App 鎺ュ彛锛岀鍚嶅弬鏁板湪鏋勫缓鏃舵敞鍏ャ€?    - assets/sources/hongguo.js

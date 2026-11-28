@@ -52,10 +52,17 @@ add_dependencies(${BINARY_NAME} flutter_assemble)
 
 # PY 沙箱：把 scripts/prepare_windows_python.py 产出的内置 Python 运行时
 # 拷到可执行文件旁的 python/ 目录，Dart 侧 ProcessPyBackend 从这里找解释器。
+# 备料由 scripts/build_windows.py 在 flutter build 之前完成。这里只警告不中断：
+# 本地 `flutter run -d windows` 不必为 py 沙箱先下载几十 MB；正式安装包由
+# scripts/package_release.py 校验 python/ 与依赖，缺了就拒绝出包。
 set(PY_RUNTIME_DIR "${CMAKE_CURRENT_SOURCE_DIR}/python")
-if(EXISTS "${PY_RUNTIME_DIR}")
+if(EXISTS "${PY_RUNTIME_DIR}/python.exe")
   add_custom_command(TARGET ${BINARY_NAME} POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
       "${PY_RUNTIME_DIR}/." "$<TARGET_FILE_DIR:${BINARY_NAME}>/python"
     COMMENT "Copying embedded Python runtime")
+else()
+  message(WARNING
+    "未找到内置 CPython：${PY_RUNTIME_DIR}\n"
+    "py 沙箱在本机不可用；出正式包前请运行 python scripts/prepare_windows_python.py")
 endif()

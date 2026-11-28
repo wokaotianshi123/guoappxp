@@ -9,6 +9,8 @@ native/build/
 android/app/src/main/jniLibs/
 windows/runner/duanju_core.dll
 windows/runner/duanju_core.h
+# 内置 CPython：由 scripts/prepare_windows_python.py 下载备料，不入库
+windows/runner/python/
 ios/DuanjuCore/*.xcframework/
 .wrangler/
 *.test

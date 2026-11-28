@@ -1,5 +1,14 @@
 # 更新日志
 
+## 2.1.10+138
+
+修复 Android 安装后启动闪退，以及 Windows 安装包没有内置 CPython。
+
+- 修复 Android 版打开即闪退（`libflutter.so is 32-bit instead of 64-bit`）：按 ABI 拆 flavor 出包后，Flutter 3.35 起仍会往 `defaultConfig.ndk.abiFilters` 写入 `armeabi-v7a / arm64-v8a / x86_64`，而 AGP 把 defaultConfig 与 flavor 的过滤集合取并集，导致单 ABI 的分包里混进别的 ABI 目录。64 位设备据此按 64 位启动，却拿不到 64 位的 `libflutter.so`，Flutter 的 ReLinker 从包内解出 32 位那份，启动瞬间崩溃。现在按官方开关 `disable-abi-filtering=true` 让 flavor 独占 ABI，并在打包脚本里硬性校验「一个分包只能有一个 ABI」，混入即终止发布。
+- 修复 Windows 版 py 沙箱不可用：`scripts/prepare_windows_python.py` 一直没被调用，CMake 的 `if(EXISTS)` 判断直接跳过，装完打开只会提示「Python 运行时不可用」。现在 `build_windows.py` 在构建前自动备料内置 CPython 3.11（含 requests / pycryptodome / beautifulsoup4 / lxml / pyquery），已就绪时跳过下载；CMake 缺运行时直接报错，打包脚本也会校验 exe 旁的 `python/` 与依赖是否齐全，不再产出残缺安装包。
+- iOS 构建同样补上 `prepare_ios_python.py` 调用，避免 iOS 包出现同一类「没有内嵌 CPython」的问题。
+- 内置 CPython 目录 `windows/runner/python/` 加入 `.gitignore`，由构建期下载备料。
+
 ## 2.1.9+137
 
 新增 PY 沙箱：导入 TVBox 方言的 .py 蜘蛛源，与 JS 沙箱并列。（开发快照，需在 Android / iOS / Windows 实机复测）

@@ -74,6 +74,14 @@ def main() -> int:
     else:
         print(f"警告：未找到宿主脚本 {HOST_SCRIPT}", file=sys.stderr)
 
+    # pip / wheel 只在备料期用得上，运行时用不到，裁掉能省十几 MB 安装包体积。
+    site = TARGET / "Lib" / "site-packages"
+    for name in ("pip", "wheel"):
+        for path in list(site.glob(f"{name}")) + list(site.glob(f"{name}-*.dist-info")):
+            shutil.rmtree(path, ignore_errors=True)
+    for cache in site.rglob("__pycache__"):
+        shutil.rmtree(cache, ignore_errors=True)
+
     print(f"完成：{TARGET}")
     return 0
 

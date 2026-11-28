@@ -146,6 +146,9 @@ def main():
     flutter = shutil.which('flutter')
     if not flutter or not shutil.which('pod'):
         raise SystemExit('请安装 Flutter 和 CocoaPods。')
+    # 内嵌 CPython 的 XCFramework、Xcode 工程挂接、requests 兼容包都要在
+    # pod install / xcodebuild 之前备好，否则 py 沙箱在 iOS 上同样不可用。
+    run([sys.executable, str(root / 'scripts' / 'prepare_ios_python.py')])
     run([flutter, 'pub', 'get', '--enforce-lockfile'])
     run(['pod', 'install'], cwd=root / 'ios')
     output = root / 'dist' / 'ios'

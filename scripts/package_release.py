@@ -225,6 +225,16 @@ if options.platform == 'android':
             missing = set(required) - names
             if missing:
                 raise SystemExit('APK 缺少原生库：' + ', '.join(sorted(missing)))
+            # 分包只能有自己那一个 ABI 的原生库。混进第二个 ABI 时，64 位设备会
+            # 先拿到 32 位的 libflutter.so，启动即闪退（is 32-bit instead of 64-bit）。
+            # Flutter 3.35+ 默认往 defaultConfig 写三个 ABI，若 flavor 的
+            # abiFilters 被并集覆盖就会触发，因此这里硬性拦住。
+            abis = sorted({name.split('/')[1] for name in names
+                           if name.startswith('lib/') and name.count('/') >= 2})
+            extra = [item for item in abis if item != abi]
+            if extra:
+                raise SystemExit(f'{source.name} 混入了其它 ABI 的原生库：{", ".join(extra)}；'
+                                 '请在 android/gradle.properties 里保留 disable-abi-filtering=true')
         target = output / f'{app.slug}-{version}-{abi}.apk'
         shutil.copy2(source, target)
         artifacts.append(target)
@@ -233,10 +243,19 @@ elif options.platform == 'windows':
     bundle_executable = 'guoapp.exe'
     required = [bundle_executable, 'duanju_core.dll', 'flutter_windows.dll', 'libffmpegkit.dll',
                 'libmpv-2.dll', 'msvcp140.dll', 'vcruntime140.dll',
-                'data/icudtl.dat', 'data/app.so']
+                'data/icudtl.dat', 'data/app.so',
+                'python/python.exe', 'python/py_spider_host.py']
     missing = [name for name in required if not (bundle / name).is_file()]
     if missing:
         raise SystemExit('Windows 安装包缺少文件：' + ', '.join(missing))
+    # 内置 CPython 必须带上蜘蛛要用的第三方包，否则装完点开 py 源只会报
+    # 「Python 运行时不可用」，而且要到用户机器上才发现。
+    site = bundle / 'python' / 'Lib' / 'site-packages'
+    packages = [name for name in ('requests', 'bs4', 'lxml', 'pyquery', 'Crypto')
+                if not (site / name).is_dir()]
+    if packages:
+        raise SystemExit('内置 CPython 缺少依赖：' + ', '.join(packages)
+                         + '；请运行 python scripts/prepare_windows_python.py 重新备料')
     built = windows_product_name(bundle / bundle_executable)
     if built != app.bundle_identifier:
         raise SystemExit(f'构建产物是 {built or "未知版本"}，与要打包的 {app.bundle_identifier} 不符，'
