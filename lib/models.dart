@@ -636,7 +636,9 @@ class PlaybackPlan {
     this.qualities = const [],
     this.session = '',
     this.danmakuId = '',
-    this.danmakuUrl = '',
+    this.danmakuUrls = const [],
+    this.routeName = '',
+    this.playToken = '',
     this.prefetchedBytes = 0,
     this.expiresAt = 0,
     this.routeIndex = 0,
@@ -657,9 +659,14 @@ class PlaybackPlan {
   final String session;
   final String danmakuId;
 
-  /// 弹幕正文地址。红果系 py 蜘蛛在 `playerContent` 里给一个本机
-  /// `http://127.0.0.1:PORT/hg_dm?...` 地址，由沙箱自己去取。
-  final String danmakuUrl;
+  /// 弹幕正文地址。红果系 py 蜘蛛在 `playerContent` 里给本机
+  /// `http://127.0.0.1:PORT/hg_dm?...` 地址（可能多条），由沙箱自己取。
+  final List<String> danmakuUrls;
+
+  /// 播放时用的线路名与分集 token。弹幕回退要重新走 playerContent，
+  /// 需要原样把这两个值传回去。
+  final String routeName;
+  final String playToken;
   final int prefetchedBytes;
   final int expiresAt;
   final int routeIndex;
@@ -682,7 +689,12 @@ class PlaybackPlan {
       ..sort((a, b) => b.compareTo(a)),
     session: json['session'] as String? ?? '',
     danmakuId: json['danmakuId'] as String? ?? '',
-    danmakuUrl: json['danmakuUrl'] as String? ?? '',
+    danmakuUrls: (json['danmakuUrls'] as List? ?? const [])
+        .map((value) => value.toString())
+        .where((value) => value.isNotEmpty)
+        .toList(),
+    routeName: json['routeName'] as String? ?? '',
+    playToken: json['playToken'] as String? ?? '',
     prefetchedBytes: intValue(json['prefetchedBytes']),
     expiresAt: intValue(json['expiresAt']),
     routeIndex: intValue(json['routeIndex']),

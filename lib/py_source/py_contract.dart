@@ -127,7 +127,7 @@ class PyContract {
     Map<String, String> headers,
     bool parse,
     String danmakuId,
-    String danmakuUrl,
+    List<String> danmakuUrls,
   })
   planFromResult(Map<String, dynamic> result) {
     final headers = <String, String>{};
@@ -148,16 +148,34 @@ class PyContract {
         intValue(result['parse']) == 1 ||
         result['jx'] == true ||
         intValue(result['jx']) == 1;
-    // 部分 py 蜘蛛会在播放结果里直接给弹幕标识与地址；红果系走 `danmaku`。
+    // 弹幕：蜘蛛有两种写法——直接给地址字符串，或给 `[{name, url}]` 列表
+    // （红果系 `_DM_IN_PLAYER = "list"` 就是列表，并支持多条线路）。
     final danmakuId = _text(result['danmakuId']);
-    var danmakuUrl = _text(result['danmaku']);
-    if (danmakuUrl.isEmpty) danmakuUrl = _text(result['danmakuUrl']);
+    final danmakuUrls = <String>[];
+    void addDanmaku(Object? value) {
+      final text = _text(value);
+      if (text.isNotEmpty && !danmakuUrls.contains(text)) danmakuUrls.add(text);
+    }
+
+    final rawDanmaku = result['danmaku'];
+    if (rawDanmaku is List) {
+      for (final row in rawDanmaku) {
+        if (row is Map) {
+          addDanmaku(row['url'] ?? row['address'] ?? row['src']);
+        } else {
+          addDanmaku(row);
+        }
+      }
+    } else {
+      addDanmaku(rawDanmaku);
+    }
+    addDanmaku(result['danmakuUrl']);
     return (
       url: url,
       headers: headers,
       parse: parse,
       danmakuId: danmakuId,
-      danmakuUrl: danmakuUrl,
+      danmakuUrls: danmakuUrls,
     );
   }
 

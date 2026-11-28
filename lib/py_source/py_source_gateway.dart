@@ -230,12 +230,12 @@ class PySourceGateway {
       );
     }
     // 弹幕：优先用脚本自己给的地址/标识。红果系 py 蜘蛛在 playerContent
-    // 里直接返回本机弹幕地址，但仍需要一个稳定的 episodeId 做分页校验，
-    // 所以这里统一按「源内编号:集号」补一个。
+    // 里直接返回本机弹幕地址（可能多条），但仍需要一个稳定的 episodeId
+    // 做分页校验，所以这里统一按「源内编号:集号」补一个。
     var danmakuId = plan.danmakuId;
-    final danmakuUrl = plan.danmakuUrl;
+    final danmakuUrls = plan.danmakuUrls;
     if (danmakuId.isEmpty &&
-        (danmakuUrl.isNotEmpty || await _supportsDanmaku(_path(source)))) {
+        (danmakuUrls.isNotEmpty || await _supportsDanmaku(_path(source)))) {
       danmakuId = '${drama.sourceId}:${episode.number}';
     }
     return PlaybackPlan(
@@ -245,7 +245,9 @@ class PySourceGateway {
       quality: quality,
       session: 'py:${pySourceScriptId(source)}',
       danmakuId: danmakuId,
-      danmakuUrl: danmakuUrl,
+      danmakuUrls: danmakuUrls,
+      routeName: routeName,
+      playToken: target,
       routeIndex: routeIndex >= 0 ? routeIndex : intValue(episode.raw['routeIndex']),
       routeCount: intValue(episode.raw['routeCount']) > 0
           ? intValue(episode.raw['routeCount'])
@@ -428,13 +430,16 @@ class PySourceGateway {
       items.add(DanmakuItem(id: key, text: value, timeMs: timeMs));
     }
 
-    // 1) 脚本自己实现 danmaku 方法时优先用它。
+    // 1) 脚本自己实现 danmaku 方法时优先用它；没实现时宿主会回退到
+    //    playerContent 的 danmaku 字段，所以要把线路与分集 token 一起带上。
     final raw = await PyBridge.call(_path(source), {
       'action': 'danmaku',
       'series': plan.danmakuId,
       'video': plan.danmakuId,
       'startMs': startMs,
       'durationMs': durationMs,
+      'flag': plan.routeName,
+      'playId': plan.playToken,
     });
     final itemRows = raw['items'];
     if (itemRows is List && itemRows.isNotEmpty) {
@@ -451,14 +456,20 @@ class PySourceGateway {
       }
     }
 
-    // 2) 没有的话，去播放计划里的 danmaku 地址取（红果系 py 蜘蛛走这条）。
+    // 2) 没有的话，去弹幕地址取。地址来自两处：宿主回退拿到的 urls，
+    //    以及播放计划里已经带的 danmakuUrls（红果系走这条）。
     if (items.isEmpty) {
-      final url = plan.danmakuUrl;
-      if (url.isNotEmpty) {
+      final urls = <String>[
+        for (final value in raw['urls'] as List? ?? const [])
+          if (value.toString().trim().isNotEmpty) value.toString().trim(),
+        ...plan.danmakuUrls,
+      ];
+      for (final url in urls) {
         final text = await _fetchDanmaku(url);
-        if (text.isNotEmpty) {
-          _parseDanmakuText(text, addRow);
-        }
+        if (text.isEmpty) continue;
+        _parseDanmakuText(text, addRow);
+        // 取到就够用；多条地址通常互为备份，全拉只会拖慢首帧。
+        if (items.isNotEmpty) break;
       }
     }
 

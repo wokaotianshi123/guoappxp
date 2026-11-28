@@ -528,7 +528,7 @@ class NativeRepository extends AppRepository {
     // playerContent 里直接给本机 /hg_dm 地址）也应该交给沙箱去取。
     if (py != null &&
         plan.session.startsWith('py:') &&
-        (plan.danmakuId.isNotEmpty || plan.danmakuUrl.isNotEmpty)) {
+        (plan.danmakuId.isNotEmpty || plan.danmakuUrls.isNotEmpty)) {
       return py.danmaku(plan, startMs: startMs, durationMs: durationMs);
     }
     if (plan.local || plan.session.isEmpty || plan.danmakuId.isEmpty) {

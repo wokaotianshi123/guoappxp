@@ -1268,16 +1268,42 @@ def _dispatch(spider, request):
         result = _call_arity(fn, (vod_id,))
         return result if isinstance(result, dict) else {"list": result}
     if action == "danmaku":
-        # 弹幕：脚本自定义 `danmaku` / `danmakuContent` 时才有，否则返回空。
+        # 弹幕有两种来源：
+        #   1) 脚本实现了 `danmaku` / `danmakuContent` 方法（显式动作）；
+        #   2) 脚本在 playerContent 里把弹幕地址塞进 `danmaku` 字段
+        #      （红果系就是这种，值是 [{name,url}] 或 url 字符串）。
         fn = getattr(spider, "danmaku", None) or getattr(spider, "danmakuContent", None)
-        if not callable(fn):
-            return {"items": []}
-        series = str(request.get("series") or "")
-        video = str(request.get("video") or "")
-        start = int(request.get("startMs") or 0)
-        duration = int(request.get("durationMs") or 0)
-        result = _call_arity(fn, (series, video, start, duration))
-        return result if isinstance(result, dict) else {"items": result}
+        if callable(fn):
+            series = str(request.get("series") or "")
+            video = str(request.get("video") or "")
+            start = int(request.get("startMs") or 0)
+            duration = int(request.get("durationMs") or 0)
+            result = _call_arity(fn, (series, video, start, duration))
+            return result if isinstance(result, dict) else {"items": result}
+        # 回退：从 playerContent 的返回值里取弹幕地址。
+        flag = str(request.get("flag") or "")
+        play_id = str(request.get("playId") or "")
+        if play_id:
+            try:
+                played = _call_arity(spider.playerContent, (flag, play_id, []))
+            except Exception:  # noqa: BLE001 取不到就当没有弹幕
+                played = {}
+            if isinstance(played, dict):
+                raw = played.get("danmaku") or played.get("danmakuUrl")
+                urls = []
+                if isinstance(raw, str):
+                    urls = [raw] if raw.strip() else []
+                elif isinstance(raw, (list, tuple)):
+                    for row in raw:
+                        if isinstance(row, dict):
+                            value = row.get("url") or row.get("address") or row.get("src")
+                        else:
+                            value = row
+                        if isinstance(value, str) and value.strip():
+                            urls.append(value)
+                if urls:
+                    return {"urls": urls}
+        return {"items": []}
     if action == "proxy":
         param = request.get("param") or {}
         result = _call_arity(spider.localProxy, (param,))
