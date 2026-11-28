@@ -14,6 +14,8 @@ import '../../models.dart';
 import '../widgets/focus_ring.dart';
 import '../widgets/group_card.dart';
 import 'js_source_import_dialog.dart';
+import 'subscription_picker_dialog.dart';
+import '../../subscription_models.dart';
 
 /// 我的 › JS 沙箱。
 ///
@@ -58,6 +60,23 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
       await action();
     } catch (error) {
       _toast('$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 带返回值、带 busy 标记的一次性操作。
+  ///
+  /// [_run] 只收 `Future<void>`，拉取订阅这类「要拿到结果再继续」的动作用它
+  /// 没法写，又不能为此把它改成泛型（会牵动全部既有调用点）。
+  Future<T?> _runValue<T>(Future<T> Function() action) async {
+    if (_busy) return null;
+    setState(() => _busy = true);
+    try {
+      return await action();
+    } catch (error) {
+      _toast('$error');
+      return null;
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -246,21 +265,37 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
     }
     final bytes = await file.readAsBytes();
     if (lower.endsWith('.json')) {
-      final result = await _service.importLocalSubscription(
+      // 本地订阅同样先列出条目让用户挑，与网址导入一致。
+      final fetch = _service.fetchLocalSubscription(
         utf8.decode(bytes, allowMalformed: true),
         configPath: file.path,
       );
-      if (!result.success) {
+      if (fetch.candidates.isEmpty) {
         _toast(
-          result.error.isNotEmpty
-              ? '导入失败：${result.error}'
-              : '没有导入任何脚本：${result.failed.join('；')}',
+          fetch.error.isNotEmpty
+              ? '导入失败：${fetch.error}'
+              : '这个配置里没有可导入的脚本',
         );
         return;
       }
+      if (!mounted) return;
+      final report = await showDialog<SubscriptionImportReport>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => SubscriptionPickerDialog(
+          title: '选择要导入的脚本源',
+          notice: fetch.notice,
+          candidates: fetch.candidates,
+          onImport: (selected, onProgress) => _service.importCandidates(
+            selected,
+            onProgress: onProgress,
+          ),
+        ),
+      );
+      if (!mounted || report == null) return;
       JsSourceGateway.instance.refreshSources();
       widget.store.sourcesChanged();
-      _toast(_importSummary('已导入', result.imported.length, result.failed));
+      _toast(_importSummary('已导入', report.imported.length, report.failed));
       return;
     }
     final script = utf8.decode(bytes, allowMalformed: true);
@@ -351,22 +386,46 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
       context: context,
       builder: (context) => const JsSourceImportDialog(),
     );
-    if (url == null || url.isEmpty) return;
-    await _run(() async {
-      // 先按订阅解析；不是订阅就自动退化成单个脚本直链。
-      final imported = await _service.importSubscription(url);
-      if (!imported.success) {
-        _toast(
-          imported.error.isNotEmpty
-              ? '导入失败：${imported.error}'
-              : '没有导入任何脚本：${imported.failed.join('；')}',
-        );
-        return;
-      }
-      JsSourceGateway.instance.refreshSources();
-      widget.store.sourcesChanged();
-      _toast(_importSummary('已导入', imported.imported.length, imported.failed));
-    });
+    if (!mounted || url == null || url.isEmpty) return;
+    // 第一步：只解析订阅，拿到可勾选的清单。
+    final fetch = await _runValue(() => _service.fetchSubscription(url));
+    if (!mounted || fetch == null) return;
+    if (fetch.candidates.isEmpty) {
+      _toast(
+        fetch.error.isNotEmpty
+            ? '导入失败：${fetch.error}'
+            : '这个地址里没有可导入的脚本',
+      );
+      return;
+    }
+    // 直链没有选择余地，直接导入。
+    if (!fetch.fromSubscription) {
+      await _run(() async {
+        final report = await _service.importCandidates(fetch.candidates);
+        JsSourceGateway.instance.refreshSources();
+        widget.store.sourcesChanged();
+        _toast(_importSummary('已导入', report.imported.length, report.failed));
+      });
+      return;
+    }
+    // 第二步：让用户勾选，导入时右上角显示进度。
+    final report = await showDialog<SubscriptionImportReport>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => SubscriptionPickerDialog(
+        title: '选择要导入的脚本源',
+        notice: fetch.notice,
+        candidates: fetch.candidates,
+        onImport: (selected, onProgress) => _service.importCandidates(
+          selected,
+          onProgress: onProgress,
+        ),
+      ),
+    );
+    if (!mounted || report == null) return;
+    JsSourceGateway.instance.refreshSources();
+    widget.store.sourcesChanged();
+    _toast(_importSummary('已导入', report.imported.length, report.failed));
   }
 
   /// 官方脚本的 App 接口要签名参数；这里让用户粘贴同一份 JSON。

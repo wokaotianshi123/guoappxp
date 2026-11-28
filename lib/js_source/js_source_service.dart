@@ -12,6 +12,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'js_source_models.dart';
 import 'js_source_presets.dart';
 import 'js_signing_profile.dart';
+import '../subscription_models.dart';
 
 /// JS 数据源（脚本）的安装、扫描与启用状态。
 ///
@@ -540,6 +541,175 @@ class JsSourceService extends ChangeNotifier {
       }
     }
     return null;
+  }
+
+  /// 只解析订阅，不导入：给「选择要装哪些」的弹层用。
+  ///
+  /// 返回的每条候选都带可下载的绝对地址；地址本身不是订阅（是脚本直链）
+  /// 时 `fromSubscription` 为 false，调用方可以跳过选择直接导入。
+  Future<SubscriptionFetch> fetchSubscription(String url) async {
+    final ({Uint8List bytes, Uri uri}) downloaded;
+    try {
+      downloaded = await _download(url.trim(), 2 * 1024 * 1024);
+    } on Exception catch (error) {
+      return SubscriptionFetch.failed('订阅拉取失败：$error');
+    }
+    final text = utf8.decode(downloaded.bytes, allowMalformed: true);
+    final entries = parseJsSubscription(text, base: downloaded.uri);
+    if (entries.isEmpty) {
+      // 不是订阅，是单个脚本直链。
+      return SubscriptionFetch(
+        candidates: [
+          SubscriptionCandidate(
+            name: '',
+            url: url.trim(),
+            detail: downloaded.uri.pathSegments.isEmpty
+                ? url
+                : downloaded.uri.pathSegments.last,
+          ),
+        ],
+        fromSubscription: false,
+      );
+    }
+    return SubscriptionFetch(
+      candidates: [
+        for (final entry in entries)
+          SubscriptionCandidate(
+            name: entry.name,
+            url: entry.url,
+            detail: _candidateDetail(entry.url, downloaded.uri),
+          ),
+      ],
+      fromSubscription: true,
+    );
+  }
+
+  /// 列表副标题：相对地址显示成「文件名 · 来自订阅」，绝对地址显示主机名。
+  static String _candidateDetail(String url, Uri base) {
+    final uri = Uri.tryParse(url);
+    if (uri == null) return url;
+    if (uri.scheme == 'http' || uri.scheme == 'https') {
+      final name = uri.pathSegments.isEmpty ? '' : uri.pathSegments.last;
+      return name.isEmpty ? uri.host : '$name · ${uri.host}';
+    }
+    return uri.path;
+  }
+
+  /// 解析本机订阅配置里的候选，供选择弹层用。
+  ///
+  /// 相对地址会解析成绝对路径（和配置同目录），并校验不越界；越界的条目标
+  /// 记在 [SubscriptionFetch.error] 里，不阻断其它条目。
+  SubscriptionFetch fetchLocalSubscription(
+    String text, {
+    String? configPath,
+  }) {
+    final entries = parseLocalSubscription(text);
+    if (entries.isEmpty) {
+      return const SubscriptionFetch.failed('不是可识别的订阅配置（需要 sources 或 url）');
+    }
+    final directory = configPath == null || configPath.isEmpty
+        ? null
+        : p.dirname(configPath);
+    final candidates = <SubscriptionCandidate>[];
+    final skipped = <String>[];
+    for (final entry in entries) {
+      final uri = Uri.tryParse(entry.url);
+      final label = entry.name.isEmpty ? entry.url : entry.name;
+      if (uri != null &&
+          (uri.scheme == 'http' || uri.scheme == 'https') &&
+          uri.host.isNotEmpty) {
+        candidates.add(
+          SubscriptionCandidate(
+            name: entry.name,
+            url: entry.url,
+            detail: _candidateDetail(entry.url, Uri()),
+          ),
+        );
+        continue;
+      }
+      if (directory == null) {
+        skipped.add('$label（相对地址需要和脚本一起打包成 zip 导入）');
+        continue;
+      }
+      var relative = entry.url;
+      try {
+        relative = Uri.decodeComponent(relative);
+      } catch (_) {}
+      final resolved = p.normalize(p.join(directory, relative));
+      if (!p.isWithin(directory, resolved) && !p.equals(directory, resolved)) {
+        skipped.add('$label（地址超出配置目录）');
+        continue;
+      }
+      candidates.add(
+        SubscriptionCandidate(
+          name: entry.name,
+          url: entry.url,
+          localPath: resolved,
+          detail: p.basename(resolved),
+        ),
+      );
+    }
+    return SubscriptionFetch(
+      candidates: candidates,
+      fromSubscription: true,
+      notice: skipped.isEmpty ? '' : skipped.join('；'),
+    );
+  }
+
+  /// 按用户勾选的候选逐个导入，每条都回调进度。
+  Future<SubscriptionImportReport> importCandidates(
+    List<SubscriptionCandidate> candidates, {
+    void Function(SubscriptionProgress progress)? onProgress,
+  }) async {
+    final imported = <String>[];
+    final failed = <String>[];
+    for (var index = 0; index < candidates.length; index++) {
+      final candidate = candidates[index];
+      onProgress?.call(
+        SubscriptionProgress(
+          done: index,
+          total: candidates.length,
+          name: candidate.label,
+        ),
+      );
+      final label = candidate.label;
+      try {
+        final JsImportResult result;
+        if (candidate.localPath.isNotEmpty) {
+          final file = File(candidate.localPath);
+          if (!await file.exists()) {
+            failed.add('$label（同目录下找不到 ${candidate.url}）');
+            continue;
+          }
+          final bytes = await file.readAsBytes();
+          if (bytes.length > 4 * 1024 * 1024) {
+            failed.add('$label（脚本超过 4MB）');
+            continue;
+          }
+          result = await import(
+            normalizeJsScript(utf8.decode(bytes, allowMalformed: true)),
+            p.basename(candidate.localPath),
+          );
+        } else {
+          result = await importFromUrl(candidate.url);
+        }
+        if (result.success) {
+          imported.add(result.meta!.name);
+        } else {
+          failed.add('$label（${result.error}）');
+        }
+      } catch (error) {
+        failed.add('$label（$error）');
+      }
+    }
+    onProgress?.call(
+      SubscriptionProgress(
+        done: candidates.length,
+        total: candidates.length,
+        name: '',
+      ),
+    );
+    return SubscriptionImportReport(imported: imported, failed: failed);
   }
 
   /// 从订阅地址导入。

@@ -80,15 +80,23 @@ class SubscriptionFetch {
     this.candidates = const [],
     this.fromSubscription = false,
     this.error = '',
+    this.notice = '',
   });
 
   const SubscriptionFetch.failed(this.error)
     : candidates = const [],
-      fromSubscription = false;
+      fromSubscription = false,
+      notice = '';
 
   final List<SubscriptionCandidate> candidates;
   final bool fromSubscription;
+
+  /// 致命错误：整份订阅都不可用（下载失败、JSON 解析失败）。
   final String error;
+
+  /// 非致命提示：部分条目被跳过（地址越界、缺脚本文件）。
+  /// 不影响其它条目导入，界面上显示在列表顶部。
+  final String notice;
 
   bool get success => candidates.isNotEmpty && error.isEmpty;
 }

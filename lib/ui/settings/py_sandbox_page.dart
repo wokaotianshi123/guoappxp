@@ -8,7 +8,9 @@ import '../../py_source/py_bridge.dart';
 import '../../py_source/py_source_gateway.dart';
 import '../../py_source/py_source_models.dart';
 import '../../py_source/py_source_service.dart';
+import '../../subscription_models.dart';
 import 'py_source_import_dialog.dart';
+import 'subscription_picker_dialog.dart';
 
 /// 我的 › PY 沙箱。
 ///
@@ -52,6 +54,20 @@ class _PySandboxPageState extends State<PySandboxPage> {
       await action();
     } catch (error) {
       _toast('$error');
+    } finally {
+      if (mounted) setState(() => _busy = false);
+    }
+  }
+
+  /// 带返回值、带 busy 标记的一次性操作（拉取订阅要先拿到结果再继续）。
+  Future<T?> _runValue<T>(Future<T> Function() action) async {
+    if (_busy) return null;
+    setState(() => _busy = true);
+    try {
+      return await action();
+    } catch (error) {
+      _toast('$error');
+      return null;
     } finally {
       if (mounted) setState(() => _busy = false);
     }
@@ -176,21 +192,33 @@ class _PySandboxPageState extends State<PySandboxPage> {
     final bytes = await file.readAsBytes();
     final text = utf8.decode(bytes, allowMalformed: true);
     if (lower.endsWith('.json')) {
-      // 订阅配置：同目录下放着的脚本会一起装进来。
-      final result = await _service.importLocalSubscription(
-        text,
-        configPath: file.path,
-      );
-      _refresh();
-      if (result.imported.isEmpty) {
-        _toast('导入失败：${result.error.isEmpty ? result.failed.join('、') : result.error}');
+      // 本地订阅同样先列出条目让用户挑，与网址导入一致。
+      final fetch = _service.fetchLocalSubscription(text, configPath: file.path);
+      if (fetch.candidates.isEmpty) {
+        _toast(
+          fetch.error.isNotEmpty
+              ? '导入失败：${fetch.error}'
+              : '这个配置里没有可导入的脚本',
+        );
         return;
       }
-      _toast(
-        result.failed.isEmpty
-            ? '已导入 ${result.imported.length} 个 py 源'
-            : '导入 ${result.imported.length} 个，失败 ${result.failed.length} 个',
+      if (!mounted) return;
+      final report = await showDialog<SubscriptionImportReport>(
+        context: context,
+        barrierDismissible: false,
+        builder: (context) => SubscriptionPickerDialog(
+          title: '选择要导入的 py 源',
+          notice: fetch.notice,
+          candidates: fetch.candidates,
+          onImport: (selected, onProgress) => _service.importCandidates(
+            selected,
+            onProgress: onProgress,
+          ),
+        ),
       );
+      if (!mounted || report == null) return;
+      _refresh();
+      _toast(_summary(report));
       return;
     }
     final result = await _service.import(text, file.name);
@@ -213,32 +241,49 @@ class _PySandboxPageState extends State<PySandboxPage> {
       context: context,
       builder: (context) => const PySourceImportDialog(),
     );
-    if (url == null || url.isEmpty) return;
-    await _run(() async {
-      // 订阅与直链只下载一次：服务端按内容判断是订阅 JSON 还是 .py 脚本。
-      final result = await _service.importUrl(url);
-      _refresh();
-      if (result is PySubscriptionResult) {
-        if (result.imported.isEmpty) {
-          _toast('导入失败：${result.error.isEmpty ? result.failed.join('、') : result.error}');
-          return;
-        }
-        _toast(
-          result.failed.isEmpty
-              ? '已导入 ${result.imported.length} 个 py 源'
-              : '导入 ${result.imported.length} 个，失败 ${result.failed.length} 个',
-        );
-        return;
-      }
-      if (result is PyImportResult) {
-        if (result.meta == null) {
-          _toast('导入失败：${result.error}');
-          return;
-        }
-        _toast('已导入 ${result.meta!.name}');
-      }
-    });
+    if (!mounted || url == null || url.isEmpty) return;
+    // 第一步：只解析订阅，拿到可勾选的清单。
+    final fetch = await _runValue(() => _service.fetchSubscription(url));
+    if (!mounted || fetch == null) return;
+    if (fetch.candidates.isEmpty) {
+      _toast(
+        fetch.error.isNotEmpty
+            ? '导入失败：${fetch.error}'
+            : '这个地址里没有可导入的脚本',
+      );
+      return;
+    }
+    if (!fetch.fromSubscription) {
+      await _run(() async {
+        final report = await _service.importCandidates(fetch.candidates);
+        _refresh();
+        _toast(_summary(report));
+      });
+      return;
+    }
+    // 第二步：让用户勾选，导入时右上角显示进度。
+    final report = await showDialog<SubscriptionImportReport>(
+      context: context,
+      barrierDismissible: false,
+      builder: (context) => SubscriptionPickerDialog(
+        title: '选择要导入的 py 源',
+        notice: fetch.notice,
+        candidates: fetch.candidates,
+        onImport: (selected, onProgress) => _service.importCandidates(
+          selected,
+          onProgress: onProgress,
+        ),
+      ),
+    );
+    if (!mounted || report == null) return;
+    _refresh();
+    _toast(_summary(report));
   }
+
+  String _summary(SubscriptionImportReport report) => report.failed.isEmpty
+      ? '已导入 ${report.imported.length} 个 py 源'
+      : '导入 ${report.imported.length} 个，失败 ${report.failed.length} 个：'
+            '${report.failed.join('；')}';
 
   Future<void> _importPaste() async {
     final result = await showDialog<({String name, String source})>(
