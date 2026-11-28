@@ -62,13 +62,13 @@ String pyNameFromFileName(String fileName) {
 
 /// 从脚本正文里读显示名。
 ///
-/// 认三种写法（按优先级）：
+/// 优先级（按用户约定）：
 ///   1. `def getName(self): return "红果短剧"` —— TVBox 方言的标准做法；
-///   2. `self.name = "红果短剧"` / `name = "红果短剧"` —— 老脚本的类属性；
-///   3. `meta = {"name": "红果短剧"}` —— 少数从 JS 方言移植过来的脚本。
+///   2. `NAME = "红果短剧"` / `name = "…"` / `self.name = "…"` —— 模块级或类属性；
+///   3. 都读不到时由调用方退回文件名。
 ///
-/// 读不到返回空串，由调用方退回文件名。这里不做完整 Python 解析：目标只是
-/// 拿一个显示名，正则够用，也不该因为语法怪异就拒绝导入。
+/// 读不到返回空串。这里不做完整 Python 解析：目标只是拿一个显示名，正则够用，
+/// 也不该因为语法怪异就拒绝导入。
 String pyNameFromScript(String script) {
   if (script.isEmpty) return '';
 
@@ -89,23 +89,18 @@ String pyNameFromScript(String script) {
     if (value.isNotEmpty && !value.contains('{')) return value;
   }
 
-  // 2) self.name / name 赋值。必须卡单词边界，否则 `file_name = "x.py"`
+  // 2) NAME 字段：模块级 `NAME = "…"`、类属性 `self.name = "…"`、
+  //    以及 `name = "…"` 都算。必须卡单词边界，否则 `file_name = "x.py"`
   //    这类普通变量会被误当成显示名。
-  final assigned = RegExp(
+  for (final pattern in const [
+    // 大写 NAME 优先：TVBox 脚本常用它声明源名。
+    r'''(?:^|\W)(?:self\.)?NAME\s*=\s*(['"])(.*?)\1''',
     r'''(?:^|\W)(?:self\.)?name\s*=\s*(['"])(.*?)\1''',
-    multiLine: true,
-  ).firstMatch(script);
-  final assignedValue = assigned?.group(2)?.trim() ?? '';
-  if (assignedValue.isNotEmpty && !assignedValue.contains('{')) {
-    return assignedValue;
+  ]) {
+    final assigned = RegExp(pattern, multiLine: true).firstMatch(script);
+    final value = assigned?.group(2)?.trim() ?? '';
+    if (value.isNotEmpty && !value.contains('{')) return value;
   }
-
-  // 3) meta 字典里的 "name"。
-  final metaName = RegExp(
-    r'''["']name["']\s*:\s*(['"])(.*?)\1''',
-  ).firstMatch(script);
-  final metaValue = metaName?.group(2)?.trim() ?? '';
-  if (metaValue.isNotEmpty && !metaValue.contains('{')) return metaValue;
 
   return '';
 }

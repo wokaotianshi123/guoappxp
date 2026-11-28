@@ -426,13 +426,21 @@ class PySourceService extends ChangeNotifier {
   }
 
   /// 按用户勾选的候选逐个导入，每条都回调进度。
+  ///
+  /// [isCancelled] 在每条开始前调用：返回 true 就停止后续条目，已装好的保留。
   Future<SubscriptionImportReport> importCandidates(
     List<SubscriptionCandidate> candidates, {
     void Function(SubscriptionProgress progress)? onProgress,
+    bool Function()? isCancelled,
   }) async {
     final imported = <String>[];
     final failed = <String>[];
+    var cancelled = false;
     for (var index = 0; index < candidates.length; index++) {
+      if (isCancelled?.call() == true) {
+        cancelled = true;
+        break;
+      }
       final candidate = candidates[index];
       onProgress?.call(
         SubscriptionProgress(
@@ -471,13 +479,15 @@ class PySourceService extends ChangeNotifier {
         failed.add('$label（$error）');
       }
     }
-    onProgress?.call(
-      SubscriptionProgress(
-        done: candidates.length,
-        total: candidates.length,
-        name: '',
-      ),
-    );
+    if (!cancelled) {
+      onProgress?.call(
+        SubscriptionProgress(
+          done: candidates.length,
+          total: candidates.length,
+          name: '',
+        ),
+      );
+    }
     return SubscriptionImportReport(imported: imported, failed: failed);
   }
 

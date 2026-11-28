@@ -286,10 +286,12 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
           title: '选择要导入的脚本源',
           notice: fetch.notice,
           candidates: fetch.candidates,
-          onImport: (selected, onProgress) => _service.importCandidates(
-            selected,
-            onProgress: onProgress,
-          ),
+          onImport: (selected, onProgress, isCancelled) =>
+              _service.importCandidates(
+                selected,
+                onProgress: onProgress,
+                isCancelled: isCancelled,
+              ),
         ),
       );
       if (!mounted || report == null) return;
@@ -416,10 +418,12 @@ class _JsSandboxPageState extends State<JsSandboxPage> {
         title: '选择要导入的脚本源',
         notice: fetch.notice,
         candidates: fetch.candidates,
-        onImport: (selected, onProgress) => _service.importCandidates(
-          selected,
-          onProgress: onProgress,
-        ),
+        onImport: (selected, onProgress, isCancelled) =>
+            _service.importCandidates(
+              selected,
+              onProgress: onProgress,
+              isCancelled: isCancelled,
+            ),
       ),
     );
     if (!mounted || report == null) return;

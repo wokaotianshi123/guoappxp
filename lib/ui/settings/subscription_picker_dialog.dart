@@ -31,10 +31,14 @@ class SubscriptionPickerDialog extends StatefulWidget {
   final String notice;
 
   /// 实际导入动作。传 null 表示只做勾选（测试用）。
-  /// 进度通过 `onProgress` 回调，由本弹层渲染到右上角。
+  ///
+  /// [isCancelled] 每导入一条前都会被调用一次；返回 true 就立刻停止后续条目。
+  /// 这样用户在导入中点「取消」时最多只需等当前这一条结束，不会把剩下的
+  /// 全部跑完。
   final Future<SubscriptionImportReport> Function(
     List<SubscriptionCandidate> selected,
     void Function(SubscriptionProgress) onProgress,
+    bool Function() isCancelled,
   )?
   onImport;
 
@@ -60,6 +64,9 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
   SubscriptionProgress? _progress;
   bool _busy = false;
   String _error = '';
+
+  /// 用户点了取消：后续条目不再开始，当前这一条跑完就收尾。
+  bool _cancelled = false;
 
   bool get _allSelected => _selected.length == widget.candidates.length;
   bool get _noneSelected => _selected.isEmpty;
@@ -180,6 +187,7 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
     ];
     setState(() {
       _busy = true;
+      _cancelled = false;
       _error = '';
       _progress = SubscriptionProgress(
         done: 0,
@@ -187,8 +195,9 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
         name: chosen.isEmpty ? '' : chosen.first.label,
       );
     });
-    // 导入期间把焦点留在「导入」按钮上，避免它随列表变化被移除。
-    revealFocus(_confirmNode);
+    // 导入期间把焦点留在「取消」上：它是唯一还能用的按钮，
+    // 焦点停在会被禁用的「导入」上，TV 遥控器会失去落点。
+    revealFocus(_cancelNode);
     try {
       final report = await widget.onImport!(
         chosen,
@@ -196,6 +205,7 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
           if (!mounted) return;
           setState(() => _progress = progress);
         },
+        () => _cancelled,
       );
       if (!mounted) return;
       if (report.failed.isEmpty) {
@@ -219,6 +229,24 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
     }
   }
 
+  /// 取消键：导入中先请求停止（当前条跑完即止），再点一次直接关闭弹层。
+  ///
+  /// 为什么要两级：正在下载的那一条无法从外部打断（HttpClient 在
+  /// `importCandidates` 内部），直接 pop 会让它在后台继续写盘、把刚装的
+  /// 源写进列表，用户却以为取消了。先停止后续条目是「立刻能用」的做法；
+  /// 再点一次强制关闭，是为了应对某一条彻底卡住（比如站点不响应）的情况。
+  void _cancel() {
+    if (!_busy) {
+      Navigator.pop(context);
+      return;
+    }
+    if (!_cancelled) {
+      setState(() => _cancelled = true);
+      return;
+    }
+    Navigator.pop(context);
+  }
+
   String get _progressLabel {
     final progress = _progress;
     if (progress == null) return '';
@@ -231,8 +259,13 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
     final colors = theme.colorScheme;
     final progress = _progress;
     return PopScope(
-      // 导入中禁止返回：中途退出会留下装了一半的状态。
+      // 导入中按返回键等同于点「停止导入」：先停后续条目，再按一次才关闭。
+      // 完全不响应会让人以为界面卡死。
       canPop: !_busy,
+      onPopInvokedWithResult: (didPop, _) {
+        if (didPop) return;
+        _cancel();
+      },
       child: AlertDialog(
         titlePadding: const EdgeInsets.fromLTRB(20, 16, 12, 0),
         title: Row(
@@ -293,9 +326,11 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
         ),
         actions: [
           TextButton(
+            key: const ValueKey('subscription-cancel'),
             focusNode: _cancelNode,
-            onPressed: _busy ? null : () => Navigator.pop(context),
-            child: const Text('取消'),
+            // 导入中也要能点：这是「防止被卡死」的唯一出口。
+            onPressed: _cancel,
+            child: Text(_cancelLabel),
           ),
           FilledButton(
             focusNode: _confirmNode,
@@ -305,6 +340,12 @@ class _SubscriptionPickerDialogState extends State<SubscriptionPickerDialog> {
         ],
       ),
     );
+  }
+
+  /// 取消键的文案随状态变化，让用户知道这一下会发生什么。
+  String get _cancelLabel {
+    if (!_busy) return '取消';
+    return _cancelled ? '强制关闭' : '停止导入';
   }
 
   Widget _allRow(ThemeData theme, ColorScheme colors) {

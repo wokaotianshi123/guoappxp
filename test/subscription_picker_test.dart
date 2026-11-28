@@ -18,6 +18,7 @@ void main() {
     Future<SubscriptionImportReport> Function(
       List<SubscriptionCandidate>,
       void Function(SubscriptionProgress),
+      bool Function(),
     )?
     onImport,
   }) async {
@@ -154,7 +155,7 @@ void main() {
       final gate = <void Function(SubscriptionProgress)>[];
       await pump(
         tester,
-        onImport: (selected, onProgress) async {
+        onImport: (selected, onProgress, isCancelled) async {
           // 立刻报第一条进度，然后挂住等测试推进
           onProgress(
             const SubscriptionProgress(done: 0, total: 3, name: '源 A'),
@@ -188,7 +189,7 @@ void main() {
     testWidgets('部分失败时留在弹层并显示失败原因', (tester) async {
       await pump(
         tester,
-        onImport: (selected, onProgress) async {
+        onImport: (selected, onProgress, isCancelled) async {
           onProgress(
             const SubscriptionProgress(done: 3, total: 3, name: ''),
           );
@@ -202,6 +203,65 @@ void main() {
       await tester.pumpAndSettle();
       expect(find.textContaining('源 B（HTTP 404）'), findsOneWidget);
       expect(find.byType(SubscriptionPickerDialog), findsOneWidget);
+    });
+  });
+
+  group('导入中强制取消', () {
+    testWidgets('导入中取消键仍可点，第一次点变成「强制关闭」', (tester) async {
+      await pump(
+        tester,
+        onImport: (selected, onProgress, isCancelled) async {
+          onProgress(
+            const SubscriptionProgress(done: 0, total: 3, name: '源 A'),
+          );
+          // 挂住，模拟某一条卡在网络请求里
+          await Future<void>.delayed(const Duration(seconds: 30));
+          return const SubscriptionImportReport(imported: ['源 A']);
+        },
+      );
+      await tester.tap(find.text('导入 3 个'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 10));
+
+      // 导入中：取消键仍然可点（不是 null），文案变成「停止导入」
+      final cancel = tester.widget<TextButton>(
+        find.byKey(const ValueKey('subscription-cancel')),
+      );
+      expect(cancel.onPressed, isNotNull, reason: '导入中取消键不能失效，否则就卡死了');
+      expect(find.text('停止导入'), findsOneWidget);
+
+      // 点一次 → 变成「强制关闭」
+      await tester.tap(find.byKey(const ValueKey('subscription-cancel')));
+      await tester.pump();
+      expect(find.text('强制关闭'), findsOneWidget);
+    });
+
+    testWidgets('取消后停止后续条目，已装好的保留', (tester) async {
+      final seen = <String>[];
+      await pump(
+        tester,
+        onImport: (selected, onProgress, isCancelled) async {
+          for (var i = 0; i < selected.length; i++) {
+            if (isCancelled()) break;
+            seen.add(selected[i].label);
+            onProgress(
+              SubscriptionProgress(done: i, total: selected.length, name: ''),
+            );
+            await Future<void>.delayed(const Duration(milliseconds: 5));
+          }
+          return SubscriptionImportReport(imported: List.of(seen));
+        },
+      );
+      await tester.tap(find.text('导入 3 个'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 2));
+
+      // 导入中请求停止
+      await tester.tap(find.byKey(const ValueKey('subscription-cancel')));
+      await tester.pumpAndSettle();
+
+      expect(seen.length, lessThan(3), reason: '取消后不该把剩下的全部跑完');
+      expect(seen, isNotEmpty, reason: '已经装好的要保留');
     });
   });
 

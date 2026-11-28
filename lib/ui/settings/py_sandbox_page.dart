@@ -210,10 +210,12 @@ class _PySandboxPageState extends State<PySandboxPage> {
           title: '选择要导入的 py 源',
           notice: fetch.notice,
           candidates: fetch.candidates,
-          onImport: (selected, onProgress) => _service.importCandidates(
-            selected,
-            onProgress: onProgress,
-          ),
+          onImport: (selected, onProgress, isCancelled) =>
+              _service.importCandidates(
+                selected,
+                onProgress: onProgress,
+                isCancelled: isCancelled,
+              ),
         ),
       );
       if (!mounted || report == null) return;
@@ -269,10 +271,12 @@ class _PySandboxPageState extends State<PySandboxPage> {
         title: '选择要导入的 py 源',
         notice: fetch.notice,
         candidates: fetch.candidates,
-        onImport: (selected, onProgress) => _service.importCandidates(
-          selected,
-          onProgress: onProgress,
-        ),
+        onImport: (selected, onProgress, isCancelled) =>
+            _service.importCandidates(
+              selected,
+              onProgress: onProgress,
+              isCancelled: isCancelled,
+            ),
       ),
     );
     if (!mounted || report == null) return;
