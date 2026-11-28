@@ -71,6 +71,13 @@ class PyContract {
     final category = categoryNameOf(
       _text(vod['vod_class']).isEmpty ? base.category : _text(vod['vod_class']),
     );
+    // 站点常给出「共 N 集」但只放出前几集的播放地址（`accessible_episode_cnt`）。
+    // 详情页要显示真实总数，并说明可播放的只有这么多，否则用户会以为源坏了。
+    final declared = intValue(vod['vod_episodes']) > 0
+        ? intValue(vod['vod_episodes'])
+        : _episodeCountFromRemarks(_text(vod['vod_remarks']));
+    final playable = routes.first.chapters.length;
+    final total = declared > playable ? declared : playable;
     final drama = Drama(
       id: base.id,
       source: base.source,
@@ -80,7 +87,7 @@ class PyContract {
       cover: normalizeCover(_text(vod['vod_pic'])).isEmpty
           ? base.cover
           : normalizeCover(_text(vod['vod_pic'])),
-      episodes: routes.first.chapters.length,
+      episodes: total,
       category: category,
       vip: false,
     );
@@ -96,7 +103,22 @@ class PyContract {
         }, episodes.length + 1),
       );
     }
-    return DramaDetail(drama, episodes, warning: episodes.isEmpty ? '该源详情未提供播放地址' : '');
+    return DramaDetail(
+      drama,
+      episodes,
+      warning: episodes.isEmpty
+          ? '该源详情未提供播放地址'
+          : (total > episodes.length
+                ? '该源共 $total 集，目前只放出前 ${episodes.length} 集，其余需要源侧权限'
+                : ''),
+    );
+  }
+
+  /// 从 `vod_remarks` 里取总集数：「全140集」「更新至24集」都能认。
+  static int _episodeCountFromRemarks(String remarks) {
+    final match = RegExp(r'(\d+)\s*集').firstMatch(remarks);
+    if (match == null) return 0;
+    return int.tryParse(match.group(1) ?? '') ?? 0;
   }
 
   /// 播放地址：返回原样 url + header，`parse` 交给调用方决定。

@@ -220,6 +220,15 @@ class PySourceGateway {
     if (plan.url.isEmpty) {
       throw AppFailure('这个 py 源没有返回播放地址', code: 'NO_STREAM');
     }
+    // 蜘蛛取流失败时常常「礼貌地」返回站点首页或 SITE + "/"，而不是报错。
+    // 直接拿去播放只会得到一个打不开的网页，用户看到的是「不能播放」。
+    // 这里识别出来，给出能看懂的原因。
+    if (_looksLikeSiteRoot(plan.url)) {
+      throw AppFailure(
+        '这个 py 源没有取到播放地址（源返回了站点首页，通常是源侧取流接口被限制或需要更新）',
+        code: 'NO_STREAM',
+      );
+    }
     // 弹幕：优先用脚本自己给的地址/标识。红果系 py 蜘蛛在 playerContent
     // 里直接返回本机弹幕地址，但仍需要一个稳定的 episodeId 做分页校验，
     // 所以这里统一按「源内编号:集号」补一个。
@@ -243,6 +252,23 @@ class PySourceGateway {
           : 1,
     );
   });
+
+  /// 判断播放地址是不是「站点首页」这种占位返回值。
+  ///
+  /// 蜘蛛取流失败时经常返回 `SITE + "/"`（如 `https://hongguoduanju.com/`），
+  /// 它不是视频地址，播放器打不开。真正的播放地址一定带路径或查询参数。
+  static bool _looksLikeSiteRoot(String url) {
+    final uri = Uri.tryParse(url.trim());
+    if (uri == null || !uri.hasScheme) return false;
+    final path = uri.path;
+    // 根路径且没有查询参数 → 视为站点首页占位。
+    if (path.isEmpty || path == '/') {
+      return uri.query.isEmpty;
+    }
+    // 明显不是媒体地址的网页路径（详情页 / 首页列表）也排除。
+    return RegExp(r'^/detail\b').hasMatch(path) ||
+        RegExp(r'^/category\b').hasMatch(path);
+  }
 
   Future<PlaybackPlan> resolveRoute(int routeIndex) async {
     final last = _lastResolve;
