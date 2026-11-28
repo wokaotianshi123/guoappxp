@@ -35,6 +35,12 @@ class PySourceGateway {
 
   bool get attached => _attached;
 
+  /// 脚本是否实现了弹幕能力。
+  ///
+  /// 判定口径必须宽松：脚本自己实现 `danmaku` / `danmakuContent` 算支持；
+  /// 红果系这类在 `playerContent` 里返回 `danmaku` 地址的也算支持——它们的
+  /// 弹幕字段要等播放时才有，`ping` 根本看不出来。所以这里一律按支持注册，
+  /// 真正没有弹幕时播放页显示「这段暂无弹幕」，而不是把入口整个藏掉。
   void refreshSources() {
     final source = _service;
     if (source == null) return;
@@ -48,7 +54,9 @@ class PySourceGateway {
           pagedSearch: true,
           searchSuggestions: false,
           recommends: false,
-          danmaku: false,
+          // 必须放行：`SourceSite.danmaku` 是播放页弹幕按钮的总开关，
+          // 置 false 会让控制器直接判「本集暂不支持弹幕」。
+          danmaku: true,
           vipPrompt: false,
           category: '',
         ),
@@ -64,7 +72,11 @@ class PySourceGateway {
   PySourceMeta? metaOf(String source) =>
       _service?.sourceById(pySourceScriptId(source));
 
-  /// 脚本是否实现了弹幕方法。只探一次并缓存，避免每次播放都多打一次 RPC。
+  /// 脚本是否具备弹幕能力。只探一次并缓存，避免每次播放都多打 RPC。
+  ///
+  /// 注意：这里返回 true 只表示「值得去要一次弹幕」，不代表一定有内容。
+  /// 红果系在 `playerContent` 里才给出弹幕地址，`ping` 看不到，所以探测
+  /// 失败或没有显式方法时也按「支持」处理——否则会白白丢掉弹幕。
   final Map<String, bool> _danmakuSupport = {};
 
   Future<bool> _supportsDanmaku(String path) async {
@@ -76,12 +88,12 @@ class PySourceGateway {
         ...(reply['methods'] as List? ?? const []).map((v) => v.toString()),
         ...(reply['optional'] as List? ?? const []).map((v) => v.toString()),
       };
-      final supported =
+      final explicit =
           methods.contains('danmaku') || methods.contains('danmakuContent');
-      return _danmakuSupport[path] = supported;
+      // 有显式方法当然支持；没有也放行，交给播放时的 danmaku 字段决定。
+      return _danmakuSupport[path] = explicit || methods.isNotEmpty;
     } catch (_) {
-      // 探测失败时按「不支持」处理：不要因为一次网络抖动让播放失败。
-      return _danmakuSupport[path] = false;
+      return _danmakuSupport[path] = true;
     }
   }
 
@@ -384,29 +396,7 @@ class PySourceGateway {
   });
 
   /// 从线路名里取季号：「第2季 超清」「第二季」「第三部」都能认。
-  static int? _seasonNumberOf(String label) {
-    final match = RegExp(r'第\s*([0-9]+|[一二三四五六七八九十]+)\s*[季部]')
-        .firstMatch(label);
-    if (match == null) return null;
-    final raw = match.group(1) ?? '';
-    final asInt = int.tryParse(raw);
-    if (asInt != null) return asInt > 0 ? asInt : null;
-    const digits = '零一二三四五六七八九';
-    var total = 0;
-    var current = 0;
-    for (final char in raw.split('')) {
-      if (char == '十') {
-        total += (current == 0 ? 1 : current) * 10;
-        current = 0;
-      } else {
-        final value = digits.indexOf(char);
-        if (value < 0) return null;
-        current = value;
-      }
-    }
-    total += current;
-    return total > 0 ? total : null;
-  }
+  static int? _seasonNumberOf(String label) => PyContract.seasonNumberOf(label);
 
   /// 弹幕：py 蜘蛛的通行做法是在 `playerContent` 里给 `danmaku` 字段
   /// （通常是本机 `http://127.0.0.1:PORT/hg_dm?...` 的 XML/JSON 地址）。

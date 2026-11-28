@@ -71,13 +71,30 @@ class PyContract {
     final category = categoryNameOf(
       _text(vod['vod_class']).isEmpty ? base.category : _text(vod['vod_class']),
     );
-    // 站点常给出「共 N 集」但只放出前几集的播放地址（`accessible_episode_cnt`）。
-    // 详情页要显示真实总数，并说明可播放的只有这么多，否则用户会以为源坏了。
+    // 切季时 `base.id` 形如 `py:xxx#s2`（见 `seasons()`）。这里要按季号
+    // 选对应的线路，否则切到第二季仍然展开第一季的分集。
+    final wantedSeason = _seasonFromDramaId(base.id);
+    final primary = wantedSeason == null
+        ? primaryRoute(routes)
+        : (routes.firstWhere(
+                (route) => seasonNumberOf(route.name) == wantedSeason,
+                orElse: () => primaryRoute(routes),
+              ));
+    // 集数必须按「选中那条线路」算。
+    //
+    // `vod_remarks`（如「全140集」）和 `vod_episodes` 说的是整部剧/某一季的
+    // 数字，跟当前线路没关系：多季时第一季只有 115 集，写成 140 会让用户
+    // 以为少了 25 集。只有单季剧才用声明值补足「未放出」的提示。
     final declared = intValue(vod['vod_episodes']) > 0
         ? intValue(vod['vod_episodes'])
         : _episodeCountFromRemarks(_text(vod['vod_remarks']));
-    final playable = routes.first.chapters.length;
-    final total = declared > playable ? declared : playable;
+    final playable = primary.chapters.length;
+    final isMultiSeason = routes.any(
+      (route) => seasonNumberOf(route.name) != null,
+    );
+    final total = isMultiSeason
+        ? playable
+        : (declared > playable ? declared : playable);
     final drama = Drama(
       id: base.id,
       source: base.source,
@@ -91,14 +108,13 @@ class PyContract {
       category: category,
       vip: false,
     );
-    final primary = routes.first;
     final episodes = <Episode>[];
     for (var i = 0; i < primary.chapters.length; i++) {
       episodes.add(
         Episode({
           ...primary.chapters[i],
           'routeName': primary.name,
-          'routeIndex': 0,
+          'routeIndex': routes.indexOf(primary),
           'routeCount': routes.length,
         }, episodes.length + 1),
       );
@@ -119,6 +135,79 @@ class PyContract {
     final match = RegExp(r'(\d+)\s*集').firstMatch(remarks);
     if (match == null) return 0;
     return int.tryParse(match.group(1) ?? '') ?? 0;
+  }
+
+  /// 详情页默认展开哪条线路。
+  ///
+  /// 红果系把多季做成「一季一条线路」，并在最前面塞一条
+  /// `全季连播 1013集` 的合并线路。直接取第一条会把 1013 集全部铺进播放
+  /// 列表，看起来就像「多季没有分季」。这里优先选季号最小的那条线路
+  /// （也就是第一季），没有分季时才退回第一条。
+  static ({String name, List<Map<String, dynamic>> chapters}) primaryRoute(
+    List<({String name, List<Map<String, dynamic>> chapters})> routes,
+  ) {
+    // 先看有没有真正的分季线路：至少两条线路带不同的季号。
+    final numbered = <({String name, List<Map<String, dynamic>> chapters})>[];
+    final numbers = <int>{};
+    for (final route in routes) {
+      final number = seasonNumberOf(route.name);
+      if (number == null) continue;
+      numbered.add(route);
+      numbers.add(number);
+    }
+    if (numbers.length >= 2 && numbered.isNotEmpty) {
+      numbered.sort((a, b) {
+        final left = seasonNumberOf(a.name) ?? 0;
+        final right = seasonNumberOf(b.name) ?? 0;
+        return left.compareTo(right);
+      });
+      return numbered.first;
+    }
+    // 没有分季：优先第一条不是「全季连播 / 合集」的线路。
+    for (final route in routes) {
+      if (!isMergedSeasonRoute(route.name)) return route;
+    }
+    return routes.first;
+  }
+
+  /// 从线路名里取季号：「第2季 超清」「第二季」「第三部」都能认。
+  static int? seasonNumberOf(String label) {
+    final match = RegExp(r'第\s*([0-9]+|[一二三四五六七八九十]+)\s*[季部]')
+        .firstMatch(label);
+    if (match == null) return null;
+    final raw = match.group(1) ?? '';
+    final asInt = int.tryParse(raw);
+    if (asInt != null) return asInt > 0 ? asInt : null;
+    const digits = '零一二三四五六七八九';
+    var total = 0;
+    var current = 0;
+    for (final char in raw.split('')) {
+      if (char == '十') {
+        total += (current == 0 ? 1 : current) * 10;
+        current = 0;
+      } else {
+        final value = digits.indexOf(char);
+        if (value < 0) return null;
+        current = value;
+      }
+    }
+    total += current;
+    return total > 0 ? total : null;
+  }
+
+  /// 「全季连播」「合集」「全集」这类把各季混在一条线路里的名字。
+  ///
+  /// 红果系的线路顺序是：`全季连播 1013集` + 第一至六季。这类合并线路
+  /// 不能当默认线路，否则播放列表会被塞进上千集。
+  static bool isMergedSeasonRoute(String label) =>
+      RegExp(r'全季|合集|全集|连播|完整版').hasMatch(label);
+
+  /// 从剧集 id 里取季标记：`py:xxx#s2` → 2。没有标记时返回 null。
+  static int? _seasonFromDramaId(String id) {
+    final match = RegExp(r'#s(\d+)$').firstMatch(id);
+    if (match == null) return null;
+    final number = int.tryParse(match.group(1) ?? '') ?? 0;
+    return number > 0 ? number : null;
   }
 
   /// 播放地址：返回原样 url + header，`parse` 交给调用方决定。
