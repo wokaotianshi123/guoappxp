@@ -1,7 +1,8 @@
 /// Python 数据源（TVBox 方言的 `class Spider`）的元信息与导入结果。
 ///
-/// 与 JS 沙箱不同，py 文件里没有可静态读取的 `meta` 字面量：标识与显示名
-/// 都由文件名推导。落盘一个 `.py` 文件就是安装一个源，站源 id 为 `py:<标识>`。
+/// 与 JS 沙箱的 `meta` 字面量不同，py 脚本的显示名在代码里：通行做法是
+/// `def getName(self)` 里 `return "红果短剧"`，也有老脚本写 `self.name = "…"`。
+/// 显示名优先从脚本正文读，读不到才退回文件名；标识仍由文件名推导。
 class PySourceMeta {
   const PySourceMeta({
     required this.id,
@@ -59,6 +60,69 @@ String pyNameFromFileName(String fileName) {
   return trimmed.isEmpty ? fileName : trimmed;
 }
 
+/// 从脚本正文里读显示名。
+///
+/// 认三种写法（按优先级）：
+///   1. `def getName(self): return "红果短剧"` —— TVBox 方言的标准做法；
+///   2. `self.name = "红果短剧"` / `name = "红果短剧"` —— 老脚本的类属性；
+///   3. `meta = {"name": "红果短剧"}` —— 少数从 JS 方言移植过来的脚本。
+///
+/// 读不到返回空串，由调用方退回文件名。这里不做完整 Python 解析：目标只是
+/// 拿一个显示名，正则够用，也不该因为语法怪异就拒绝导入。
+String pyNameFromScript(String script) {
+  if (script.isEmpty) return '';
+
+  // 1) def getName(self) 的返回值。先截出这个方法体，再找第一个 return，
+  //    避免把文件里后面别的 return 误当成名字。
+  //    返回类型注解（`-> str`）要一并吃掉，否则匹配不到冒号。
+  final method = RegExp(
+    r'def\s+getName\s*\(\s*self[^)]*\)\s*(?:->\s*[^:\n]+)?\s*:',
+  ).firstMatch(script);
+  if (method != null) {
+    final body = _methodBody(script, method.end);
+    // Python 的字符串前缀有 f / r / b / u 及两两组合（fr、rf…），一并吃掉。
+    final returned = RegExp(
+      r'''\breturn\s+[fFrRbBuU]{0,2}(['"])(.*?)\1''',
+      dotAll: true,
+    ).firstMatch(body);
+    final value = returned?.group(2)?.trim() ?? '';
+    if (value.isNotEmpty && !value.contains('{')) return value;
+  }
+
+  // 2) self.name / name 赋值。必须卡单词边界，否则 `file_name = "x.py"`
+  //    这类普通变量会被误当成显示名。
+  final assigned = RegExp(
+    r'''(?:^|\W)(?:self\.)?name\s*=\s*(['"])(.*?)\1''',
+    multiLine: true,
+  ).firstMatch(script);
+  final assignedValue = assigned?.group(2)?.trim() ?? '';
+  if (assignedValue.isNotEmpty && !assignedValue.contains('{')) {
+    return assignedValue;
+  }
+
+  // 3) meta 字典里的 "name"。
+  final metaName = RegExp(
+    r'''["']name["']\s*:\s*(['"])(.*?)\1''',
+  ).firstMatch(script);
+  final metaValue = metaName?.group(2)?.trim() ?? '';
+  if (metaValue.isNotEmpty && !metaValue.contains('{')) return metaValue;
+
+  return '';
+}
+
+/// 截出 `def` 后面的方法体：从 `start` 到下一个同级 `def` / `class` 之前。
+String _methodBody(String script, int start) {
+  final rest = script.substring(start);
+  // 把首字符换成换行，避免当前行自己被 `^` 匹配到。长度不变，索引仍然有效。
+  final probe = rest.isEmpty ? '\n' : '\n${rest.substring(1)}';
+  // 只用行内空白，不用 `\s*`：后者会吞掉换行，让 `^` 提前匹配到空行。
+  final next = RegExp(r'^[ \t]*(?:def|class)\s+', multiLine: true).firstMatch(
+    probe,
+  );
+  if (next == null) return rest;
+  return rest.substring(0, next.start);
+}
+
 /// 导入时的文件名校验：只认单层、以 .py 结尾、不含路径分隔符与保留字符。
 bool validPySourceFileName(String name) {
   if (name.isEmpty || name.length > 180) return false;
@@ -85,15 +149,19 @@ class PySourceMetaResult {
 }
 
 /// 从文件名生成元信息；文件名不合法时返回失败。
-PySourceMetaResult pyMetaFromFileName(String fileName) {
+///
+/// 给了 [script] 时优先用脚本里的显示名（`getName()` 的返回值），读不到才
+/// 退回文件名。标识始终由文件名推导——它要稳定，不能随脚本改名而变。
+PySourceMetaResult pyMetaFromFileName(String fileName, {String script = ''}) {
   final name = fileName.trim();
   if (!validPySourceFileName(name)) {
     return const PySourceMetaResult.failed('文件名无效，需以 .py 结尾且不能包含路径');
   }
+  final fromScript = pyNameFromScript(script);
   return PySourceMetaResult(
     PySourceMeta(
       id: pyIdFromFileName(name),
-      name: pyNameFromFileName(name),
+      name: fromScript.isNotEmpty ? fromScript : pyNameFromFileName(name),
       fileName: name,
     ),
   );

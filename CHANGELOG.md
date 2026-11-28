@@ -1,5 +1,18 @@
 # 更新日志
 
+## 2.1.16+144
+
+PY 沙箱的显示名改为优先读脚本里的 `getName()`，读不到才用文件名。
+
+- 之前 py 源的显示名完全由文件名推导，导入 `hongguoxian.py` 后沙箱里显示的是「hongguoxian」，而脚本自己声明的是「红果短剧」。现在按脚本正文解析显示名，与 JS 沙箱读 `meta.name` 的做法对齐。
+- 解析优先级：`def getName(self): return "…"` → `self.name = "…"` / `name = "…"` → `meta = {"name": "…"}` → 文件名。
+- 兼容常见变体：单引号、同行 `return`、返回类型注解（`-> str`）、`f` / `r` / `b` 字符串前缀。
+- 不会误取：`getName` 返回变量时不硬猜（退回文件名）；`file_name = "…"` 这类普通变量不会被当成名字；只截 `getName` 方法体，不会拿到别的方法的 `return`。
+- 源标识仍由文件名推导，改名不会让已有记录失联。
+- 新增 `test/py_source_models_test.dart`，覆盖 12 种写法的解析结果。
+
+配套的 config 仓库工作流（`scripts/update_xiaoguo.py`）用同一套优先级，清单里的名称与沙箱显示一致。
+
 ## 2.1.15+143
 
 修多季不分季、Windows 端弹幕不显示。

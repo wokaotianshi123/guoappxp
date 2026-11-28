@@ -106,10 +106,11 @@ class PySourceService extends ChangeNotifier {
       }
       try {
         final fileName = p.basename(entity.path);
-        final result = pyMetaFromFileName(fileName);
+        final content = normalizePyScript(await entity.readAsString());
+        // 显示名优先取脚本里的 getName()，读不到才用文件名。
+        final result = pyMetaFromFileName(fileName, script: content);
         final meta = result.meta;
         if (meta == null) continue;
-        final content = normalizePyScript(await entity.readAsString());
         metas[meta.id] = meta;
         scripts[meta.id] = content;
         paths[meta.id] = entity.path;
@@ -160,10 +161,11 @@ class PySourceService extends ChangeNotifier {
       var name = fileName.trim();
       if (name.isEmpty) name = 'custom_source.py';
       if (!name.toLowerCase().endsWith('.py')) name = '$name.py';
-      final result = pyMetaFromFileName(name);
+      final content = normalizePyScript(script);
+      // 显示名优先取脚本里的 getName()，读不到才用文件名。
+      final result = pyMetaFromFileName(name, script: content);
       final meta = result.meta;
       if (meta == null) return PyImportResult.failed(result.error);
-      final content = normalizePyScript(script);
       if (content.trim().isEmpty) {
         return const PyImportResult.failed('脚本内容为空');
       }
