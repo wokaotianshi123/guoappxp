@@ -1,8 +1,9 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 
-import '../subscription_models.dart';
-import 'focus_ring.dart';
+import '../../subscription_models.dart';
+// 只用它的 `revealFocus`：把焦点移过去并保证滚动到可见位置。
+import '../widgets/focus_ring.dart';
 
 /// 订阅导入的勾选弹层：JS 沙箱与 PY 沙箱共用。
 ///

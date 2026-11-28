@@ -1,5 +1,13 @@
 # 更新日志
 
+## 2.1.20+148
+
+修复构建失败：勾选弹层的两个 import 路径少写了一层。
+
+- `subscription_picker_dialog.dart` 位于 `lib/ui/settings/`，却写成了 `import '../subscription_models.dart'`（指向不存在的 `lib/ui/subscription_models.dart`）和 `import 'focus_ring.dart'`（`focus_ring.dart` 在 `lib/ui/widgets/` 下）。改为 `../../subscription_models.dart` 与 `../widgets/focus_ring.dart`。
+- **新增 `scripts/audit_imports.py`**：静态校验 `lib/` 与 `test/` 里所有相对 import 的目标文件是否存在。这类错误编译器会直接拒掉，但本地没有 Dart 工具链时完全看不见，只能等 CI 跑两分钟构建才发现。已接入 `build.yml` 的 `checks` job，排在 `audit_stretch.py` 之后。
+- 校验器本身也修过一次：第一版只认 `./` 与 `../` 开头的导入，漏掉了同目录写法（`'focus_ring.dart'`）——而这正是本次构建失败的第二条。
+
 ## 2.1.19+147
 
 JS / PY 沙箱导入订阅时先列出条目让用户勾选，导入过程实时显示进度。

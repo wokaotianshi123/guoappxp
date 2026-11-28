@@ -86,6 +86,9 @@ jobs:
       # 子树被丢弃（表现为宽屏下某些区块消失）。这类问题只在特定尺寸出现，
       # 单元测试容易漏，因此单独静态检查。
       - run: python scripts/audit_stretch.py
+      # 导入路径自查：相对路径少写一层或同目录文件名写错，编译器会直接拒掉，
+      # 但要等到 flutter build 才报。提前静态检查，省掉一次两分钟的构建。
+      - run: python scripts/audit_imports.py
 
   prepare:
     runs-on: ubuntu-latest
