@@ -1416,7 +1416,52 @@ def _rpc_status():
 
 def _rpc_main():
     import sys as _sys
-    for line in _sys.stdin:
+
+    # ── 把 RPC 通道与脚本输出彻底分开 ──────────────────────────────
+    # 蜘蛛脚本经常直接 print 日志（红果系每步都打一行）。这些输出和 RPC
+    # 回复共用同一个 stdout 时有两个致命问题：
+    #   1) 中文 Windows 上 stdout 默认是 cp936，Dart 侧按 UTF-8 解码会抛
+    #      异常并中断整个 stream，之后所有回复都收不到 → 一路挂到 70 秒超时；
+    #   2) 匿名管道缓冲只有几 KB，脚本打满就阻塞在 print 里，RPC 回复排在
+    #      它后面永远发不出去。
+    # 做法：先把真正的 stdout 复制一份专门给 RPC 用，再把 fd 1 指到 stderr。
+    # 之后脚本里所有 print（含 sys.stdout.write）都落到 stderr，Dart 侧本来
+    # 就在 drain，不会再污染或阻塞协议。
+    rpc_out = None
+    try:
+        _sys.stdout.flush()
+        rpc_fd = os.dup(1)
+        os.dup2(2, 1)
+        rpc_out = os.fdopen(rpc_fd, "w", encoding="utf-8", newline="\n", buffering=1)
+        _sys.stdout = _sys.stderr
+        # 日志现在都走 stderr，统一成 UTF-8，免得脚本打中文时因 cp936 报错。
+        try:
+            _sys.stderr.reconfigure(encoding="utf-8", errors="replace")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    except Exception:  # noqa: BLE001 复制失败就退回原 stdout（至少还能用）
+        rpc_out = _sys.stdout
+        try:
+            rpc_out.reconfigure(encoding="utf-8")  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    # stdin 同理：中文 Windows 默认 cp936，用文本模式读会把请求里的中文
+    # 路径解成乱码（「红果-…-修复.py」变成一堆替换字符），蜘蛛文件直接
+    # 找不到。这里按字节读、显式按 UTF-8 解码，与 Dart 侧的编码对齐。
+    try:
+        rpc_in = _sys.stdin.buffer
+    except Exception:  # noqa: BLE001
+        rpc_in = _sys.stdin
+
+    for raw_line in rpc_in:
+        if isinstance(raw_line, bytes):
+            try:
+                line = raw_line.decode("utf-8")
+            except UnicodeDecodeError:
+                line = raw_line.decode("utf-8", "replace")
+        else:
+            line = raw_line
         line = line.strip()
         if not line:
             continue
@@ -1446,8 +1491,8 @@ def _rpc_main():
             reply = {"id": request.get("id") if isinstance(request, dict) else None,
                      "ok": False, "error": str(error)}
         try:
-            _sys.stdout.write(json.dumps(reply, ensure_ascii=False) + "\n")
-            _sys.stdout.flush()
+            rpc_out.write(json.dumps(reply, ensure_ascii=False) + "\n")
+            rpc_out.flush()
         except Exception:
             break
 

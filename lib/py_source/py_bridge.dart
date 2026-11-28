@@ -179,7 +179,14 @@ class ProcessPyBackend implements PyBackend {
   Future<Process?> _ensure() {
     final existing = _process;
     if (existing != null) return Future.value(existing);
-    return _starting ??= _start().whenComplete(() => _starting = null);
+    return _starting ??= _start()
+        .timeout(
+          const Duration(seconds: 20),
+          onTimeout: () {
+            throw AppFailure('py 解释器启动超时', code: 'py_start_timeout');
+          },
+        )
+        .whenComplete(() => _starting = null);
   }
 
   Future<Process?> _start() async {
@@ -192,10 +199,20 @@ class ProcessPyBackend implements PyBackend {
         // -u 关掉缓冲：否则 stdout 是管道时会整块缓冲，回复迟迟不刷出来。
         ['-u', host, '--rpc'],
         workingDirectory: File(host).parent.path,
+        // 强制解释器用 UTF-8 做 IO。中文 Windows 的默认编码是 cp936，
+        // 路径、日志里的中文都会在管道上互相解错；宿主脚本自己也做了
+        // 同样的处理，这里再兜一层，避免环境变量被外部改掉。
+        environment: const {
+          'PYTHONIOENCODING': 'utf-8',
+          'PYTHONUTF8': '1',
+        },
       );
       _process = process;
+      // allowMalformed：即使某一行混进了非 UTF-8 字节（脚本日志、系统
+      // 编码残留），也只坏这一行，不能让整个 stream 抛异常断开——那样后面
+      // 所有 RPC 回复都收不到，请求只能挂到超时。
       _lines = process.stdout
-          .transform(utf8.decoder)
+          .transform(const Utf8Decoder(allowMalformed: true))
           .transform(const LineSplitter())
           .listen(_onLine);
       process.stderr.drain<void>();
@@ -267,12 +284,22 @@ class ProcessPyBackend implements PyBackend {
     final id = ++_seq;
     final completer = Completer<Map<String, dynamic>>();
     _pending[id] = completer;
-    process.stdin.writeln(jsonEncode({'id': id, 'method': method, 'params': params}));
+    try {
+      process.stdin.writeln(jsonEncode({'id': id, 'method': method, 'params': params}));
+    } catch (error) {
+      // 管道已断（解释器被系统杀掉等）：立刻失败，不要挂到超时。
+      _pending.remove(id);
+      _process = null;
+      throw AppFailure('py 运行时写入失败：$error', code: 'py_unavailable');
+    }
     return completer.future.timeout(
       const Duration(seconds: 70),
       onTimeout: () {
         _pending.remove(id);
-        throw AppFailure('py 蜘蛛执行超时（70 秒）', code: 'py_timeout');
+        throw AppFailure(
+          'py 蜘蛛执行超时（70 秒）。脚本可能在等网络或卡在某个循环里。',
+          code: 'py_timeout',
+        );
       },
     );
   }

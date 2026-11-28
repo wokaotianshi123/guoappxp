@@ -110,6 +110,48 @@ class _PySandboxPageState extends State<PySandboxPage> {
     });
   }
 
+  /// 导入入口收进一个弹层：移动端正文放三个等宽按钮会把「导入文件」
+  /// 挤成两行，脚本名也只剩两三个字一行。这里与 JS 沙箱保持一致。
+  Future<void> _import() async {
+    final choice = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (context) => SafeArea(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            ListTile(
+              leading: const Icon(Icons.file_open_outlined),
+              title: const Text('选择本地文件'),
+              subtitle: const Text('.py 脚本、订阅 JSON，或含脚本的 zip 订阅包'),
+              onTap: () => Navigator.pop(context, 'file'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.link_rounded),
+              title: const Text('从网址导入'),
+              subtitle: const Text('脚本直链，或订阅 JSON'),
+              onTap: () => Navigator.pop(context, 'url'),
+            ),
+            ListTile(
+              leading: const Icon(Icons.edit_note_rounded),
+              title: const Text('粘贴源码'),
+              subtitle: const Text('直接把 py 代码贴进来'),
+              onTap: () => Navigator.pop(context, 'paste'),
+            ),
+          ],
+        ),
+      ),
+    );
+    switch (choice) {
+      case 'file':
+        await _importFile();
+      case 'url':
+        await _importUrl();
+      case 'paste':
+        await _importPaste();
+    }
+  }
+
   Future<void> _importFile() => _run(() async {
     final file = await FilePicker.pickFile(
       type: FileType.custom,
@@ -316,26 +358,45 @@ class _PySandboxPageState extends State<PySandboxPage> {
       appBar: AppBar(
         title: const Text('PY 沙箱'),
         actions: [
-          IconButton(onPressed: _busy ? null : _importZip, icon: const Icon(Icons.unarchive_outlined), tooltip: '导入 zip'),
-          IconButton(onPressed: _busy ? null : _exportAll, icon: const Icon(Icons.archive_outlined), tooltip: '导出订阅包'),
-          IconButton(onPressed: _busy ? null : _clearAll, icon: const Icon(Icons.delete_sweep_outlined), tooltip: '清空'),
+          if (_busy)
+            const Padding(
+              padding: EdgeInsets.symmetric(horizontal: 16),
+              child: Center(
+                child: SizedBox(
+                  width: 18,
+                  height: 18,
+                  child: CircularProgressIndicator(strokeWidth: 2),
+                ),
+              ),
+            )
+          else ...[
+            IconButton(
+              onPressed: _import,
+              icon: const Icon(Icons.add_circle_outline_rounded),
+              tooltip: '导入（文件 / 网址 / 粘贴）',
+            ),
+            IconButton(
+              onPressed: _exportAll,
+              icon: const Icon(Icons.ios_share_rounded),
+              tooltip: '导出订阅包',
+            ),
+            IconButton(
+              onPressed: _importZip,
+              icon: const Icon(Icons.unarchive_outlined),
+              tooltip: '导入 zip 订阅包',
+            ),
+            IconButton(
+              onPressed: _clearAll,
+              icon: const Icon(Icons.delete_sweep_outlined),
+              tooltip: '清空',
+            ),
+          ],
+          const SizedBox(width: 4),
         ],
       ),
       body: Column(
         children: [
           _runtimeBanner(),
-          Padding(
-            padding: const EdgeInsets.fromLTRB(16, 8, 16, 8),
-            child: Row(
-              children: [
-                Expanded(child: FilledButton.icon(onPressed: _busy ? null : _importFile, icon: const Icon(Icons.file_open_outlined), label: const Text('导入文件'))),
-                const SizedBox(width: 8),
-                Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _importUrl, icon: const Icon(Icons.link), label: const Text('网址'))),
-                const SizedBox(width: 8),
-                Expanded(child: OutlinedButton.icon(onPressed: _busy ? null : _importPaste, icon: const Icon(Icons.edit_note), label: const Text('粘贴'))),
-              ],
-            ),
-          ),
           if (_busy) const LinearProgressIndicator(minHeight: 2),
           Expanded(child: _list()),
         ],
@@ -362,31 +423,162 @@ class _PySandboxPageState extends State<PySandboxPage> {
   Widget _list() {
     final sources = _service.sources;
     if (sources.isEmpty) {
-      return const Center(child: Text('还没有 py 源。点上方按钮导入一个 .py 蜘蛛脚本。'));
+      return const Center(child: Text('还没有 py 源。点右上角 + 导入一个 .py 蜘蛛脚本。'));
     }
     return ListView.separated(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
       itemCount: sources.length,
-      separatorBuilder: (_, __) => const Divider(height: 1),
+      separatorBuilder: (_, __) => const SizedBox(height: 10),
       itemBuilder: (context, index) {
         final meta = sources[index];
         final active = meta.id == _service.activeSourceId;
         final enabled = widget.store.allowsSource(meta.sourceId);
-        return ListTile(
-          leading: Icon(active ? Icons.play_circle_fill : Icons.terminal, color: active ? Theme.of(context).colorScheme.primary : null),
-          title: Text(meta.name),
-          subtitle: Text('${meta.fileName}${active ? ' · 当前启用' : ''}'),
-          trailing: Row(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Switch(value: enabled, onChanged: (value) => _toggle(meta, value)),
-              IconButton(onPressed: () => _activate(meta), icon: const Icon(Icons.check_circle_outline), tooltip: '启用'),
-              IconButton(onPressed: () => _exportOne(meta), icon: const Icon(Icons.archive_outlined), tooltip: '导出'),
-              IconButton(onPressed: () => _delete(meta), icon: const Icon(Icons.delete_outline), tooltip: '卸载'),
-            ],
-          ),
+        return _PySourceCard(
+          meta: meta,
+          active: active,
+          enabled: enabled,
+          onToggle: (value) => _toggle(meta, value),
+          onActivate: () => _activate(meta),
+          onExport: () => _exportOne(meta),
+          onDelete: () => _delete(meta),
         );
       },
+    );
+  }
+}
+
+/// 单个 py 源卡片。
+///
+/// 移动端窄屏下把开关与操作按钮挤在标题同一行，会把脚本名压成每行两三个字。
+/// 这里改成：标题独占整行（最多两行），开关在右上角，操作按钮放到底部一行，
+/// 与 JS 沙箱的卡片布局一致。
+class _PySourceCard extends StatelessWidget {
+  const _PySourceCard({
+    required this.meta,
+    required this.active,
+    required this.enabled,
+    required this.onToggle,
+    required this.onActivate,
+    required this.onExport,
+    required this.onDelete,
+  });
+
+  final PySourceMeta meta;
+  final bool active;
+  final bool enabled;
+  final ValueChanged<bool> onToggle;
+  final VoidCallback onActivate;
+  final VoidCallback onExport;
+  final VoidCallback onDelete;
+
+  @override
+  Widget build(BuildContext context) {
+    final theme = Theme.of(context);
+    final colors = theme.colorScheme;
+    final muted = theme.textTheme.bodySmall?.copyWith(
+      color: colors.onSurfaceVariant,
+      height: 1.4,
+    );
+    return Container(
+      decoration: BoxDecoration(
+        color: colors.surfaceContainer,
+        borderRadius: BorderRadius.circular(20),
+      ),
+      clipBehavior: Clip.antiAlias,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Padding(
+            padding: const EdgeInsets.fromLTRB(16, 12, 12, 10),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    color: active
+                        ? colors.primaryContainer
+                        : colors.secondaryContainer,
+                    shape: BoxShape.circle,
+                  ),
+                  child: Icon(
+                    active ? Icons.play_circle_fill_rounded : Icons.terminal_rounded,
+                    size: 22,
+                    color: active
+                        ? colors.onPrimaryContainer
+                        : colors.onSecondaryContainer,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        meta.name,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: theme.textTheme.titleMedium?.copyWith(fontSize: 16),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        '${meta.fileName}${active ? ' · 当前启用' : ''}',
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                        style: muted,
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 8),
+                Switch(value: enabled, onChanged: onToggle),
+              ],
+            ),
+          ),
+          Divider(
+            height: 1,
+            indent: 18,
+            endIndent: 18,
+            color: colors.outlineVariant.withValues(alpha: 0.6),
+          ),
+          Padding(
+            padding: const EdgeInsets.fromLTRB(12, 6, 12, 8),
+            child: Row(
+              children: [
+                if (active)
+                  Padding(
+                    padding: const EdgeInsets.only(left: 6),
+                    child: Text(
+                      '当前启用',
+                      style: theme.textTheme.labelMedium?.copyWith(
+                        color: colors.primary,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  )
+                else
+                  TextButton.icon(
+                    onPressed: onActivate,
+                    icon: const Icon(Icons.check_circle_outline_rounded, size: 18),
+                    label: const Text('启用'),
+                  ),
+                const Spacer(),
+                IconButton(
+                  onPressed: onExport,
+                  icon: const Icon(Icons.save_alt_rounded),
+                  tooltip: '导出这个源',
+                ),
+                IconButton(
+                  onPressed: onDelete,
+                  icon: const Icon(Icons.delete_outline_rounded),
+                  tooltip: '卸载',
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
