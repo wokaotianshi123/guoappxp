@@ -35,6 +35,17 @@ VERTICAL_SCROLLERS = (
 )
 HORIZONTAL_SCROLLERS = ('ListView', 'SingleChildScrollView', 'PageView', 'GridView')
 
+# 只做包装、不改变可用尺寸的组件：判断「直接父级」时要穿过它们。
+_PASS_THROUGH = {
+    'Padding', 'ExcludeSemantics', 'Semantics', 'SafeArea', 'Material', 'Theme',
+    'DefaultTextStyle', 'GestureDetector', 'InkWell', 'Builder', 'AnimatedContainer',
+    'ClipRect', 'ClipRRect', 'DecoratedBox', 'ColoredBox', 'Opacity',
+    'AnimatedOpacity', 'AnimatedPadding', 'KeyedSubtree', 'RepaintBoundary',
+    'Focus', 'MouseRegion', 'Tooltip', 'Visibility', 'AnimatedSwitcher',
+    'FadeTransition', 'MediaQuery', 'Directionality', 'ListenableBuilder',
+    'ValueListenableBuilder', 'AnimatedBuilder', 'InheritedTheme',
+}
+
 
 def match_paren(text, open_index):
     depth = 0
@@ -60,29 +71,77 @@ def match_paren(text, open_index):
     return -1
 
 
+def paren_pairs(text):
+    """一次扫描算出所有括号的配对位置：{开括号下标: 闭括号下标}。
+
+    逐个调用 `match_paren` 是 O(n²)：198 个文件里每个 `Xxx(` 都要从头扫
+    一遍，大文件上会跑到内存溢出。这里用栈一次扫完，整体 O(n)。
+    字符串与注释里的括号同样跳过，避免把 `Text('(')` 当成真括号。
+    """
+    pairs = {}
+    stack = []
+    i = 0
+    length = len(text)
+    quote = None
+    while i < length:
+        ch = text[i]
+        if quote:
+            if ch == '\\':
+                i += 2
+                continue
+            if ch == quote:
+                quote = None
+            i += 1
+            continue
+        if ch == '/' and i + 1 < length and text[i + 1] == '/':
+            newline = text.find('\n', i)
+            i = length if newline < 0 else newline
+            continue
+        if ch == '/' and i + 1 < length and text[i + 1] == '*':
+            end = text.find('*/', i + 2)
+            i = length if end < 0 else end + 2
+            continue
+        if ch in ('"', "'"):
+            quote = ch
+        elif ch == '(':
+            stack.append(i)
+        elif ch == ')':
+            if stack:
+                pairs[stack.pop()] = i
+        i += 1
+    return pairs
+
+
 _CALL_CACHE = {}
 
 
-def all_calls(text):
-    """返回 [(name, name_start, open_index, close_index)]，带缓存。"""
-    key = id(text)
-    if key in _CALL_CACHE:
+def all_calls(text, key=None):
+    """返回 [(name, name_start, open_index, close_index)]，带缓存。
+
+    [key] 必须能唯一标识这份文本（这里传文件路径）。**不能用 `id(text)`**：
+    CPython 里字符串被回收后地址会复用，198 个文件里有近 50 对撞号，
+    缓存会串到别的文件上，既误报（报出别人的行号）又漏报（本文件的
+    结果被别人的覆盖）。
+    """
+    if key is not None and key in _CALL_CACHE:
         return _CALL_CACHE[key]
+    pairs = paren_pairs(text)
     calls = []
     for match in re.finditer(r'(?<![A-Za-z0-9_.])([A-Z][A-Za-z0-9_]*)\s*\(', text):
         name = match.group(1)
         open_index = match.end() - 1
-        close = match_paren(text, open_index)
+        close = pairs.get(open_index, -1)
         if close > 0:
             calls.append((name, match.start(), open_index, close))
-    _CALL_CACHE[key] = calls
+    if key is not None:
+        _CALL_CACHE[key] = calls
     return calls
 
 
-def immediate_parent(text, position):
+def immediate_parent(text, position, key=None):
     """找包住 position 的最内层大写开头调用（即直接父 widget）。"""
     best = None
-    for name, start, open_index, close in all_calls(text):
+    for name, start, open_index, close in all_calls(text, key):
         if open_index < position < close:
             span = close - open_index
             if best is None or span < best[3]:
@@ -114,7 +173,7 @@ def flex_axis(name, body):
 def analyse(path):
     text = io.open(path, encoding='utf-8').read()
     findings = []
-    for name, start, open_index, close in all_calls(text):
+    for name, start, open_index, close in all_calls(text, path):
         if name not in ('Row', 'Column'):
             continue
         body = text[open_index:close]
@@ -123,7 +182,7 @@ def analyse(path):
         if 'CrossAxisAlignment.stretch' not in head:
             continue
         line = text[:start].count('\n') + 1
-        parent = immediate_parent(text, start)
+        parent = immediate_parent(text, start, path)
         if parent is None:
             continue
         pname, pstart, popen, _span = parent
@@ -131,6 +190,29 @@ def analyse(path):
         phead = pbody[:400]
 
         # 父级若把尺寸收紧（SizedBox / Expanded / Container 带 height 等），安全
+        if pname in ('SizedBox', 'Expanded', 'Flexible', 'Container', 'ConstrainedBox',
+                     'AspectRatio', 'IntrinsicHeight', 'IntrinsicWidth'):
+            continue
+
+        # 透明包装（只加 padding / 语义 / 主题 / 手势）：尺寸由更外层决定，
+        # 往上再找一层真正的布局父级。以前这里直接放弃，`Padding > Row`
+        # 这类会被漏报。
+        wrapper = pname
+        depth = 0
+        while wrapper in _PASS_THROUGH and depth < 8:
+            outer = immediate_parent(text, pstart, path)
+            if outer is None:
+                break
+            wrapper, pstart, popen, _span = outer
+            pbody = text[popen:match_paren(text, popen) + 1]
+            phead = pbody[:400]
+            depth += 1
+            if wrapper in ('SizedBox', 'Expanded', 'Flexible', 'Container',
+                           'ConstrainedBox', 'AspectRatio', 'IntrinsicHeight',
+                           'IntrinsicWidth'):
+                break
+        pname = wrapper
+
         if pname in ('SizedBox', 'Expanded', 'Flexible', 'Container', 'ConstrainedBox',
                      'AspectRatio', 'IntrinsicHeight', 'IntrinsicWidth'):
             continue

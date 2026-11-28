@@ -1,5 +1,16 @@
 # 更新日志
 
+## 2.1.18+146
+
+修复构建失败：`adBlock` 传给了没有该参数的沙箱方法；同时修掉布局审计脚本自身的两个 bug。
+
+- **编译错误**：上一版在 `NativeRepository.resolve` 里给沙箱 `resolve` 传了 `adBlock`，但两个沙箱网关都没有这个参数（`No named parameter with the name 'adBlock'`）。去广告现在由播放层的 HLS 代理统一处理，沙箱只负责拿到原始地址，所以正确的修法是**不再往下传**，而不是给沙箱加一个用不上的参数。
+- **布局审计误报**：`scripts/audit_stretch.py` 用 `id(text)` 做缓存键。CPython 里字符串回收后地址会复用——198 个文件里有 47 对撞号，缓存串到别的文件上，于是报出的文件和行号是错的（CI 报 `downloads_page.dart:493` 的 Row，而那一行实际是 `bottom: false`）。改用文件路径做键。
+- **审计脚本内存溢出**：修好缓存后脚本才开始真正全量扫描，随即 OOM。根因是 `match_paren` 对每个调用都从头扫一遍，整体 O(n²)。改成用栈一次扫完括号配对，整体 O(n)。
+- **审计漏报**：`Padding` / `ExcludeSemantics` 这类只做包装、不改变可用尺寸的组件，原先会被当作「父级已收紧」直接跳过，导致 `Padding > Row` 在 Column 里的真实问题被漏掉。现在会穿过这些透明包装，继续找真正的布局父级。
+
+实测：审计脚本现在能正确检出 `Row + stretch` 在竖向 `Column` 里的问题（含被 `Padding` 包住的情况），也不会误报被 `SizedBox` 收紧高度的写法；全量扫描 198 个文件不再 OOM。
+
 ## 2.1.17+145
 
 「去广告」现在对所有源生效，包括 JS / PY 沙箱源。

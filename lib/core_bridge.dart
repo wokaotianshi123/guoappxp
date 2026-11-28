@@ -1688,11 +1688,12 @@ class NativeRepository extends AppRepository {
   }) async {
     final sandbox = jsSandbox;
     if (sandbox != null && sandbox.handles(drama.source)) {
+      // 沙箱不需要 adBlock：去广告由播放层的 HLS 代理统一处理
+      // （见 `PlaybackStreamProxy`），沙箱只负责拿到原始地址。
       return sandbox.resolve(
         drama,
         episode,
         quality: quality,
-        adBlock: adBlock,
         routeIndex: routeIndex,
       );
     }
@@ -1702,7 +1703,6 @@ class NativeRepository extends AppRepository {
         drama,
         episode,
         quality: quality,
-        adBlock: adBlock,
         routeIndex: routeIndex,
       );
     }
